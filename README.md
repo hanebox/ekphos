@@ -7,7 +7,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 ### Using Make
 
 ```bash
-git clone https://github.com/yourusername/ekphos.git
+git clone https://github.com/hanebox/ekphos.git
 cd ekphos
 make
 sudo make install
@@ -230,7 +230,7 @@ The outline panel shows all headings in your note:
 Ekphos is open source and contributions are welcome.
 
 ```bash
-git clone https://github.com/yourusername/ekphos.git
+git clone https://github.com/hanebox/ekphos.git
 cd ekphos
 make run
 ```
