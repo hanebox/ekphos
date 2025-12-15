@@ -16,6 +16,7 @@ crossterm = "0.28"
 tui-textarea = "0.7"
 image = "0.25"
 ratatui-image = "3.0"
+syntect = "5.2"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 dirs = "5.0"

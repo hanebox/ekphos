@@ -25,6 +25,9 @@ use ratatui::{
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use tui_textarea::{Input, TextArea};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
+use syntect::parsing::SyntaxSet;
 
 use theme::{Config, Theme};
 
@@ -92,13 +95,15 @@ struct App<'a> {
     search_active: bool,
     search_query: String,
     filtered_indices: Vec<usize>,
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
 }
 
 #[derive(Debug, Clone)]
 enum ContentItem {
     TextLine(String),
     Image(String),
-    CodeLine(String),
+    CodeLine(Vec<(String, Style)>),
     CodeFence(String),
 }
 
@@ -114,6 +119,8 @@ impl<'a> App<'a> {
         // Load config and theme first
         let config = Config::load();
         let theme = Theme::from_config(&config.theme.colors);
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme_set = ThemeSet::load_defaults();
 
         let mut list_state = ListState::default();
         list_state.select(Some(0));
@@ -170,6 +177,8 @@ impl<'a> App<'a> {
             search_active: false,
             search_query: String::new(),
             filtered_indices: Vec::new(),
+            syntax_set,
+            theme_set,
         };
 
         // Load notes if onboarding is complete and directory exists
@@ -514,19 +523,46 @@ Press `q` to quit. Happy note-taking!"#.to_string();
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
             let mut in_code_block = false;
+            let mut current_lang = String::new();
+            let mut highlighter: Option<HighlightLines> = None;
 
             for line in content.lines() {
                 // Check for code fence
                 if line.starts_with("```") {
-                    let lang = line.trim_start_matches('`').to_string();
-                    self.content_items.push(ContentItem::CodeFence(lang));
-                    in_code_block = !in_code_block;
+                    if in_code_block {
+                        // End of block
+                        in_code_block = false;
+                        highlighter = None;
+                        self.content_items.push(ContentItem::CodeFence(current_lang.clone()));
+                    } else {
+                        // Start of block
+                        let lang = line.trim_start_matches('`').trim().to_string();
+                        current_lang = lang.clone();
+                        self.content_items.push(ContentItem::CodeFence(lang.clone()));
+                        in_code_block = true;
+
+                        // Initialize highlighter
+                        if let Some(syntax) = self.syntax_set.find_syntax_by_token(&lang) {
+                            highlighter = Some(HighlightLines::new(syntax, &self.theme_set.themes["base16-ocean.dark"]));
+                        } else {
+                             highlighter = None;
+                        }
+                    }
                     continue;
                 }
 
                 // If inside code block, add as CodeLine
                 if in_code_block {
-                    self.content_items.push(ContentItem::CodeLine(line.to_string()));
+                    if let Some(h) = &mut highlighter {
+                        let ranges: Vec<(SyntectStyle, &str)> = h.highlight_line(line, &self.syntax_set).unwrap_or_default();
+                        let spans: Vec<(String, Style)> = ranges.into_iter().map(|(style, text)| {
+                            (text.to_string(), convert_syntect_style(style))
+                        }).collect();
+                        self.content_items.push(ContentItem::CodeLine(spans));
+                    } else {
+                        // Fallback if no syntax found
+                        self.content_items.push(ContentItem::CodeLine(vec![(line.to_string(), Style::default().fg(self.theme.green))]));
+                    }
                     continue;
                 }
 
@@ -1683,14 +1719,34 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
     f.render_widget(paragraph, area);
 }
 
-fn render_code_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cursor: bool) {
+fn convert_syntect_style(style: SyntectStyle) -> Style {
+    let fg = style.foreground;
+    let mut s = Style::default().fg(ratatui::style::Color::Rgb(fg.r, fg.g, fg.b));
+    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+        s = s.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(syntect::highlighting::FontStyle::UNDERLINE) {
+        s = s.add_modifier(Modifier::UNDERLINED);
+    }
+    s
+}
+
+fn render_code_line(f: &mut Frame, theme: &Theme, spans: &[(String, Style)], area: Rect, is_cursor: bool) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
 
-    let styled_line = Line::from(vec![
+    let mut line_spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
         Span::styled("│ ", Style::default().fg(theme.surface2)),
-        Span::styled(line, Style::default().fg(theme.green)),
-    ]);
+    ];
+    
+    for (text, style) in spans {
+        line_spans.push(Span::styled(text, *style));
+    }
+
+    let styled_line = Line::from(line_spans);
 
     let style = if is_cursor {
         Style::default().bg(theme.surface0)
