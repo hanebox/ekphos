@@ -177,8 +177,6 @@ impl<'a> App<'a> {
             app.load_notes_from_dir();
         }
 
-        app.update_outline();
-        app.update_content_items();
         app
     }
 
@@ -225,6 +223,10 @@ impl<'a> App<'a> {
         // Reset selection
         self.selected_note = 0;
         self.list_state.select(Some(0));
+
+        // Update UI state
+        self.update_outline();
+        self.update_content_items();
     }
 
     fn create_welcome_note(&mut self) {
@@ -391,6 +393,8 @@ Press `q` to quit. Happy note-taking!"#.to_string();
             content,
             file_path: Some(file_path),
         });
+        self.selected_note = 0;
+        self.list_state.select(Some(0));
     }
 
     fn create_note(&mut self, name: &str) {
