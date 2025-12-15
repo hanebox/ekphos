@@ -21,6 +21,12 @@ sudo make install
 cargo install ekphos
 ```
 
+## Update
+
+```bash
+cargo install ekphos
+```
+
 ## Uninstall
 
 ### If installed with Make
