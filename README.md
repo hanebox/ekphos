@@ -1,8 +1,17 @@
 # Ekphos
 
+[![Crates.io](https://img.shields.io/crates/v/ekphos)](https://crates.io/crates/ekphos)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/crates/l/ekphos)](https://github.com/hanebox/ekphos/blob/main/LICENSE)
+
 An open source, lightweight, fast, terminal-based markdown research tool built with Rust.
 
 ![Ekphos Preview](examples/ekphos-screenshot.png)
+
+## Requirements
+
+- Rust 1.70+ (run `rustup update` to update)
+- A terminal emulator (for inline image preview: iTerm2, Kitty, WezTerm, Ghostty, or Sixel-compatible terminal)
 
 ## Installation
 
