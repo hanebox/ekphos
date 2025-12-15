@@ -1,0 +1,28 @@
+[package]
+name = "ekphos"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ekphos Contributors"]
+description = "A lightweight, fast, terminal-based markdown research tool inspired by Obsidian"
+license = "MIT"
+repository = "https://github.com/yourusername/ekphos"
+keywords = ["markdown", "tui", "terminal", "notes", "obsidian"]
+categories = ["command-line-utilities", "text-editors"]
+readme = "README.md"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+image = "0.25"
+ratatui-image = "3.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+shellexpand = "3.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
