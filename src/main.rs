@@ -1472,6 +1472,88 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    let mut current_start = 0;
+
+    while let Some((i, c)) = chars.next() {
+        // Check for **bold**
+        if c == '*' {
+            if let Some(&(_, '*')) = chars.peek() {
+                // Found **, look for closing **
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.text)));
+                }
+                chars.next(); // consume second *
+                let bold_start = i + 2;
+                let mut bold_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '*' {
+                        if let Some(&(_, '*')) = chars.peek() {
+                            bold_end = Some(j);
+                            chars.next(); // consume second *
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = bold_end {
+                    spans.push(Span::styled(
+                        &text[bold_start..end],
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    ));
+                    current_start = end + 2;
+                } else {
+                    // No closing **, treat as regular text
+                    current_start = i;
+                }
+                continue;
+            }
+        }
+
+        // Check for `code`
+        if c == '`' {
+            if i > current_start {
+                spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.text)));
+            }
+            let code_start = i + 1;
+            let mut code_end = None;
+
+            while let Some((j, ch)) = chars.next() {
+                if ch == '`' {
+                    code_end = Some(j);
+                    break;
+                }
+            }
+
+            if let Some(end) = code_end {
+                spans.push(Span::styled(
+                    &text[code_start..end],
+                    Style::default().fg(theme.green).bg(theme.mantle),
+                ));
+                current_start = end + 1;
+            } else {
+                // No closing `, treat as regular text
+                current_start = i;
+            }
+            continue;
+        }
+    }
+
+    // Add remaining text
+    if current_start < text.len() {
+        spans.push(Span::styled(&text[current_start..], Style::default().fg(theme.text)));
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::styled(text, Style::default().fg(theme.text)));
+    }
+
+    spans
+}
+
 fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cursor: bool) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
 
@@ -1548,11 +1630,12 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         ])
     } else if line.starts_with("- ") {
         // Bullet list
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
             Span::styled("• ", Style::default().fg(theme.mauve)),
-            Span::styled(line.trim_start_matches("- "), Style::default().fg(theme.text)),
-        ])
+        ];
+        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme));
+        Line::from(spans)
     } else if line.starts_with("> ") {
         // Blockquote
         Line::from(vec![
@@ -1571,17 +1654,19 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         ])
     } else if line.starts_with("* ") {
         // Bullet list (asterisk variant)
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
             Span::styled("• ", Style::default().fg(theme.mauve)),
-            Span::styled(line.trim_start_matches("* "), Style::default().fg(theme.text)),
-        ])
+        ];
+        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme));
+        Line::from(spans)
     } else {
         // Regular text lines (including numbered lists)
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
-            Span::styled(line, Style::default().fg(theme.text)),
-        ])
+        ];
+        spans.extend(parse_inline_formatting(line, theme));
+        Line::from(spans)
     };
 
     let style = if is_cursor {
