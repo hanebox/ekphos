@@ -27,6 +27,15 @@ cargo install ekphos
 cargo install ekphos
 ```
 
+## CLI Options
+
+| Flag             | Description              |
+| ---------------- | ------------------------ |
+| `-h`, `--help`   | Print help information   |
+| `-v`, `--version`| Print version            |
+| `-c`, `--config` | Print config file path   |
+| `-d`, `--dir`    | Print notes directory    |
+
 ## Uninstall
 
 ### If installed with Make

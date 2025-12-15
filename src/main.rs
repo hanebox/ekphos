@@ -1,10 +1,13 @@
 mod theme;
 
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
@@ -672,7 +675,50 @@ Happy note-taking!"#.to_string();
     }
 }
 
+fn print_help() {
+    println!("ekphos {}", VERSION);
+    println!("A lightweight, fast, terminal-based markdown research tool");
+    println!();
+    println!("USAGE:");
+    println!("    ekphos [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -h, --help       Print help information");
+    println!("    -v, --version    Print version information");
+    println!("    -c, --config     Print config file path");
+    println!("    -d, --dir        Print notes directory path");
+}
+
 fn main() -> io::Result<()> {
+    // Handle CLI arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "-v" | "--version" => {
+                println!("ekphos {}", VERSION);
+                return Ok(());
+            }
+            "-h" | "--help" => {
+                print_help();
+                return Ok(());
+            }
+            "-c" | "--config" => {
+                println!("{}", theme::Config::config_path().display());
+                return Ok(());
+            }
+            "-d" | "--dir" => {
+                let config = theme::Config::load();
+                println!("{}", config.notes_path().display());
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Unknown option: {}", args[1]);
+                eprintln!("Run 'ekphos --help' for usage information");
+                return Ok(());
+            }
+        }
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
