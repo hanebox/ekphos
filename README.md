@@ -30,6 +30,16 @@ sudo make install
 cargo install ekphos
 ```
 
+### Using Docker
+
+```bash
+docker build -t ekphos-ssh .
+docker compose up -d
+```
+
+and after the container is up, you can SSH into the machine with the following command
+`ssh ekphos@your-docker-container-ip`
+
 ## Update
 
 ```bash

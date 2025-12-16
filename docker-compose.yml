@@ -7,11 +7,11 @@ services:
     #   dockerfile: Dockerfile
     container_name: ekphos
     ports:
-      - "2222:22"  # Map host port 2222 to container port 22
+      - "22:22"
     volumes:
-      - ./config/authorized_keys:/config/authorized_keys:ro  # Mount authorized_keys as read-only
-      - ./data:/data  # Persist data directory
-      - ./themes:/app/themes:ro  # Optional: override bundled themes
+      - [YOUR AUTHORIZED KEYS FILE]:/config/authorized_keys:ro  # Mount authorized_keys as read-only
+      - [YOUR DATA DIRECTORY]:/data  # Persist data directory
+      - [YOUR THEMES DIRECTORY]:/app/themes:ro  # Optional: override bundled themes
     environment:
       - RUST_LOG=info
     restart: unless-stopped
