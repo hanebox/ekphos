@@ -5,7 +5,6 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::process::Command;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -596,11 +595,11 @@ Press `q` to quit. Happy note-taking!"#.to_string();
             let path_buf = PathBuf::from(path);
             if path_buf.exists() {
                 #[cfg(target_os = "macos")]
-                let _ = Command::new("open").arg(path).spawn();
+                let _ = std::process::Command::new("open").arg(path).spawn();
                 #[cfg(target_os = "linux")]
-                let _ = Command::new("xdg-open").arg(path).spawn();
+                let _ = std::process::Command::new("xdg-open").arg(path).spawn();
                 #[cfg(target_os = "windows")]
-                let _ = Command::new("cmd").args(["/c", "start", "", path]).spawn();
+                let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
             }
         }
     }
