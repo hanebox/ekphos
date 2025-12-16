@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
@@ -1421,7 +1421,19 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         0
     };
 
-    // Build constraints for visible items
+    let available_width = inner_area.width.saturating_sub(4) as usize;
+
+    // calculate wrapped text row height
+    let calc_wrapped_height = |text: &str, prefix_len: usize| -> u16 {
+        if text.is_empty() || available_width == 0 {
+            return 1;
+        }
+        
+        let total_len = text.chars().count() + prefix_len;
+
+        ((total_len as f64 / available_width as f64).ceil() as u16).max(1)
+    };
+
     let mut constraints: Vec<Constraint> = Vec::new();
     let mut visible_indices: Vec<usize> = Vec::new();
     let mut total_height = 0u16;
@@ -1431,9 +1443,9 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             break;
         }
         let item_height = match item {
-            ContentItem::TextLine(_) => 1u16,
+            ContentItem::TextLine(line) => calc_wrapped_height(line, 4),
             ContentItem::Image(_) => 8u16,
-            ContentItem::CodeLine(_) => 1u16,
+            ContentItem::CodeLine(line) => calc_wrapped_height(line, 6),
             ContentItem::CodeFence(_) => 1u16,
         };
         constraints.push(Constraint::Length(item_height));
@@ -1679,7 +1691,9 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         Style::default()
     };
 
-    let paragraph = Paragraph::new(styled_line).style(style);
+    let paragraph = Paragraph::new(styled_line)
+        .style(style)
+        .wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
 }
 
@@ -1698,7 +1712,9 @@ fn render_code_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cur
         Style::default().bg(theme.mantle)
     };
 
-    let paragraph = Paragraph::new(styled_line).style(style);
+    let paragraph = Paragraph::new(styled_line)
+        .style(style)
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
@@ -1716,7 +1732,9 @@ fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area: Rect, is_c
         Style::default().bg(theme.mantle)
     };
 
-    let paragraph = Paragraph::new(styled_line).style(style);
+    let paragraph = Paragraph::new(styled_line)
+        .style(style)
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
@@ -1798,6 +1816,45 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
 fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(&app.textarea, area);
+
+    let theme = &app.theme;
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+
+    let (cursor_row, cursor_col) = app.textarea.cursor();
+    let lines = app.textarea.lines();
+    let scroll_top = cursor_row.saturating_sub(inner_height.saturating_sub(1));
+
+    for (i, line) in lines.iter().enumerate().skip(scroll_top).take(inner_height) {
+        let line_len = line.chars().count();
+        let y = area.y + 1 + (i - scroll_top) as u16;
+
+        if y >= area.y + area.height - 1 {
+            continue;
+        }
+
+        let is_cursor_line = i == cursor_row;
+        let h_scroll = if is_cursor_line && cursor_col > inner_width.saturating_sub(1) {
+            cursor_col.saturating_sub(inner_width.saturating_sub(1))
+        } else {
+            0
+        };
+
+        let has_left_overflow = h_scroll > 0;
+        let has_right_overflow = line_len > h_scroll + inner_width;
+
+        if has_left_overflow {
+            let indicator = Paragraph::new("«│")
+                .style(Style::default().fg(theme.peach));
+            f.render_widget(indicator, Rect::new(area.x + 1, y, 2, 1));
+        }
+
+        if has_right_overflow {
+            let indicator = Paragraph::new("│»")
+                .style(Style::default().fg(theme.peach));
+            f.render_widget(indicator, Rect::new(area.x + area.width - 3, y, 2, 1));
+        }
+    }
 }
 
 fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1883,9 +1940,9 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             Focus::Outline => "OUTLINE",
         },
         Mode::Edit => match app.vim_mode {
-            VimMode::Normal => "NORMAL",
-            VimMode::Insert => "INSERT",
-            VimMode::Visual => "VISUAL",
+            VimMode::Normal => "EDIT: NORMAL",
+            VimMode::Insert => "EDIT: INSERT",
+            VimMode::Visual => "EDIT: VISUAL",
         },
     };
 
