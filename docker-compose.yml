@@ -1,0 +1,23 @@
+services:
+  ekphos:
+    image: ekphos-ssh:latest
+    # Uncomment to build locally instead:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: ekphos
+    ports:
+      - "22:22"
+    volumes:
+      - [YOUR AUTHORIZED KEYS FILE]:/config/authorized_keys:ro  # Mount authorized_keys as read-only
+      - [YOUR DATA DIRECTORY]:/data  # Persist data directory
+      - [YOUR THEMES DIRECTORY]:/app/themes:ro  # Optional: override bundled themes
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    networks:
+      - ekphos-network
+
+networks:
+  ekphos-network:
+    driver: bridge

@@ -631,11 +631,11 @@ Press `q` to quit. Happy note-taking!"#.to_string();
         self.update_content_items();
     }
 
-    fn toggle_focus(&mut self) {
+    fn toggle_focus(&mut self, backwards: bool) {
         self.focus = match self.focus {
-            Focus::Sidebar => Focus::Content,
-            Focus::Content => Focus::Outline,
-            Focus::Outline => Focus::Sidebar,
+            Focus::Sidebar => if backwards { Focus::Outline } else { Focus::Content },
+            Focus::Content => if backwards { Focus::Sidebar } else { Focus::Outline },
+            Focus::Outline => if backwards {Focus::Content} else {Focus::Sidebar},
         };
     }
 
@@ -1017,7 +1017,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     Mode::Normal => {
                         match key.code {
                             KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Tab => app.toggle_focus(),
+                            KeyCode::Tab => app.toggle_focus(false),
+                            KeyCode::BackTab => app.toggle_focus(true),
                             KeyCode::Char('e') => app.enter_edit_mode(),
                             KeyCode::Char('n') => {
                                 app.input_buffer.clear();
