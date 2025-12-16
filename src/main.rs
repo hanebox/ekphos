@@ -10,7 +10,10 @@ use std::process::Command;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -139,11 +142,12 @@ impl<'a> App<'a> {
 
         // Determine if we need onboarding
         // Show onboarding if not complete OR if notes directory was deleted
-        let dialog = if !config.onboarding_complete || (config.onboarding_complete && !notes_dir_exists) {
-            DialogState::Onboarding
-        } else {
-            DialogState::None
-        };
+        let dialog =
+            if !config.onboarding_complete || (config.onboarding_complete && !notes_dir_exists) {
+                DialogState::Onboarding
+            } else {
+                DialogState::None
+            };
 
         let input_buffer = config.notes_dir.clone();
 
@@ -194,7 +198,9 @@ impl<'a> App<'a> {
             let mut notes: Vec<Note> = entries
                 .filter_map(|entry| entry.ok())
                 .filter(|entry| {
-                    entry.path().extension()
+                    entry
+                        .path()
+                        .extension()
                         .map(|ext| ext == "md")
                         .unwrap_or(false)
                 })
@@ -382,7 +388,8 @@ Custom themes can be added to `~/.config/ekphos/themes/`
 
 ---
 
-Press `q` to quit. Happy note-taking!"#.to_string();
+Press `q` to quit. Happy note-taking!"#
+            .to_string();
 
         let notes_path = self.config.notes_path();
         let file_path = notes_path.join("Welcome.md");
@@ -526,7 +533,8 @@ Press `q` to quit. Happy note-taking!"#.to_string();
 
                 // If inside code block, add as CodeLine
                 if in_code_block {
-                    self.content_items.push(ContentItem::CodeLine(line.to_string()));
+                    self.content_items
+                        .push(ContentItem::CodeLine(line.to_string()));
                     continue;
                 }
 
@@ -536,14 +544,16 @@ Press `q` to quit. Happy note-taking!"#.to_string();
                         if let Some(end) = line[start..].find(')') {
                             let path = &line[start + 2..start + end];
                             if !path.is_empty() {
-                                self.content_items.push(ContentItem::Image(path.to_string()));
+                                self.content_items
+                                    .push(ContentItem::Image(path.to_string()));
                                 continue;
                             }
                         }
                     }
                 }
 
-                self.content_items.push(ContentItem::TextLine(line.to_string()));
+                self.content_items
+                    .push(ContentItem::TextLine(line.to_string()));
             }
         }
         self.content_cursor = 0;
@@ -723,7 +733,8 @@ Press `q` to quit. Happy note-taking!"#.to_string();
             self.textarea = TextArea::new(lines);
             self.vim_mode = VimMode::Normal;
             self.update_editor_block();
-            self.textarea.set_cursor_line_style(Style::default().bg(self.theme.surface0));
+            self.textarea
+                .set_cursor_line_style(Style::default().bg(self.theme.surface0));
             self.mode = Mode::Edit;
             self.focus = Focus::Content;
         }
@@ -751,7 +762,8 @@ Press `q` to quit. Happy note-taking!"#.to_string();
                 .title(format!(" {} | {} ", mode_str, hint)),
         );
         // Set selection style for visual mode
-        self.textarea.set_selection_style(Style::default().bg(self.theme.surface2));
+        self.textarea
+            .set_selection_style(Style::default().bg(self.theme.surface2));
     }
 
     fn save_edit(&mut self) {
@@ -852,331 +864,351 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         match event::read()? {
             Event::Mouse(mouse) => {
                 // Handle mouse scroll in normal mode only
-                if app.mode == Mode::Normal && app.dialog == DialogState::None && !app.show_welcome {
+                if app.mode == Mode::Normal && app.dialog == DialogState::None && !app.show_welcome
+                {
                     match mouse.kind {
-                        MouseEventKind::ScrollDown => {
-                            match app.focus {
-                                Focus::Sidebar => app.next_note(),
-                                Focus::Content => {
-                                    app.next_content_line();
-                                    app.sync_outline_to_content();
-                                }
-                                Focus::Outline => app.next_outline(),
+                        MouseEventKind::ScrollDown => match app.focus {
+                            Focus::Sidebar => app.next_note(),
+                            Focus::Content => {
+                                app.next_content_line();
+                                app.sync_outline_to_content();
                             }
-                        }
-                        MouseEventKind::ScrollUp => {
-                            match app.focus {
-                                Focus::Sidebar => app.previous_note(),
-                                Focus::Content => {
-                                    app.previous_content_line();
-                                    app.sync_outline_to_content();
-                                }
-                                Focus::Outline => app.previous_outline(),
+                            Focus::Outline => app.next_outline(),
+                        },
+                        MouseEventKind::ScrollUp => match app.focus {
+                            Focus::Sidebar => app.previous_note(),
+                            Focus::Content => {
+                                app.previous_content_line();
+                                app.sync_outline_to_content();
                             }
-                        }
+                            Focus::Outline => app.previous_outline(),
+                        },
                         _ => {}
                     }
                 }
             }
             Event::Key(key) => {
-            if key.kind == KeyEventKind::Press {
-                // Handle dialogs first
-                match app.dialog {
-                    DialogState::Onboarding => {
+                if key.kind == KeyEventKind::Press {
+                    // Handle dialogs first
+                    match app.dialog {
+                        DialogState::Onboarding => {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    app.complete_onboarding();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.input_buffer.push(c);
+                                }
+                                KeyCode::Backspace => {
+                                    app.input_buffer.pop();
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        DialogState::CreateNote => {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    let name = app.input_buffer.clone();
+                                    app.create_note(&name);
+                                    app.input_buffer.clear();
+                                    app.dialog = DialogState::None;
+                                }
+                                KeyCode::Esc => {
+                                    app.input_buffer.clear();
+                                    app.dialog = DialogState::None;
+                                }
+                                KeyCode::Char(c) => {
+                                    app.input_buffer.push(c);
+                                }
+                                KeyCode::Backspace => {
+                                    app.input_buffer.pop();
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        DialogState::DeleteConfirm => {
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    app.delete_current_note();
+                                    app.dialog = DialogState::None;
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    app.dialog = DialogState::None;
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        DialogState::Help => {
+                            match key.code {
+                                KeyCode::Esc
+                                | KeyCode::Enter
+                                | KeyCode::Char('q')
+                                | KeyCode::Char('?') => {
+                                    app.dialog = DialogState::None;
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        DialogState::None => {}
+                    }
+
+                    // Handle welcome dialog
+                    if app.show_welcome {
                         match key.code {
-                            KeyCode::Enter => {
-                                app.complete_onboarding();
-                            }
-                            KeyCode::Char(c) => {
-                                app.input_buffer.push(c);
-                            }
-                            KeyCode::Backspace => {
-                                app.input_buffer.pop();
+                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => {
+                                app.dismiss_welcome();
                             }
                             _ => {}
                         }
                         continue;
                     }
-                    DialogState::CreateNote => {
+
+                    // Handle search input
+                    if app.search_active {
                         match key.code {
-                            KeyCode::Enter => {
-                                let name = app.input_buffer.clone();
-                                app.create_note(&name);
-                                app.input_buffer.clear();
-                                app.dialog = DialogState::None;
-                            }
                             KeyCode::Esc => {
-                                app.input_buffer.clear();
-                                app.dialog = DialogState::None;
+                                app.clear_search();
                             }
-                            KeyCode::Char(c) => {
-                                app.input_buffer.push(c);
+                            KeyCode::Enter => {
+                                // Select first filtered note if any
+                                let visible = app.get_visible_notes();
+                                if !visible.is_empty() {
+                                    app.selected_note = visible[0].0;
+                                    app.current_image = None;
+                                    app.update_outline();
+                                    app.update_content_items();
+                                }
+                                app.search_active = false;
                             }
                             KeyCode::Backspace => {
-                                app.input_buffer.pop();
+                                app.search_query.pop();
+                                app.update_filtered_indices();
                             }
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    DialogState::DeleteConfirm => {
-                        match key.code {
-                            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                app.delete_current_note();
-                                app.dialog = DialogState::None;
-                            }
-                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                                app.dialog = DialogState::None;
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    DialogState::Help => {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
-                                app.dialog = DialogState::None;
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    DialogState::None => {}
-                }
-
-                // Handle welcome dialog
-                if app.show_welcome {
-                    match key.code {
-                        KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => {
-                            app.dismiss_welcome();
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                // Handle search input
-                if app.search_active {
-                    match key.code {
-                        KeyCode::Esc => {
-                            app.clear_search();
-                        }
-                        KeyCode::Enter => {
-                            // Select first filtered note if any
-                            let visible = app.get_visible_notes();
-                            if !visible.is_empty() {
-                                app.selected_note = visible[0].0;
-                                app.current_image = None;
-                                app.update_outline();
-                                app.update_content_items();
-                            }
-                            app.search_active = false;
-                        }
-                        KeyCode::Backspace => {
-                            app.search_query.pop();
-                            app.update_filtered_indices();
-                        }
-                        KeyCode::Down => {
-                            // Navigate within filtered results
-                            let visible = app.get_visible_notes();
-                            if !visible.is_empty() {
-                                let current_pos = visible.iter().position(|(i, _)| *i == app.selected_note).unwrap_or(0);
-                                let next_pos = (current_pos + 1) % visible.len();
-                                app.selected_note = visible[next_pos].0;
-                                app.current_image = None;
-                                app.update_outline();
-                                app.update_content_items();
-                            }
-                        }
-                        KeyCode::Up => {
-                            let visible = app.get_visible_notes();
-                            if !visible.is_empty() {
-                                let current_pos = visible.iter().position(|(i, _)| *i == app.selected_note).unwrap_or(0);
-                                let prev_pos = if current_pos == 0 { visible.len() - 1 } else { current_pos - 1 };
-                                app.selected_note = visible[prev_pos].0;
-                                app.current_image = None;
-                                app.update_outline();
-                                app.update_content_items();
-                            }
-                        }
-                        KeyCode::Char(c) => {
-                            app.search_query.push(c);
-                            app.update_filtered_indices();
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                match app.mode {
-                    Mode::Normal => {
-                        match key.code {
-                            KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Tab => app.toggle_focus(),
-                            KeyCode::Char('e') => app.enter_edit_mode(),
-                            KeyCode::Char('n') => {
-                                app.input_buffer.clear();
-                                app.dialog = DialogState::CreateNote;
-                            }
-                            KeyCode::Char('d') => {
-                                if !app.notes.is_empty() {
-                                    app.dialog = DialogState::DeleteConfirm;
+                            KeyCode::Down => {
+                                // Navigate within filtered results
+                                let visible = app.get_visible_notes();
+                                if !visible.is_empty() {
+                                    let current_pos = visible
+                                        .iter()
+                                        .position(|(i, _)| *i == app.selected_note)
+                                        .unwrap_or(0);
+                                    let next_pos = (current_pos + 1) % visible.len();
+                                    app.selected_note = visible[next_pos].0;
+                                    app.current_image = None;
+                                    app.update_outline();
+                                    app.update_content_items();
                                 }
                             }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                match app.focus {
+                            KeyCode::Up => {
+                                let visible = app.get_visible_notes();
+                                if !visible.is_empty() {
+                                    let current_pos = visible
+                                        .iter()
+                                        .position(|(i, _)| *i == app.selected_note)
+                                        .unwrap_or(0);
+                                    let prev_pos = if current_pos == 0 {
+                                        visible.len() - 1
+                                    } else {
+                                        current_pos - 1
+                                    };
+                                    app.selected_note = visible[prev_pos].0;
+                                    app.current_image = None;
+                                    app.update_outline();
+                                    app.update_content_items();
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                app.search_query.push(c);
+                                app.update_filtered_indices();
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    match app.mode {
+                        Mode::Normal => {
+                            match key.code {
+                                KeyCode::Char('q') => return Ok(()),
+                                KeyCode::Tab => app.toggle_focus(),
+                                KeyCode::Char('e') => app.enter_edit_mode(),
+                                KeyCode::Char('n') => {
+                                    app.input_buffer.clear();
+                                    app.dialog = DialogState::CreateNote;
+                                }
+                                KeyCode::Char('d') => {
+                                    if !app.notes.is_empty() {
+                                        app.dialog = DialogState::DeleteConfirm;
+                                    }
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => match app.focus {
                                     Focus::Sidebar => app.next_note(),
                                     Focus::Outline => app.next_outline(),
                                     Focus::Content => {
                                         app.next_content_line();
                                         app.sync_outline_to_content();
                                     }
-                                }
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                match app.focus {
+                                },
+                                KeyCode::Up | KeyCode::Char('k') => match app.focus {
                                     Focus::Sidebar => app.previous_note(),
                                     Focus::Outline => app.previous_outline(),
                                     Focus::Content => {
                                         app.previous_content_line();
                                         app.sync_outline_to_content();
                                     }
-                                }
-                            }
-                            KeyCode::Enter => {
-                                match app.focus {
+                                },
+                                KeyCode::Enter => match app.focus {
                                     Focus::Content => app.open_current_image(),
                                     Focus::Outline => app.jump_to_outline(),
                                     Focus::Sidebar => {}
+                                },
+                                KeyCode::Char('o') => {
+                                    if app.focus == Focus::Content {
+                                        app.open_current_image();
+                                    } else if app.focus == Focus::Outline {
+                                        // 'o' on outline just jumps to content view without edit
+                                        app.jump_to_outline();
+                                    }
                                 }
-                            }
-                            KeyCode::Char('o') => {
-                                if app.focus == Focus::Content {
-                                    app.open_current_image();
-                                } else if app.focus == Focus::Outline {
-                                    // 'o' on outline just jumps to content view without edit
-                                    app.jump_to_outline();
+                                KeyCode::Char('?') => {
+                                    app.dialog = DialogState::Help;
                                 }
-                            }
-                            KeyCode::Char('?') => {
-                                app.dialog = DialogState::Help;
-                            }
-                            KeyCode::Char('/') => {
-                                if app.focus == Focus::Sidebar {
-                                    app.search_active = true;
-                                    app.search_query.clear();
+                                KeyCode::Char('/') => {
+                                    if app.focus == Focus::Sidebar {
+                                        app.search_active = true;
+                                        app.search_query.clear();
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
-                    }
-                    Mode::Edit => {
-                        // Vim mode handling
-                        match app.vim_mode {
-                            VimMode::Normal => {
-                                match key.code {
-                                    KeyCode::Char('i') => {
-                                        app.vim_mode = VimMode::Insert;
+                        Mode::Edit => {
+                            // Vim mode handling
+                            match app.vim_mode {
+                                VimMode::Normal => {
+                                    match key.code {
+                                        KeyCode::Char('i') => {
+                                            app.vim_mode = VimMode::Insert;
+                                        }
+                                        KeyCode::Char('a') => {
+                                            app.vim_mode = VimMode::Insert;
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Forward);
+                                        }
+                                        KeyCode::Char('A') => {
+                                            app.vim_mode = VimMode::Insert;
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+                                        }
+                                        KeyCode::Char('I') => {
+                                            app.vim_mode = VimMode::Insert;
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Head);
+                                        }
+                                        KeyCode::Char('o') => {
+                                            app.vim_mode = VimMode::Insert;
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+                                            app.textarea.insert_newline();
+                                        }
+                                        KeyCode::Char('O') => {
+                                            app.vim_mode = VimMode::Insert;
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Head);
+                                            app.textarea.insert_newline();
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::Up);
+                                        }
+                                        KeyCode::Char('v') => {
+                                            app.vim_mode = VimMode::Visual;
+                                            app.textarea.start_selection();
+                                        }
+                                        KeyCode::Char('h') | KeyCode::Left => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Back);
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Down);
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::Up);
+                                        }
+                                        KeyCode::Char('l') | KeyCode::Right => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Forward);
+                                        }
+                                        KeyCode::Char('w') => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::WordForward);
+                                        }
+                                        KeyCode::Char('b') => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::WordBack);
+                                        }
+                                        KeyCode::Char('0') => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Head);
+                                        }
+                                        KeyCode::Char('$') => {
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+                                        }
+                                        KeyCode::Char('g') => {
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::Top);
+                                        }
+                                        KeyCode::Char('G') => {
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Bottom);
+                                        }
+                                        KeyCode::Char('x') => {
+                                            app.textarea.delete_char();
+                                        }
+                                        KeyCode::Char('d') => {
+                                            app.textarea.delete_line_by_head();
+                                            app.textarea.delete_line_by_end();
+                                            app.textarea.delete_newline();
+                                        }
+                                        KeyCode::Char('y') => {
+                                            // Yank current line
+                                            app.textarea
+                                                .move_cursor(tui_textarea::CursorMove::Head);
+                                            app.textarea.start_selection();
+                                            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+                                            app.textarea.copy();
+                                            app.textarea.cancel_selection();
+                                        }
+                                        KeyCode::Char('p') => {
+                                            app.textarea.paste();
+                                        }
+                                        KeyCode::Char('u') => {
+                                            app.textarea.undo();
+                                        }
+                                        KeyCode::Char('r')
+                                            if key.modifiers == KeyModifiers::CONTROL =>
+                                        {
+                                            app.textarea.redo();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.cancel_edit();
+                                            app.vim_mode = VimMode::Normal;
+                                        }
+                                        KeyCode::Char('s')
+                                            if key.modifiers == KeyModifiers::CONTROL =>
+                                        {
+                                            app.save_edit();
+                                            app.vim_mode = VimMode::Normal;
+                                        }
+                                        _ => {}
                                     }
-                                    KeyCode::Char('a') => {
-                                        app.vim_mode = VimMode::Insert;
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
-                                    }
-                                    KeyCode::Char('A') => {
-                                        app.vim_mode = VimMode::Insert;
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                                    }
-                                    KeyCode::Char('I') => {
-                                        app.vim_mode = VimMode::Insert;
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-                                    }
-                                    KeyCode::Char('o') => {
-                                        app.vim_mode = VimMode::Insert;
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                                        app.textarea.insert_newline();
-                                    }
-                                    KeyCode::Char('O') => {
-                                        app.vim_mode = VimMode::Insert;
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-                                        app.textarea.insert_newline();
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Up);
-                                    }
-                                    KeyCode::Char('v') => {
-                                        app.vim_mode = VimMode::Visual;
-                                        app.textarea.start_selection();
-                                    }
-                                    KeyCode::Char('h') | KeyCode::Left => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Back);
-                                    }
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Down);
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Up);
-                                    }
-                                    KeyCode::Char('l') | KeyCode::Right => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
-                                    }
-                                    KeyCode::Char('w') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::WordForward);
-                                    }
-                                    KeyCode::Char('b') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::WordBack);
-                                    }
-                                    KeyCode::Char('0') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-                                    }
-                                    KeyCode::Char('$') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                                    }
-                                    KeyCode::Char('g') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Top);
-                                    }
-                                    KeyCode::Char('G') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
-                                    }
-                                    KeyCode::Char('x') => {
-                                        app.textarea.delete_char();
-                                    }
-                                    KeyCode::Char('d') => {
-                                        app.textarea.delete_line_by_head();
-                                        app.textarea.delete_line_by_end();
-                                        app.textarea.delete_newline();
-                                    }
-                                    KeyCode::Char('y') => {
-                                        // Yank current line
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-                                        app.textarea.start_selection();
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                                        app.textarea.copy();
-                                        app.textarea.cancel_selection();
-                                    }
-                                    KeyCode::Char('p') => {
-                                        app.textarea.paste();
-                                    }
-                                    KeyCode::Char('u') => {
-                                        app.textarea.undo();
-                                    }
-                                    KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-                                        app.textarea.redo();
-                                    }
-                                    KeyCode::Esc => {
-                                        app.cancel_edit();
-                                        app.vim_mode = VimMode::Normal;
-                                    }
-                                    KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
-                                        app.save_edit();
-                                        app.vim_mode = VimMode::Normal;
-                                    }
-                                    _ => {}
                                 }
-                            }
-                            VimMode::Insert => {
-                                match key.code {
+                                VimMode::Insert => match key.code {
                                     KeyCode::Esc => {
                                         app.vim_mode = VimMode::Normal;
                                     }
-                                    KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                                    KeyCode::Char('s')
+                                        if key.modifiers == KeyModifiers::CONTROL =>
+                                    {
                                         app.save_edit();
                                         app.vim_mode = VimMode::Normal;
                                     }
@@ -1184,10 +1216,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         let input = Input::from(key);
                                         app.textarea.input(input);
                                     }
-                                }
-                            }
-                            VimMode::Visual => {
-                                match key.code {
+                                },
+                                VimMode::Visual => match key.code {
                                     KeyCode::Esc => {
                                         app.textarea.cancel_selection();
                                         app.vim_mode = VimMode::Normal;
@@ -1205,10 +1235,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
                                     }
                                     KeyCode::Char('w') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::WordForward);
+                                        app.textarea
+                                            .move_cursor(tui_textarea::CursorMove::WordForward);
                                     }
                                     KeyCode::Char('b') => {
-                                        app.textarea.move_cursor(tui_textarea::CursorMove::WordBack);
+                                        app.textarea
+                                            .move_cursor(tui_textarea::CursorMove::WordBack);
                                     }
                                     KeyCode::Char('0') => {
                                         app.textarea.move_cursor(tui_textarea::CursorMove::Head);
@@ -1231,19 +1263,20 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         app.textarea.cut();
                                         app.vim_mode = VimMode::Normal;
                                     }
-                                    KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                                    KeyCode::Char('s')
+                                        if key.modifiers == KeyModifiers::CONTROL =>
+                                    {
                                         app.save_edit();
                                         app.textarea.cancel_selection();
                                         app.vim_mode = VimMode::Normal;
                                     }
                                     _ => {}
-                                }
+                                },
                             }
+                            app.update_editor_block();
                         }
-                        app.update_editor_block();
                     }
                 }
-            }
             }
             _ => {}
         }
@@ -1376,7 +1409,10 @@ fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Update list state selection based on visible notes
     let mut list_state = ListState::default();
-    if let Some(pos) = visible_notes.iter().position(|(i, _)| *i == app.selected_note) {
+    if let Some(pos) = visible_notes
+        .iter()
+        .position(|(i, _)| *i == app.selected_note)
+    {
         list_state.select(Some(pos));
     }
 
@@ -1487,7 +1523,10 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
             if let Some(&(_, '*')) = chars.peek() {
                 // Found **, look for closing **
                 if i > current_start {
-                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.text)));
+                    spans.push(Span::styled(
+                        &text[current_start..i],
+                        Style::default().fg(theme.text),
+                    ));
                 }
                 chars.next(); // consume second *
                 let bold_start = i + 2;
@@ -1520,7 +1559,10 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
         // Check for `code`
         if c == '`' {
             if i > current_start {
-                spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.text)));
+                spans.push(Span::styled(
+                    &text[current_start..i],
+                    Style::default().fg(theme.text),
+                ));
             }
             let code_start = i + 1;
             let mut code_end = None;
@@ -1548,7 +1590,10 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
 
     // Add remaining text
     if current_start < text.len() {
-        spans.push(Span::styled(&text[current_start..], Style::default().fg(theme.text)));
+        spans.push(Span::styled(
+            &text[current_start..],
+            Style::default().fg(theme.text),
+        ));
     }
 
     if spans.is_empty() {
@@ -1579,9 +1624,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
             Span::styled(
                 line.trim_start_matches("##### "),
-                Style::default()
-                    .fg(theme.teal)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.teal).add_modifier(Modifier::BOLD),
             ),
         ])
     } else if line.starts_with("#### ") {
@@ -1627,9 +1670,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled("◆ ", Style::default().fg(theme.blue)),
             Span::styled(
                 line.trim_start_matches("# ").to_uppercase(),
-                Style::default()
-                    .fg(theme.blue)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.blue).add_modifier(Modifier::BOLD),
             ),
         ])
     } else if line.starts_with("- ") {
@@ -1638,7 +1679,10 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
             Span::styled("• ", Style::default().fg(theme.mauve)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme));
+        spans.extend(parse_inline_formatting(
+            line.trim_start_matches("- "),
+            theme,
+        ));
         Line::from(spans)
     } else if line.starts_with("> ") {
         // Blockquote
@@ -1647,7 +1691,9 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled("┃ ", Style::default().fg(theme.overlay0)),
             Span::styled(
                 line.trim_start_matches("> "),
-                Style::default().fg(theme.subtext0).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(theme.subtext0)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ])
     } else if line == "---" || line == "***" || line == "___" {
@@ -1662,13 +1708,17 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
             Span::styled("• ", Style::default().fg(theme.mauve)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme));
+        spans.extend(parse_inline_formatting(
+            line.trim_start_matches("* "),
+            theme,
+        ));
         Line::from(spans)
     } else {
         // Regular text lines (including numbered lists)
-        let mut spans = vec![
-            Span::styled(cursor_indicator, Style::default().fg(theme.peach)),
-        ];
+        let mut spans = vec![Span::styled(
+            cursor_indicator,
+            Style::default().fg(theme.peach),
+        )];
         spans.extend(parse_inline_formatting(line, theme));
         Line::from(spans)
     };
@@ -1720,7 +1770,13 @@ fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area: Rect, is_c
     f.render_widget(paragraph, area);
 }
 
-fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool) {
+fn render_inline_image_with_cursor(
+    f: &mut Frame,
+    app: &mut App,
+    path: &str,
+    area: Rect,
+    is_cursor: bool,
+) {
     // Check if we need to load a new image
     let need_load = match &app.current_image {
         Some(state) => state.path != path,
@@ -1790,8 +1846,11 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
         }
     } else {
         // Show placeholder if image couldn't be loaded
-        let placeholder = Paragraph::new("  [Image not found]")
-            .style(Style::default().fg(theme.red).add_modifier(Modifier::ITALIC));
+        let placeholder = Paragraph::new("  [Image not found]").style(
+            Style::default()
+                .fg(theme.red)
+                .add_modifier(Modifier::ITALIC),
+        );
         f.render_widget(placeholder, inner_area);
     }
 }
@@ -1900,20 +1959,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let mode = Span::styled(
         format!(" {} ", mode_indicator),
-        Style::default()
-            .fg(theme.crust)
-            .bg(theme.peach),
+        Style::default().fg(theme.crust).bg(theme.peach),
     );
 
-    let file_path = Span::styled(
-        format!(" {} ", note_path),
-        Style::default().fg(theme.text),
-    );
+    let file_path = Span::styled(format!(" {} ", note_path), Style::default().fg(theme.text));
 
-    let separator = Span::styled(
-        " │ ",
-        Style::default().fg(theme.surface2),
-    );
+    let separator = Span::styled(" │ ", Style::default().fg(theme.surface2));
 
     let reading = Span::styled(
         format!("{} words ~{}min", word_count, reading_time),
@@ -1922,9 +1973,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let progress = Span::styled(
         format!(" {}% ", percentage),
-        Style::default()
-            .fg(theme.crust)
-            .bg(theme.mauve),
+        Style::default().fg(theme.crust).bg(theme.mauve),
     );
 
     let help_key = Span::styled(
@@ -1934,7 +1983,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Calculate spacing for justify-between layout
     let left_content = vec![logo, Span::raw(" "), mode, Span::raw(" "), file_path];
-    let right_content = vec![reading, separator.clone(), progress, Span::raw(" "), help_key];
+    let right_content = vec![
+        reading,
+        separator.clone(),
+        progress,
+        Span::raw(" "),
+        help_key,
+    ];
 
     let left_width: usize = left_content.iter().map(|s| s.content.len()).sum();
     let right_width: usize = right_content.iter().map(|s| s.content.len()).sum();
@@ -1942,12 +1997,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let padding = available_width.saturating_sub(left_width + right_width);
 
     let mut spans = left_content;
-    spans.push(Span::styled(" ".repeat(padding), Style::default().bg(theme.surface0)));
+    spans.push(Span::styled(
+        " ".repeat(padding),
+        Style::default().bg(theme.surface0),
+    ));
     spans.extend(right_content);
 
     let status_line = Line::from(spans);
-    let status_bar = Paragraph::new(status_line)
-        .style(Style::default().bg(theme.surface0));
+    let status_bar = Paragraph::new(status_line).style(Style::default().bg(theme.surface0));
 
     f.render_widget(status_bar, area);
 }
@@ -1972,42 +2029,42 @@ fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
     // Create welcome content
     let welcome_text = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "   _____ _          _               ",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  | ____| | ___ __ | |__   ___  ___ ",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  |  _| | |/ / '_ \\| '_ \\ / _ \\/ __|",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  | |___|   <| |_) | | | | (_) \\__ \\",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  |_____|_|\\_\\ .__/|_| |_|\\___/|___/",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "             |_|                    ",
-                Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "   _____ _          _               ",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  | ____| | ___ __ | |__   ___  ___ ",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  |  _| | |/ / '_ \\| '_ \\ / _ \\/ __|",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  | |___|   <| |_) | | | | (_) \\__ \\",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  |_____|_|\\_\\ .__/|_| |_|\\___/|___/",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "             |_|                    ",
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(Span::styled(
             "A lightweight markdown research tool",
@@ -2037,7 +2094,9 @@ fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
         Line::from(""),
         Line::from(Span::styled(
             "Press Enter or Space to continue",
-            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
 
@@ -2076,7 +2135,9 @@ fn render_onboarding_dialog(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(Span::styled(
             "Welcome to Ekphos!",
-            Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.lavender)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -2092,7 +2153,9 @@ fn render_onboarding_dialog(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(Span::styled(
             "Press Enter to confirm",
-            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
 
@@ -2142,7 +2205,9 @@ fn render_create_note_dialog(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(Span::styled(
             "Enter: Create  |  Esc: Cancel",
-            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
 
@@ -2177,7 +2242,8 @@ fn render_delete_confirm_dialog(f: &mut Frame, app: &App) {
     // Clear the area behind the dialog
     f.render_widget(Clear, dialog_area);
 
-    let note_name = app.current_note()
+    let note_name = app
+        .current_note()
         .map(|n| n.title.as_str())
         .unwrap_or("this note");
 
@@ -2188,14 +2254,13 @@ fn render_delete_confirm_dialog(f: &mut Frame, app: &App) {
             Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            note_name,
-            Style::default().fg(theme.text),
-        )),
+        Line::from(Span::styled(note_name, Style::default().fg(theme.text))),
         Line::from(""),
         Line::from(Span::styled(
             "y: Yes  |  n: No",
-            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
 
@@ -2232,7 +2297,9 @@ fn render_help_dialog(f: &mut Frame, app: &App) {
 
     let key_style = Style::default().fg(theme.peach);
     let desc_style = Style::default().fg(theme.subtext0);
-    let header_style = Style::default().fg(theme.lavender).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(theme.lavender)
+        .add_modifier(Modifier::BOLD);
 
     let content = vec![
         Line::from(""),
@@ -2310,7 +2377,9 @@ fn render_help_dialog(f: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(Span::styled(
             "Press Esc or ? to close",
-            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
         )),
     ];
 

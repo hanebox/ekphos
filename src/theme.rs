@@ -77,8 +77,8 @@ impl Config {
         let config_path = Self::config_path();
         if !config_path.exists() {
             let default_config = Self::default();
-            let toml_string = toml::to_string_pretty(&default_config)
-                .unwrap_or_else(|_| String::new());
+            let toml_string =
+                toml::to_string_pretty(&default_config).unwrap_or_else(|_| String::new());
             fs::write(&config_path, toml_string)?;
         }
         Ok(())
@@ -89,8 +89,7 @@ impl Config {
         fs::create_dir_all(&config_dir)?;
 
         let config_path = Self::config_path();
-        let toml_string = toml::to_string_pretty(self)
-            .unwrap_or_else(|_| String::new());
+        let toml_string = toml::to_string_pretty(self).unwrap_or_else(|_| String::new());
         fs::write(&config_path, toml_string)?;
         Ok(())
     }
