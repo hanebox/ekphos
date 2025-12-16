@@ -2,7 +2,7 @@
 # A lightweight, terminal-based markdown research tool
 
 BINARY_NAME := ekphos
-VERSION := 0.1.0
+VERSION := 0.2.0
 BUILD_DIR := target
 RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug

@@ -82,7 +82,7 @@ Configuration is stored in `~/.config/ekphos/config.toml`.
 ```toml
 # General settings
 theme = "catppuccin-mocha"
-notes_dir = "~/notes"
+notes_dir = "~/Documents/ekphos"
 
 # Keybinds
 [keybinds]
@@ -151,6 +151,13 @@ Use `Tab` to switch between panels.
 3. Press `Enter` to confirm
 
 Notes are stored as `.md` files in your configured notes directory.
+
+### Renaming Notes
+
+1. Select the note in the sidebar
+2. Press `r` to rename
+3. Edit the note name (pre-filled with current name)
+4. Press `Enter` to confirm or `Esc` to cancel
 
 ### Deleting Notes
 
@@ -253,6 +260,7 @@ The outline panel shows all headings in your note:
 | `Tab`    | Switch focus                 |
 | `/`      | Search notes                 |
 | `n`      | New note                     |
+| `r`      | Rename note                  |
 | `d`      | Delete note                  |
 | `e`      | Edit mode                    |
 | `Esc`    | Exit edit mode / Cancel      |
