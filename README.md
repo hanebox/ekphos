@@ -275,15 +275,25 @@ The outline panel shows all headings in your note:
 
 Ekphos is open source and contributions are welcome.
 
+### Development Setup
+
 ```bash
 git clone https://github.com/hanebox/ekphos.git
 cd ekphos
 make run
 ```
 
-## License
+### Branch Strategy
 
-MIT
+- `main` - Development branch
+- `release` - Stable release branch
+
+### Workflow
+
+1. Fork the repository
+2. Create a feature branch from `main`
+3. Make your changes
+4. Submit a PR to the `main` branch
 
 ## Disclaimer
 
@@ -291,4 +301,8 @@ This project is in an early development stage, so there will be frequent unexpec
 
 ## Socials
 
-We don't have socials yet, but things are open for discussion, you can DM hanebox via telegram here: https://t.me/havernut
+We don't have socials yet, but things are open for discussion, go create a discussion in this repo for how socials should be done
+
+## License
+
+MIT
