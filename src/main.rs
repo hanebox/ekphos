@@ -47,6 +47,7 @@ enum DialogState {
     Onboarding,
     CreateNote,
     DeleteConfirm,
+    RenameNote,
     Help,
 }
 
@@ -453,6 +454,49 @@ Press `q` to quit. Happy note-taking!"#.to_string();
         } else {
             Some(self.selected_note)
         });
+
+        self.update_outline();
+        self.update_content_items();
+    }
+
+    fn rename_note(&mut self, new_name: &str) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return;
+        }
+
+        if self.notes.is_empty() {
+            return;
+        }
+
+        let notes_path = self.config.notes_path();
+        let new_file_path = notes_path.join(format!("{}.md", new_name));
+
+        if let Some(note) = self.notes.get(self.selected_note) {
+            if note.title == new_name {
+                return; 
+            }
+            if new_file_path.exists() {
+                return; 
+            }
+        }
+
+        if let Some(note) = self.notes.get_mut(self.selected_note) {
+            if let Some(ref old_path) = note.file_path {
+                if fs::rename(old_path, &new_file_path).is_ok() {
+                    note.title = new_name.to_string();
+                    note.file_path = Some(new_file_path);
+                }
+            }
+        }
+
+        let new_name_owned = new_name.to_string();
+        self.notes.sort_by(|a, b| a.title.cmp(&b.title));
+
+        if let Some(idx) = self.notes.iter().position(|n| n.title == new_name_owned) {
+            self.selected_note = idx;
+            self.list_state.select(Some(idx));
+        }
 
         self.update_outline();
         self.update_content_items();
@@ -937,6 +981,28 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                         continue;
                     }
+                    DialogState::RenameNote => {
+                        match key.code {
+                            KeyCode::Enter => {
+                                let new_name = app.input_buffer.clone();
+                                app.rename_note(&new_name);
+                                app.input_buffer.clear();
+                                app.dialog = DialogState::None;
+                            }
+                            KeyCode::Esc => {
+                                app.input_buffer.clear();
+                                app.dialog = DialogState::None;
+                            }
+                            KeyCode::Char(c) => {
+                                app.input_buffer.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                app.input_buffer.pop();
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     DialogState::Help => {
                         match key.code {
                             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -1027,6 +1093,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::Char('d') => {
                                 if !app.notes.is_empty() {
                                     app.dialog = DialogState::DeleteConfirm;
+                                }
+                            }
+                            KeyCode::Char('r') => {
+                                if !app.notes.is_empty() {
+                                    if let Some(note) = app.current_note() {
+                                        app.input_buffer = note.title.clone();
+                                    }
+                                    app.dialog = DialogState::RenameNote;
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
@@ -1308,6 +1382,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         DialogState::Onboarding => render_onboarding_dialog(f, app),
         DialogState::CreateNote => render_create_note_dialog(f, app),
         DialogState::DeleteConfirm => render_delete_confirm_dialog(f, app),
+        DialogState::RenameNote => render_rename_note_dialog(f, app),
         DialogState::Help => render_help_dialog(f, app),
         DialogState::None => {
             // Render welcome dialog on top if active
@@ -2287,13 +2362,61 @@ fn render_delete_confirm_dialog(f: &mut Frame, app: &App) {
     f.render_widget(dialog, dialog_area);
 }
 
+fn render_rename_note_dialog(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let theme = &app.theme;
+
+    let dialog_width = 50.min(area.width.saturating_sub(4));
+    let dialog_height = 9.min(area.height.saturating_sub(4));
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    f.render_widget(Clear, dialog_area);
+
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter new name:",
+            Style::default().fg(theme.text),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", Style::default().fg(theme.peach)),
+            Span::styled(&app.input_buffer, Style::default().fg(theme.text)),
+            Span::styled("█", Style::default().fg(theme.peach)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter: Rename  |  Esc: Cancel",
+            Style::default().fg(theme.overlay0).add_modifier(Modifier::ITALIC),
+        )),
+    ];
+
+    let dialog = Paragraph::new(content)
+        .block(
+            Block::default()
+                .title(" Rename Note ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.yellow))
+                .style(Style::default().bg(theme.base)),
+        )
+        .alignment(Alignment::Center);
+
+    f.render_widget(dialog, dialog_area);
+}
+
 fn render_help_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
     let theme = &app.theme;
 
     // Calculate centered dialog area
     let dialog_width = 56.min(area.width.saturating_sub(4));
-    let dialog_height = 29.min(area.height.saturating_sub(2));
+    let dialog_height = 30.min(area.height.saturating_sub(2));
 
     let dialog_area = Rect {
         x: (area.width.saturating_sub(dialog_width)) / 2,
@@ -2329,6 +2452,10 @@ fn render_help_dialog(f: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("  n        ", key_style),
             Span::styled("New note", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  r        ", key_style),
+            Span::styled("Rename note", desc_style),
         ]),
         Line::from(vec![
             Span::styled("  d        ", key_style),
