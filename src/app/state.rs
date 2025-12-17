@@ -809,9 +809,13 @@ Press `q` to quit. Happy note-taking!"#.to_string();
     pub fn enter_edit_mode(&mut self) {
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
+            let target_row = self.content_cursor.min(lines.len().saturating_sub(1));
             self.textarea = TextArea::new(lines);
             self.vim_mode = VimMode::Normal;
             self.editor_scroll_top = 0;
+            for _ in 0..target_row {
+                self.textarea.move_cursor(tui_textarea::CursorMove::Down);
+            }
             self.update_editor_block();
             self.mode = Mode::Edit;
             self.focus = Focus::Content;
@@ -873,6 +877,7 @@ Press `q` to quit. Happy note-taking!"#.to_string();
     }
 
     pub fn save_edit(&mut self) {
+        let (cursor_row, _) = self.textarea.cursor();
         if let Some(note) = self.notes.get_mut(self.selected_note) {
             note.content = self.textarea.lines().join("\n");
             // Save to file
@@ -883,10 +888,13 @@ Press `q` to quit. Happy note-taking!"#.to_string();
         self.mode = Mode::Normal;
         self.update_outline();
         self.update_content_items();
+        self.content_cursor = cursor_row.min(self.content_items.len().saturating_sub(1));
     }
 
     pub fn cancel_edit(&mut self) {
+        let (cursor_row, _) = self.textarea.cursor();
         self.mode = Mode::Normal;
+        self.content_cursor = cursor_row.min(self.content_items.len().saturating_sub(1));
     }
 }
 
