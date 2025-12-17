@@ -3,9 +3,6 @@
 debug/
 release/
 
-# Cargo
-Cargo.lock
-
 # IDE
 .idea/
 .vscode/
