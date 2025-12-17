@@ -134,7 +134,10 @@ Images can be embedded using standard markdown syntax:
 
 ```
 ![alt text](path/to/image.png)
+![remote](https://example.com/image.png)
 ```
+
+Both local files and remote URLs (http/https) are supported.
 
 Press `Enter` or `o` on an image line to open it in your system viewer.
 
@@ -1111,8 +1114,10 @@ impl<'a> App<'a> {
 
     pub fn open_current_image(&self) {
         if let Some(path) = self.current_item_is_image() {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
+            let is_url = path.starts_with("http://") || path.starts_with("https://");
+            let should_open = is_url || PathBuf::from(path).exists();
+
+            if should_open {
                 #[cfg(target_os = "macos")]
                 let _ = Command::new("open").arg(path).spawn();
                 #[cfg(target_os = "linux")]

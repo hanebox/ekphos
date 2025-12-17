@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::PathBuf;
 
 use ratatui::{
@@ -491,9 +492,14 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
     };
 
     if need_load {
-        // Load image from cache or disk
+        // Load image from cache, disk, or remote URL
         let img = if let Some(img) = app.image_cache.get(path) {
             Some(img.clone())
+        } else if path.starts_with("http://") || path.starts_with("https://") {
+            fetch_remote_image(path).map(|img| {
+                app.image_cache.insert(path.to_string(), img.clone());
+                img
+            })
         } else {
             let path_buf = PathBuf::from(path);
             if path_buf.exists() {
@@ -557,4 +563,25 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             .style(Style::default().fg(theme.red).add_modifier(Modifier::ITALIC));
         f.render_widget(placeholder, inner_area);
     }
+}
+
+fn fetch_remote_image(url: &str) -> Option<image::DynamicImage> {
+    let response = ureq::get(url)
+        .set("User-Agent", "ekphos/0.4")
+        .call()
+        .ok()?;
+
+    let content_type = response
+        .header("Content-Type")
+        .unwrap_or("")
+        .to_lowercase();
+
+    if !content_type.starts_with("image/") {
+        return None;
+    }
+
+    let mut bytes = Vec::new();
+    response.into_reader().take(10 * 1024 * 1024).read_to_end(&mut bytes).ok()?;
+
+    image::load_from_memory(&bytes).ok()
 }

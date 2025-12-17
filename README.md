@@ -325,7 +325,10 @@ Use standard markdown image syntax:
 ![alt text](path/to/image.png)
 ![screenshot](~/pictures/screenshot.png)
 ![diagram](./diagrams/flow.png)
+![remote](https://example.com/image.png)
 ```
+
+Both local files and remote URLs (http/https) are supported.
 
 Supported formats: PNG, JPEG, GIF, WebP, BMP
 
