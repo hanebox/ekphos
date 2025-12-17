@@ -35,7 +35,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 match app.focus {
                     Focus::Sidebar => app.next_sidebar_item(),
                     Focus::Content => {
-                        app.next_content_line();
+                        if app.floating_cursor_mode {
+                            app.floating_move_down();
+                        } else {
+                            app.next_content_line();
+                        }
                         app.sync_outline_to_content();
                     }
                     Focus::Outline => app.next_outline(),
@@ -45,7 +49,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 match app.focus {
                     Focus::Sidebar => app.previous_sidebar_item(),
                     Focus::Content => {
-                        app.previous_content_line();
+                        if app.floating_cursor_mode {
+                            app.floating_move_up();
+                        } else {
+                            app.previous_content_line();
+                        }
                         app.sync_outline_to_content();
                     }
                     Focus::Outline => app.previous_outline(),
@@ -506,7 +514,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 Focus::Sidebar => app.next_sidebar_item(),
                 Focus::Outline => app.next_outline(),
                 Focus::Content => {
-                    app.next_content_line();
+                    if app.floating_cursor_mode {
+                        app.floating_move_down();
+                    } else {
+                        app.next_content_line();
+                    }
                     app.sync_outline_to_content();
                 }
             }
@@ -516,7 +528,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 Focus::Sidebar => app.previous_sidebar_item(),
                 Focus::Outline => app.previous_outline(),
                 Focus::Content => {
-                    app.previous_content_line();
+                    if app.floating_cursor_mode {
+                        app.floating_move_up();
+                    } else {
+                        app.previous_content_line();
+                    }
                     app.sync_outline_to_content();
                 }
             }
@@ -548,6 +564,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char(' ') => {
             if app.focus == Focus::Content {
                 app.toggle_current_task();
+            }
+        }
+        KeyCode::Char('J') | KeyCode::Char('K') => {
+            if app.focus == Focus::Content {
+                app.toggle_floating_cursor();
             }
         }
         _ => {}

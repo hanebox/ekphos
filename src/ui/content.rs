@@ -16,16 +16,19 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focus == Focus::Content && app.mode == Mode::Normal;
     let theme = &app.theme;
 
-    let border_style = if is_focused {
+    let border_style = if app.floating_cursor_mode {
+        Style::default().fg(theme.yellow)
+    } else if is_focused {
         Style::default().fg(theme.bright_blue)
     } else {
         Style::default().fg(theme.bright_black)
     };
 
+    let floating_indicator = if app.floating_cursor_mode { " [FLOAT] " } else { "" };
     let title = app
         .current_note()
-        .map(|n| format!(" {} ", n.title))
-        .unwrap_or_else(|| " Content ".to_string());
+        .map(|n| format!(" {}{} ", n.title, floating_indicator))
+        .unwrap_or_else(|| format!(" Content{} ", floating_indicator));
 
     let block = Block::default()
         .title(title)
@@ -64,36 +67,90 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    // Calculate scroll offset accounting for variable item heights
-    // We need to ensure the cursor line is visible
-    let mut scroll_offset = 0;
-    let mut cumulative_height = 0u16;
+    let scroll_offset = if app.floating_cursor_mode {
+        // FLOATING MODE: cursor moves freely, view only scrolls when cursor goes out of bounds
+        let base_offset = if app.content_scroll_offset > 0 {
+            app.content_scroll_offset.saturating_sub(1)
+        } else {
+            0
+        };
 
-    for (i, item) in app.content_items.iter().enumerate() {
-        let item_height = get_item_height(item);
-        if i <= cursor {
-            cumulative_height += item_height;
-        }
-        if i == cursor {
-            break;
-        }
-    }
-
-    // If cursor would be below visible area, find scroll offset
-    if cumulative_height > inner_area.height {
-        let mut height_so_far = 0u16;
-        for (i, item) in app.content_items.iter().enumerate() {
-            if i > cursor {
-                break;
-            }
+        let mut height_from_offset = 0u16;
+        let mut last_visible_idx = base_offset;
+        for (i, item) in app.content_items.iter().enumerate().skip(base_offset) {
             let item_height = get_item_height(item);
-            height_so_far += item_height;
-            if cumulative_height - height_so_far <= inner_area.height {
-                scroll_offset = i + 1;
+            if height_from_offset + item_height > inner_area.height {
                 break;
             }
+            height_from_offset += item_height;
+            last_visible_idx = i;
         }
-    }
+
+        if cursor < base_offset {
+            app.content_scroll_offset = cursor + 1;
+            cursor
+        } else if cursor > last_visible_idx {
+            let mut cumulative_height = 0u16;
+            for (i, item) in app.content_items.iter().enumerate() {
+                if i <= cursor {
+                    cumulative_height += get_item_height(item);
+                }
+                if i == cursor {
+                    break;
+                }
+            }
+
+            let mut new_offset = 0;
+            let mut height_so_far = 0u16;
+            for (i, item) in app.content_items.iter().enumerate() {
+                if i > cursor {
+                    break;
+                }
+                height_so_far += get_item_height(item);
+                if cumulative_height - height_so_far <= inner_area.height {
+                    new_offset = i + 1;
+                    break;
+                }
+            }
+            app.content_scroll_offset = new_offset + 1;
+            new_offset
+        } else {
+            base_offset
+        }
+    } else {
+        // NORMAL MODE: cursor moves freely in first page, then stays at bottom
+
+        let mut first_page_height = 0u16;
+        let mut first_page_last_idx = 0;
+        for (i, item) in app.content_items.iter().enumerate() {
+            let item_height = get_item_height(item);
+            if first_page_height + item_height > inner_area.height {
+                break;
+            }
+            first_page_height += item_height;
+            first_page_last_idx = i;
+        }
+
+        if cursor <= first_page_last_idx {
+            app.content_scroll_offset = 1;
+            0
+        } else {
+            let mut height_from_cursor = 0u16;
+            let mut first_visible_idx = cursor;
+
+            for i in (0..=cursor).rev() {
+                let item_height = get_item_height(&app.content_items[i]);
+                if height_from_cursor + item_height > inner_area.height {
+                    break;
+                }
+                height_from_cursor += item_height;
+                first_visible_idx = i;
+            }
+
+            app.content_scroll_offset = first_visible_idx + 1;
+            first_visible_idx
+        }
+    };
 
     let mut constraints: Vec<Constraint> = Vec::new();
     let mut visible_indices: Vec<usize> = Vec::new();

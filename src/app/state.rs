@@ -30,6 +30,7 @@ Use `Tab` to switch between panels.
 ## Navigation
 
 - `j/k` or Arrow keys: Navigate up/down
+- `J/K` (Shift): Toggle floating cursor mode (view stays fixed)
 - `Tab`: Switch focus between panels
 - `Enter`: Jump to heading (in Outline) or open image (in Content)
 - `/`: Search notes (in Sidebar)
@@ -284,6 +285,8 @@ pub struct App<'a> {
     pub outline_state: ListState,
     pub vim_mode: VimMode,
     pub content_cursor: usize,
+    pub content_scroll_offset: usize,
+    pub floating_cursor_mode: bool,
     pub content_items: Vec<ContentItem>,
     pub theme: Theme,
     pub config: Config,
@@ -382,6 +385,8 @@ impl<'a> App<'a> {
             outline_state: ListState::default(),
             vim_mode: VimMode::Normal,
             content_cursor: 0,
+            content_scroll_offset: 0,
+            floating_cursor_mode: false,
             content_items: Vec::new(),
             theme,
             config,
@@ -1013,6 +1018,30 @@ impl<'a> App<'a> {
     }
 
     pub fn previous_content_line(&mut self) {
+        if self.content_cursor > 0 {
+            self.content_cursor -= 1;
+        }
+    }
+
+    pub fn toggle_floating_cursor(&mut self) {
+        self.floating_cursor_mode = !self.floating_cursor_mode;
+    }
+
+    pub fn floating_move_down(&mut self) {
+        if self.content_items.is_empty() || !self.floating_cursor_mode {
+            return;
+        }
+
+        if self.content_cursor < self.content_items.len() - 1 {
+            self.content_cursor += 1;
+        }
+    }
+
+    pub fn floating_move_up(&mut self) {
+        if !self.floating_cursor_mode {
+            return;
+        }
+
         if self.content_cursor > 0 {
             self.content_cursor -= 1;
         }

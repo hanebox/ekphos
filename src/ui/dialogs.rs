@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -714,9 +714,9 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
     let theme = &app.theme;
 
-    // Calculate centered dialog area
-    let dialog_width = 62.min(area.width.saturating_sub(4));
-    let dialog_height = 44.min(area.height.saturating_sub(2));
+    // Calculate centered dialog area - wider for two columns
+    let dialog_width = 90.min(area.width.saturating_sub(4));
+    let dialog_height = 32.min(area.height.saturating_sub(2));
 
     let dialog_area = Rect {
         x: (area.width.saturating_sub(dialog_width)) / 2,
@@ -728,159 +728,176 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
     // Clear the area behind the dialog
     f.render_widget(Clear, dialog_area);
 
+    let block = Block::default()
+        .title(" Help - Keybindings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.bright_blue))
+        .style(Style::default().bg(theme.background));
+
+    let inner_area = block.inner(dialog_area);
+    f.render_widget(block, dialog_area);
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner_area);
+
     let key_style = Style::default().fg(theme.yellow);
     let desc_style = Style::default().fg(theme.white);
     let header_style = Style::default().fg(theme.bright_blue).add_modifier(Modifier::BOLD);
 
-    let content = vec![
+    let left_content = vec![
         Line::from(""),
-        Line::from(Span::styled("  Global", header_style)),
+        Line::from(Span::styled(" Global", header_style)),
         Line::from(vec![
-            Span::styled("  j/k        ", key_style),
+            Span::styled(" j/k       ", key_style),
             Span::styled("Navigate up/down", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Tab        ", key_style),
-            Span::styled("Switch focus (Sidebar → Content → Outline)", desc_style),
+            Span::styled(" Tab       ", key_style),
+            Span::styled("Switch focus", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Shift+Tab  ", key_style),
+            Span::styled(" Shift+Tab ", key_style),
             Span::styled("Switch focus (reverse)", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Enter/o    ", key_style),
-            Span::styled("Open image / Jump to heading", desc_style),
+            Span::styled(" Enter/o   ", key_style),
+            Span::styled("Open / Jump to heading", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  ?          ", key_style),
+            Span::styled(" ?         ", key_style),
             Span::styled("Show this help", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  q          ", key_style),
+            Span::styled(" q         ", key_style),
             Span::styled("Quit", desc_style),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  Sidebar (Notes)", header_style)),
+        Line::from(Span::styled(" Sidebar", header_style)),
         Line::from(vec![
-            Span::styled("  n          ", key_style),
+            Span::styled(" n         ", key_style),
             Span::styled("Create new note", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  N          ", key_style),
+            Span::styled(" N         ", key_style),
             Span::styled("Create new folder", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  Enter      ", key_style),
-            Span::styled("Toggle folder / Open note", desc_style),
+            Span::styled(" Enter     ", key_style),
+            Span::styled("Toggle folder / Open", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  r          ", key_style),
-            Span::styled("Rename note/folder", desc_style),
+            Span::styled(" r         ", key_style),
+            Span::styled("Rename", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  d          ", key_style),
-            Span::styled("Delete note/folder", desc_style),
+            Span::styled(" d         ", key_style),
+            Span::styled("Delete", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  e          ", key_style),
+            Span::styled(" e         ", key_style),
             Span::styled("Edit note", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  /          ", key_style),
+            Span::styled(" /         ", key_style),
             Span::styled("Search notes", desc_style),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  Edit Mode - Normal", header_style)),
+        Line::from(Span::styled(" Content View", header_style)),
         Line::from(vec![
-            Span::styled("  i          ", key_style),
-            Span::styled("Insert before cursor", desc_style),
+            Span::styled(" j/k       ", key_style),
+            Span::styled("Navigate lines", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  a          ", key_style),
-            Span::styled("Insert after cursor", desc_style),
+            Span::styled(" Shift+J/K ", key_style),
+            Span::styled("Toggle floating cursor", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("  I/A        ", key_style),
-            Span::styled("Insert at line start/end", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  o/O        ", key_style),
-            Span::styled("New line below/above", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  h/l        ", key_style),
-            Span::styled("Move cursor left/right", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  w/b        ", key_style),
-            Span::styled("Move by word forward/backward", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  0/$        ", key_style),
-            Span::styled("Move to line start/end", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  g/G        ", key_style),
-            Span::styled("Move to file top/bottom", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  v          ", key_style),
-            Span::styled("Enter visual mode (select text)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  x          ", key_style),
-            Span::styled("Delete character", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  dd         ", key_style),
-            Span::styled("Delete line (d → d → d to confirm)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  dw         ", key_style),
-            Span::styled("Delete word forward (d → w → d)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  db         ", key_style),
-            Span::styled("Delete word backward (d → b → d)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  y/p        ", key_style),
-            Span::styled("Yank (copy) / Paste", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  u          ", key_style),
-            Span::styled("Undo", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+r     ", key_style),
-            Span::styled("Redo", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+s     ", key_style),
-            Span::styled("Save and exit edit mode", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc        ", key_style),
-            Span::styled("Exit edit mode (discard changes)", desc_style),
+            Span::styled(" Space     ", key_style),
+            Span::styled("Toggle task checkbox", desc_style),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Press Esc or ? to close",
-            Style::default().fg(theme.white).add_modifier(Modifier::ITALIC),
+            " Press Esc or ? to close",
+            Style::default().fg(theme.bright_black).add_modifier(Modifier::ITALIC),
         )),
     ];
 
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Help - Keybindings ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.bright_blue))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Left);
+    let right_content = vec![
+        Line::from(""),
+        Line::from(Span::styled(" Edit Mode", header_style)),
+        Line::from(vec![
+            Span::styled(" i/a       ", key_style),
+            Span::styled("Insert before/after cursor", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" I/A       ", key_style),
+            Span::styled("Insert at line start/end", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" o/O       ", key_style),
+            Span::styled("New line below/above", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" h/j/k/l   ", key_style),
+            Span::styled("Move cursor", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" w/b       ", key_style),
+            Span::styled("Move by word", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" 0/$       ", key_style),
+            Span::styled("Line start/end", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" g/G       ", key_style),
+            Span::styled("File top/bottom", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" v         ", key_style),
+            Span::styled("Visual mode (select)", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" x         ", key_style),
+            Span::styled("Delete character", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" dd        ", key_style),
+            Span::styled("Delete line", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" dw/db     ", key_style),
+            Span::styled("Delete word fwd/back", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" y/p       ", key_style),
+            Span::styled("Yank / Paste", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" u         ", key_style),
+            Span::styled("Undo", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" Ctrl+r    ", key_style),
+            Span::styled("Redo", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" Ctrl+s    ", key_style),
+            Span::styled("Save and exit", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" Esc       ", key_style),
+            Span::styled("Exit (discard)", desc_style),
+        ]),
+    ];
 
-    f.render_widget(dialog, dialog_area);
+    let left_paragraph = Paragraph::new(left_content).alignment(Alignment::Left);
+    let right_paragraph = Paragraph::new(right_content).alignment(Alignment::Left);
+
+    f.render_widget(left_paragraph, columns[0]);
+    f.render_widget(right_paragraph, columns[1]);
 }
 
 pub fn render_directory_not_found_dialog(f: &mut Frame, app: &App) {

@@ -302,16 +302,20 @@ Press `v` in normal mode to enter visual mode for text selection.
 
 ### Supported Markdown
 
-| Syntax           | Rendered As        |
-| ---------------- | ------------------ |
-| `# Heading`      | ◆ HEADING (blue)   |
-| `## Heading`     | ■ Heading (green)  |
-| `### Heading`    | ▸ Heading (yellow) |
-| `#### Heading`   | › Heading (mauve)  |
-| `##### Heading`  | Heading (teal)     |
-| `###### Heading` | _Heading_ (subtle) |
-| `- item`         | • item             |
-| `![alt](path)`   | Inline image       |
+| Syntax            | Rendered As           |
+| ----------------- | --------------------- |
+| `# Heading`       | ◆ HEADING (blue)      |
+| `## Heading`      | ■ Heading (green)     |
+| `### Heading`     | ▸ Heading (yellow)    |
+| `#### Heading`    | › Heading (mauve)     |
+| `##### Heading`   | Heading (teal)        |
+| `###### Heading`  | _Heading_ (subtle)    |
+| `- item`          | • item                |
+| `- [ ] task`      | [ ] task (unchecked)  |
+| `- [x] task`      | [x] task (checked)    |
+| `` `code` ``      | Inline code (green)   |
+| ` ``` `           | Code block            |
+| `![alt](path)`    | Inline image          |
 
 ### Adding Images
 
@@ -371,6 +375,17 @@ The outline panel shows all headings in your note:
 | `d`     | Delete note/folder           |
 | `e`     | Edit note                    |
 | `/`     | Search notes                 |
+
+### Content View
+
+| Key         | Action                                           |
+| ----------- | ------------------------------------------------ |
+| `j/k`       | Navigate lines                                   |
+| `Shift+J/K` | Toggle floating cursor mode                      |
+| `Space`     | Toggle task checkbox                             |
+| `Enter/o`   | Open image in system viewer                      |
+
+**Floating Cursor Mode**: When enabled (yellow border, `[FLOAT]` indicator), the cursor moves freely within the visible area. The view only scrolls when the cursor reaches the top or bottom edge. Toggle with `Shift+J` or `Shift+K`.
 
 ### Edit Mode
 
