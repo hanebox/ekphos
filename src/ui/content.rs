@@ -60,6 +60,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::Image(_) => 8u16,
             ContentItem::CodeLine(line) => calc_wrapped_height(line, 6),
             ContentItem::CodeFence(_) => 1u16,
+            ContentItem::TaskItem { text, .. } => calc_wrapped_height(text, 6),
         }
     };
 
@@ -138,6 +139,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
             ContentItem::CodeFence(lang) => {
                 render_code_fence(f, &app.theme, &lang, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::TaskItem { text, checked, .. } => {
+                render_task_item(f, &app.theme, &text, checked, chunks[chunk_idx], is_cursor_line);
             }
         }
     }
@@ -385,6 +389,35 @@ fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area: Rect, is_c
         Style::default().bg(theme.bright_black)
     } else {
         Style::default().bg(theme.black)
+    };
+
+    let paragraph = Paragraph::new(styled_line)
+        .style(style)
+        .wrap(Wrap { trim: false });
+    f.render_widget(paragraph, area);
+}
+
+fn render_task_item(f: &mut Frame, theme: &Theme, text: &str, checked: bool, area: Rect, is_cursor: bool) {
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let checkbox_color = if checked { theme.green } else { theme.magenta };
+    let text_style = if checked {
+        Style::default().fg(theme.bright_black).add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+
+    let styled_line = Line::from(vec![
+        Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
+        Span::styled("[", Style::default().fg(checkbox_color)),
+        Span::styled(if checked { "x" } else { " " }, Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)),
+        Span::styled("] ", Style::default().fg(checkbox_color)),
+        Span::styled(text, text_style),
+    ]);
+
+    let style = if is_cursor {
+        Style::default().bg(theme.bright_black)
+    } else {
+        Style::default()
     };
 
     let paragraph = Paragraph::new(styled_line)

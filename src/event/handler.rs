@@ -545,6 +545,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.search_query.clear();
             }
         }
+        KeyCode::Char(' ') => {
+            if app.focus == Focus::Content {
+                app.toggle_current_task();
+            }
+        }
         _ => {}
     }
     false

@@ -13,6 +13,169 @@ use tui_textarea::TextArea;
 
 use crate::theme::{Config, Theme};
 
+const WELCOME_NOTE_CONTENT: &str = r#"# Welcome to Ekphos
+
+A lightweight, fast, terminal-based markdown research tool built with Rust.
+
+## Layout
+
+Ekphos has three panels:
+
+- **Sidebar** (left): List of your notes
+- **Content** (center): Note content with markdown rendering
+- **Outline** (right): Auto-generated headings for quick navigation
+
+Use `Tab` to switch between panels.
+
+## Navigation
+
+- `j/k` or Arrow keys: Navigate up/down
+- `Tab`: Switch focus between panels
+- `Enter`: Jump to heading (in Outline) or open image (in Content)
+- `/`: Search notes (in Sidebar)
+- `?`: Show help dialog
+
+## Notes Management
+
+- `n`: Create new note
+- `d`: Delete current note
+- `e`: Enter edit mode
+
+## Edit Mode (Vim Keybindings)
+
+### Modes
+
+- `i`: Insert mode
+- `a`: Insert after cursor
+- `A`: Insert at end of line
+- `I`: Insert at start of line
+- `o`: New line below
+- `O`: New line above
+- `v`: Visual mode (select text)
+- `Esc`: Return to normal mode
+
+### Movement
+
+- `h/j/k/l`: Move cursor
+- `w/b`: Word forward/back
+- `0/$`: Line start/end
+- `gg/G`: Top/bottom of file
+
+### Editing
+
+- `x`: Delete character
+- `dd`: Delete line
+- `y`: Yank (copy) line
+- `p`: Paste
+- `u`: Undo
+- `Ctrl+r`: Redo
+- `Ctrl+s`: Save and exit edit mode
+
+## Markdown Support
+
+### Headings
+
+# Heading 1
+
+## Heading 2
+
+### Heading 3
+
+#### Heading 4
+
+##### Heading 5
+
+###### Heading 6
+
+### Lists
+
+- Bullet item one
+- Bullet item two
+- Bullet item three
+
+* Asterisk style also works
+* Like this
+
+### Task Lists
+
+Track your tasks with checkboxes! Press `Space` to toggle:
+
+- [ ] Unchecked task
+- [x] Completed task
+- [ ] Another pending task
+- [x] This one is done too
+
+### Blockquotes
+
+> This is a blockquote.
+> It can span multiple lines.
+
+### Code Blocks
+
+```rust
+fn main() {
+    println!("Hello, Ekphos!");
+}
+```
+
+```python
+def greet():
+    return "Hello from Python"
+```
+
+### Horizontal Rules
+
+---
+
+### Images
+
+Images can be embedded using standard markdown syntax:
+
+```
+![alt text](path/to/image.png)
+```
+
+Press `Enter` or `o` on an image line to open it in your system viewer.
+
+Supported formats: PNG, JPEG, GIF, WebP, BMP
+
+For inline preview, use a compatible terminal (iTerm2, Kitty, WezTerm, Sixel).
+
+## CLI Options
+
+Run from terminal:
+
+- `ekphos --help`: Show help
+- `ekphos --version`: Show version
+- `ekphos --config`: Show config file path
+- `ekphos --dir`: Show notes directory path
+
+## Configuration
+
+Config file: `~/.config/ekphos/config.toml`
+
+```toml
+notes_dir = "~/Documents/ekphos"
+
+[theme]
+name = "catppuccin-mocha"
+```
+
+## Themes
+
+Built-in themes:
+
+- catppuccin-mocha (default)
+- catppuccin-latte
+- catppuccin-frappe
+- catppuccin-macchiato
+
+Custom themes can be added to `~/.config/ekphos/themes/`
+
+---
+
+Press `q` to quit. Happy note-taking!"#;
+
 #[derive(Debug, Clone)]
 pub struct Note {
     pub title: String,
@@ -68,6 +231,7 @@ pub enum ContentItem {
     Image(String),
     CodeLine(String),
     CodeFence(String),
+    TaskItem { text: String, checked: bool, line_index: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -459,159 +623,7 @@ impl<'a> App<'a> {
     }
 
     fn create_welcome_note(&mut self) {
-        let content = r#"# Welcome to Ekphos
-
-A lightweight, fast, terminal-based markdown research tool built with Rust.
-
-## Layout
-
-Ekphos has three panels:
-
-- **Sidebar** (left): List of your notes
-- **Content** (center): Note content with markdown rendering
-- **Outline** (right): Auto-generated headings for quick navigation
-
-Use `Tab` to switch between panels.
-
-## Navigation
-
-- `j/k` or Arrow keys: Navigate up/down
-- `Tab`: Switch focus between panels
-- `Enter`: Jump to heading (in Outline) or open image (in Content)
-- `/`: Search notes (in Sidebar)
-- `?`: Show help dialog
-
-## Notes Management
-
-- `n`: Create new note
-- `d`: Delete current note
-- `e`: Enter edit mode
-
-## Edit Mode (Vim Keybindings)
-
-### Modes
-
-- `i`: Insert mode
-- `a`: Insert after cursor
-- `A`: Insert at end of line
-- `I`: Insert at start of line
-- `o`: New line below
-- `O`: New line above
-- `v`: Visual mode (select text)
-- `Esc`: Return to normal mode
-
-### Movement
-
-- `h/j/k/l`: Move cursor
-- `w/b`: Word forward/back
-- `0/$`: Line start/end
-- `gg/G`: Top/bottom of file
-
-### Editing
-
-- `x`: Delete character
-- `dd`: Delete line
-- `y`: Yank (copy) line
-- `p`: Paste
-- `u`: Undo
-- `Ctrl+r`: Redo
-- `Ctrl+s`: Save and exit edit mode
-
-## Markdown Support
-
-### Headings
-
-# Heading 1
-
-## Heading 2
-
-### Heading 3
-
-#### Heading 4
-
-##### Heading 5
-
-###### Heading 6
-
-### Lists
-
-- Bullet item one
-- Bullet item two
-- Bullet item three
-
-* Asterisk style also works
-* Like this
-
-### Blockquotes
-
-> This is a blockquote.
-> It can span multiple lines.
-
-### Code Blocks
-
-```rust
-fn main() {
-    println!("Hello, Ekphos!");
-}
-```
-
-```python
-def greet():
-    return "Hello from Python"
-```
-
-### Horizontal Rules
-
----
-
-### Images
-
-Images can be embedded using standard markdown syntax:
-
-```
-![alt text](path/to/image.png)
-```
-
-Press `Enter` or `o` on an image line to open it in your system viewer.
-
-Supported formats: PNG, JPEG, GIF, WebP, BMP
-
-For inline preview, use a compatible terminal (iTerm2, Kitty, WezTerm, Sixel).
-
-## CLI Options
-
-Run from terminal:
-
-- `ekphos --help`: Show help
-- `ekphos --version`: Show version
-- `ekphos --config`: Show config file path
-- `ekphos --dir`: Show notes directory path
-
-## Configuration
-
-Config file: `~/.config/ekphos/config.toml`
-
-```toml
-notes_dir = "~/Documents/ekphos"
-
-[theme]
-name = "catppuccin-mocha"
-```
-
-## Themes
-
-Built-in themes:
-
-- catppuccin-mocha (default)
-- catppuccin-latte
-- catppuccin-frappe
-- catppuccin-macchiato
-
-Custom themes can be added to `~/.config/ekphos/themes/`
-
----
-
-Press `q` to quit. Happy note-taking!"#.to_string();
+        let content = WELCOME_NOTE_CONTENT.to_string();
 
         let notes_path = self.config.notes_path();
         let file_path = notes_path.join("Welcome.md");
@@ -949,7 +961,7 @@ Press `q` to quit. Happy note-taking!"#.to_string();
         if let Some(content) = content {
             let mut in_code_block = false;
 
-            for line in content.lines() {
+            for (line_index, line) in content.lines().enumerate() {
                 // Check for code fence
                 if line.starts_with("```") {
                     let lang = line.trim_start_matches('`').to_string();
@@ -977,6 +989,14 @@ Press `q` to quit. Happy note-taking!"#.to_string();
                     }
                 }
 
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+                    let checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
+                    let text = trimmed[6..].to_string();
+                    self.content_items.push(ContentItem::TaskItem { text, checked, line_index });
+                    continue;
+                }
+
                 self.content_items.push(ContentItem::TextLine(line.to_string()));
             }
         }
@@ -995,6 +1015,41 @@ Press `q` to quit. Happy note-taking!"#.to_string();
     pub fn previous_content_line(&mut self) {
         if self.content_cursor > 0 {
             self.content_cursor -= 1;
+        }
+    }
+
+    pub fn toggle_current_task(&mut self) {
+        let saved_cursor = self.content_cursor;
+
+        if let Some(item) = self.content_items.get(self.content_cursor) {
+            if let ContentItem::TaskItem { line_index, checked, .. } = item {
+                let line_index = *line_index;
+                let new_checked = !*checked;
+
+                if let Some(note) = self.notes.get_mut(self.selected_note) {
+                    let lines: Vec<&str> = note.content.lines().collect();
+                    if line_index < lines.len() {
+                        let line = lines[line_index];
+                        let new_line = if new_checked {
+                            line.replacen("- [ ]", "- [x]", 1)
+                        } else {
+                            line.replacen("- [x]", "- [ ]", 1)
+                                .replacen("- [X]", "- [ ]", 1)
+                        };
+
+                        let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+                        new_lines[line_index] = new_line;
+                        note.content = new_lines.join("\n");
+
+                        if let Some(ref path) = note.file_path {
+                            let _ = fs::write(path, &note.content);
+                        }
+                    }
+                }
+
+                self.update_content_items();
+                self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
+            }
         }
     }
 
