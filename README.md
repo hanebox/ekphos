@@ -8,32 +8,69 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 
 ![Ekphos Preview](examples/ekphos-screenshot.png)
 
-## Requirements
+## Table of Contents
+
+- [Getting Started](#getting-started)
+    - [Requirements](#requirements)
+    - [Installation](#installation)
+      - [Using Cargo (Recommended)](#using-cargo-recommended)
+      - [Using Make](#using-make)
+      - [Using Docker](#using-docker)
+    - [Update](#update)
+    - [Uninstall](#uninstall)
+    - [CLI Options](#cli-options)
+  - [Configuration](#configuration)
+    - [Config File](#config-file)
+    - [Themes](#themes)
+      - [Bundled Theme](#bundled-theme)
+      - [Using Alacritty Themes](#using-alacritty-themes)
+      - [Custom Themes](#custom-themes)
+  - [Usage](#usage)
+    - [Layout](#layout)
+    - [Creating Notes](#creating-notes)
+    - [Creating Folders](#creating-folders)
+    - [Renaming](#renaming)
+    - [Deleting](#deleting)
+    - [Searching Notes](#searching-notes)
+    - [Editing Notes](#editing-notes)
+    - [Markdown Support](#markdown-support)
+    - [Images](#images)
+      - [Adding Images](#adding-images)
+      - [Viewing Images](#viewing-images)
+      - [Terminal Image Support](#terminal-image-support)
+    - [Using the Outline](#using-the-outline)
+  - [Keyboard Shortcuts](#keyboard-shortcuts)
+    - [Global](#global)
+    - [Sidebar](#sidebar)
+    - [Content View](#content-view)
+    - [Edit Mode](#edit-mode)
+      - [Normal Mode](#normal-mode)
+      - [Delete Commands Flow](#delete-commands-flow)
+    - [Visual Mode](#visual-mode)
+  - [Contributing](#contributing)
+    - [Development Setup](#development-setup)
+    - [Branch Strategy](#branch-strategy)
+    - [Workflow](#workflow)
+  - [Disclaimer](#disclaimer)
+  - [Socials](#socials)
+  - [License](#license)
+
+## Getting Started
+
+### Requirements
 
 - Rust 1.70+ (run `rustup update` to update)
 - A terminal emulator (for inline image preview: iTerm2, Kitty, WezTerm, Ghostty, or Sixel-compatible terminal)
 
-## Installation
+### Installation
 
-### Using Cargo
+#### Using Cargo (Recommended)
 
 ```bash
 cargo install ekphos
 ```
 
-### Using Docker
-
-```bash
-git clone https://github.com/hanebox/ekphos.git
-cd ekphos
-docker build -t ekphos-ssh .
-docker compose up -d
-```
-
-and after the container is up, you can SSH into the machine with the following command
-`ssh ekphos@your-docker-container-ip`
-
-### Using Make
+#### Using Make
 
 ```bash
 git clone https://github.com/hanebox/ekphos.git
@@ -42,13 +79,43 @@ make
 sudo make install
 ```
 
-## Update
+#### Using Docker
+
+```bash
+git clone https://github.com/hanebox/ekphos.git
+cd ekphos
+docker build -t ekphos-ssh .
+docker compose up -d
+```
+
+After the container is up, SSH into the machine:
+
+```bash
+ssh ekphos@your-docker-container-ip
+```
+
+### Update
 
 ```bash
 cargo install ekphos
 ```
 
-## CLI Options
+### Uninstall
+
+**If installed with Cargo:**
+
+```bash
+cargo uninstall ekphos
+```
+
+**If installed with Make:**
+
+```bash
+cd ekphos  # navigate to the cloned repo
+sudo make uninstall
+```
+
+### CLI Options
 
 | Flag              | Description            |
 | ----------------- | ---------------------- |
@@ -57,21 +124,11 @@ cargo install ekphos
 | `-c`, `--config`  | Print config file path |
 | `-d`, `--dir`     | Print notes directory  |
 
-## Uninstall
-
-### If installed with Make
-
-```bash
-sudo make uninstall
-```
-
-### If installed with Cargo
-
-```bash
-cargo uninstall ekphos
-```
+---
 
 ## Configuration
+
+### Config File
 
 Configuration is stored in `~/.config/ekphos/config.toml`.
 
@@ -90,19 +147,34 @@ show_empty_dir = true
 | `theme`          | Theme name (without .toml extension)   | `catppuccin-mocha`   |
 | `show_empty_dir` | Show folders that contain no .md files | `true`               |
 
-> **Note:** This configuration format requires v0.3.0 or later. Earlier versions have a broken config system, please upgrade to latest version to enjoy proper configuration and theming support.
+> **Note:** This configuration format requires v0.3.0 or later.
 
-## Themes
+### Themes
 
-**EXPERIMENTAL**: Themes are still highly experimental and not well standardized. We expect to finalize the theme standard around v0.6.0 or v0.7.0
+> **Experimental:** Themes are still highly experimental. We expect to finalize the theme standard around v0.6.0 or v0.7.0.
 
 Themes are stored in `~/.config/ekphos/themes/` and use the **Alacritty color scheme format**.
 
-### Bundled Theme
+#### Bundled Theme
 
 - `catppuccin-mocha` (default)
 
-### Custom Themes
+#### Using Alacritty Themes
+
+Ekphos is fully compatible with [Alacritty Themes](https://github.com/alacritty/alacritty-theme). To use any Alacritty theme:
+
+1. Browse themes at https://github.com/alacritty/alacritty-theme/tree/master/themes
+2. Download a theme file to your themes directory:
+   ```bash
+   curl -o ~/.config/ekphos/themes/dracula.toml \
+     https://raw.githubusercontent.com/alacritty/alacritty-theme/master/themes/dracula.toml
+   ```
+3. Set the theme in your config:
+   ```toml
+   theme = "dracula"
+   ```
+
+#### Custom Themes
 
 Create a `.toml` file in the themes directory using the Alacritty color format:
 
@@ -148,31 +220,7 @@ Then set in config:
 theme = "mytheme"
 ```
 
-### Using Alacritty Themes
-
-Ekphos is fully compatible with [Alacritty Themes](https://github.com/alacritty/alacritty-theme). To use any Alacritty theme:
-
-1. **Browse themes** at https://github.com/alacritty/alacritty-theme/tree/master/themes
-2. **Copy the theme file** (e.g., `dracula.toml`) to your themes directory:
-   ```bash
-   # Example: Download Dracula theme
-   curl -o ~/.config/ekphos/themes/dracula.toml \
-     https://raw.githubusercontent.com/alacritty/alacritty-theme/master/themes/dracula.toml
-   ```
-3. **Set the theme** in your config using the filename (without `.toml`):
-   ```toml
-   # ~/.config/ekphos/config.toml
-   theme = "dracula"
-   ```
-
-**Theme naming convention:**
-| Theme File | Config Setting |
-| ---------- | -------------- |
-| `~/.config/ekphos/themes/dracula.toml` | `theme = "dracula"` |
-| `~/.config/ekphos/themes/gruvbox_dark.toml` | `theme = "gruvbox_dark"` |
-| `~/.config/ekphos/themes/tokyo-night.toml` | `theme = "tokyo-night"` |
-
-> **Note:** Alacritty theme compatibility requires v0.3.0 or later. Earlier versions have a broken theming system.
+---
 
 ## Usage
 
@@ -180,20 +228,13 @@ Ekphos is fully compatible with [Alacritty Themes](https://github.com/alacritty/
 
 Ekphos has three panels:
 
-- **Sidebar** (left): Collapsible folder tree with notes
-- **Content** (center): Note content with markdown rendering
-- **Outline** (right): Auto-generated headings for quick navigation
+| Panel       | Position | Description                            |
+| ----------- | -------- | -------------------------------------- |
+| **Sidebar** | Left     | Collapsible folder tree with notes     |
+| **Content** | Center   | Note content with markdown rendering   |
+| **Outline** | Right    | Auto-generated headings for navigation |
 
 Use `Tab` or `Shift+Tab` to switch between panels.
-
-### Folder Tree
-
-The sidebar displays a hierarchical folder tree that automatically detects subdirectories containing `.md` files:
-
-- Folders are shown with `▶` (collapsed) or `▼` (expanded) icons
-- Press `Enter` on a folder to toggle expand/collapse
-- Folders and notes are sorted alphabetically together
-- Folders start collapsed by default
 
 ### Creating Notes
 
@@ -203,7 +244,7 @@ The sidebar displays a hierarchical folder tree that automatically detects subdi
 
 Notes are stored as `.md` files in your configured notes directory.
 
-**Context-aware**: When your cursor is on a folder or a note inside a folder, pressing `n` will create the new note in that folder.
+**Context-aware:** When your cursor is on a folder or a note inside a folder, pressing `n` will create the new note in that folder.
 
 ### Creating Folders
 
@@ -213,20 +254,21 @@ Notes are stored as `.md` files in your configured notes directory.
 4. A dialog will appear to create the first note in the folder
 5. Enter the note name and press `Enter` (or `Esc` to cancel and remove the empty folder)
 
-**Context-aware**: When your cursor is on a folder, pressing `N` will create the new folder as a subfolder.
+**Context-aware:** When your cursor is on a folder, pressing `N` will create the new folder as a subfolder.
 
 ### Renaming
 
-- Select a note or folder in the sidebar
-- Press `r` to rename
-- Edit the name and press `Enter` to confirm (or `Esc` to cancel)
+1. Select a note or folder in the sidebar
+2. Press `r` to rename
+3. Edit the name and press `Enter` to confirm (or `Esc` to cancel)
 
 ### Deleting
 
-- Select a note or folder in the sidebar
-- Press `d` to delete
-- Confirm with `y` or cancel with `n`
-- **Warning**: Deleting a folder will remove all notes inside it!
+1. Select a note or folder in the sidebar
+2. Press `d` to delete
+3. Confirm with `y` or cancel with `n`
+
+> **Warning:** Deleting a folder will remove all notes inside it!
 
 ### Searching Notes
 
@@ -237,7 +279,8 @@ Notes are stored as `.md` files in your configured notes directory.
 5. Press `Enter` to select and close search
 6. Press `Esc` to cancel search
 
-**Features**:
+**Features:**
+
 - Searches all notes recursively, including those in collapsed folders
 - Auto-expands folders containing matched notes
 - Border color indicates status: yellow (typing), green (matches found), red (no matches)
@@ -248,36 +291,133 @@ Notes are stored as `.md` files in your configured notes directory.
 2. Press `e` to enter edit mode
 3. Edit using vim keybindings
 4. Press `Ctrl+s` to save
-5. Press `Esc` to exit edit mode
+5. Press `Esc` to exit edit mode (discards unsaved changes)
 
-### Vim Keybindings (Edit Mode - Normal)
+### Markdown Support
 
-| Key       | Action                  |
-| --------- | ----------------------- |
-| `i`       | Insert before cursor    |
-| `a`       | Insert after cursor     |
-| `A`       | Insert at end of line   |
-| `I`       | Insert at start of line |
-| `o`       | New line below          |
-| `O`       | New line above          |
-| `v`       | Visual mode             |
-| `h/l`     | Move cursor left/right  |
-| `j/k`     | Move cursor up/down     |
-| `w/b`     | Move by word            |
-| `0/$`     | Line start/end          |
-| `g/G`     | Top/bottom of file      |
-| `x`       | Delete character        |
-| `dd`      | Delete line             |
-| `dw`      | Delete word forward     |
-| `db`      | Delete word backward    |
-| `y`       | Yank (copy) selection   |
-| `p`       | Paste                   |
-| `u`       | Undo                    |
-| `Ctrl+r`  | Redo                    |
-| `Ctrl+s`  | Save and exit           |
-| `Esc`     | Exit (discard changes)  |
+| Syntax           | Rendered As          |
+| ---------------- | -------------------- |
+| `# Heading`      | ◆ HEADING (blue)     |
+| `## Heading`     | ■ Heading (green)    |
+| `### Heading`    | ▸ Heading (yellow)   |
+| `#### Heading`   | › Heading (mauve)    |
+| `##### Heading`  | Heading (teal)       |
+| `###### Heading` | _Heading_ (subtle)   |
+| `- item`         | • item               |
+| `- [ ] task`     | [ ] task (unchecked) |
+| `- [x] task`     | [x] task (checked)   |
+| `` `code` ``     | Inline code (green)  |
+| ` ``` `          | Code block           |
+| `![alt](path)`   | Inline image         |
 
-### Delete Commands Flow
+### Images
+
+#### Adding Images
+
+Use standard markdown image syntax:
+
+```markdown
+![alt text](path/to/image.png)
+![screenshot](~/pictures/screenshot.png)
+![diagram](./diagrams/flow.png)
+![remote](https://example.com/image.png)
+```
+
+Both local files and remote URLs (http/https) are supported.
+
+**Supported formats:** PNG, JPEG, GIF, WebP, BMP
+
+#### Viewing Images
+
+1. Navigate to the image line in content view
+2. Press `Enter` or `o` to open in system viewer
+
+#### Terminal Image Support
+
+For inline image preview, use a compatible terminal:
+
+- iTerm2 (macOS)
+- Kitty
+- WezTerm
+- Ghostty
+- Sixel-enabled terminals
+
+### Using the Outline
+
+The outline panel shows all headings in your note:
+
+1. Press `Tab` to focus the outline
+2. Use `j/k` to navigate headings
+3. Press `Enter` to jump to that heading
+
+---
+
+## Keyboard Shortcuts
+
+### Global
+
+| Key         | Action                                     |
+| ----------- | ------------------------------------------ |
+| `j/k`       | Navigate up/down                           |
+| `Tab`       | Switch focus (Sidebar → Content → Outline) |
+| `Shift+Tab` | Switch focus (reverse)                     |
+| `Enter/o`   | Open image / Jump to heading               |
+| `?`         | Show help dialog                           |
+| `q`         | Quit                                       |
+
+### Sidebar
+
+| Key     | Action                    |
+| ------- | ------------------------- |
+| `n`     | Create new note           |
+| `N`     | Create new folder         |
+| `Enter` | Toggle folder / Open note |
+| `r`     | Rename note/folder        |
+| `d`     | Delete note/folder        |
+| `e`     | Edit note                 |
+| `/`     | Search notes              |
+
+### Content View
+
+| Key         | Action                      |
+| ----------- | --------------------------- |
+| `j/k`       | Navigate lines              |
+| `Shift+J/K` | Toggle floating cursor mode |
+| `Space`     | Toggle task checkbox        |
+| `Enter/o`   | Open image in system viewer |
+
+**Floating Cursor Mode:** When enabled (yellow border, `[FLOAT]` indicator), the cursor moves freely within the visible area. The view only scrolls when the cursor reaches the top or bottom edge. Toggle with `Shift+J` or `Shift+K`.
+
+### Edit Mode
+
+#### Normal Mode
+
+| Key      | Action                  |
+| -------- | ----------------------- |
+| `i`      | Insert before cursor    |
+| `a`      | Insert after cursor     |
+| `A`      | Insert at end of line   |
+| `I`      | Insert at start of line |
+| `o`      | New line below          |
+| `O`      | New line above          |
+| `v`      | Visual mode             |
+| `h/l`    | Move cursor left/right  |
+| `j/k`    | Move cursor up/down     |
+| `w/b`    | Move by word            |
+| `0/$`    | Line start/end          |
+| `g/G`    | Top/bottom of file      |
+| `x`      | Delete character        |
+| `dd`     | Delete line             |
+| `dw`     | Delete word forward     |
+| `db`     | Delete word backward    |
+| `y`      | Yank (copy) selection   |
+| `p`      | Paste                   |
+| `u`      | Undo                    |
+| `Ctrl+r` | Redo                    |
+| `Ctrl+s` | Save and exit           |
+| `Esc`    | Exit (discard changes)  |
+
+#### Delete Commands Flow
 
 Delete commands (`dd`, `dw`, `db`) use a confirmation flow with visual feedback:
 
@@ -292,112 +432,15 @@ Delete commands (`dd`, `dw`, `db`) use a confirmation flow with visual feedback:
 
 Press `v` in normal mode to enter visual mode for text selection.
 
-| Key     | Action           |
-| ------- | ---------------- |
+| Key       | Action           |
+| --------- | ---------------- |
 | `h/j/k/l` | Extend selection |
-| `w/b`   | Extend by word   |
-| `y`     | Yank selection   |
-| `d/x`   | Delete selection |
-| `Esc`   | Cancel           |
+| `w/b`     | Extend by word   |
+| `y`       | Yank selection   |
+| `d/x`     | Delete selection |
+| `Esc`     | Cancel           |
 
-### Supported Markdown
-
-| Syntax            | Rendered As           |
-| ----------------- | --------------------- |
-| `# Heading`       | ◆ HEADING (blue)      |
-| `## Heading`      | ■ Heading (green)     |
-| `### Heading`     | ▸ Heading (yellow)    |
-| `#### Heading`    | › Heading (mauve)     |
-| `##### Heading`   | Heading (teal)        |
-| `###### Heading`  | _Heading_ (subtle)    |
-| `- item`          | • item                |
-| `- [ ] task`      | [ ] task (unchecked)  |
-| `- [x] task`      | [x] task (checked)    |
-| `` `code` ``      | Inline code (green)   |
-| ` ``` `           | Code block            |
-| `![alt](path)`    | Inline image          |
-
-### Adding Images
-
-Use standard markdown image syntax:
-
-```markdown
-![alt text](path/to/image.png)
-![screenshot](~/pictures/screenshot.png)
-![diagram](./diagrams/flow.png)
-![remote](https://example.com/image.png)
-```
-
-Both local files and remote URLs (http/https) are supported.
-
-Supported formats: PNG, JPEG, GIF, WebP, BMP
-
-### Viewing Images
-
-1. Navigate to the image line in content view
-2. Press `Enter` or `o` to open in system viewer
-
-### Terminal Image Support
-
-For inline image preview, use a compatible terminal:
-
-- iTerm2 (macOS)
-- Kitty
-- WezTerm
-- Sixel-enabled terminals
-
-### Using the Outline
-
-The outline panel shows all headings in your note:
-
-1. Press `Tab` to focus the outline
-2. Use `j/k` to navigate headings
-3. Press `Enter` to jump to that heading
-
-## Keyboard Shortcuts
-
-### Global
-
-| Key         | Action                                    |
-| ----------- | ----------------------------------------- |
-| `j/k`       | Navigate up/down                          |
-| `Tab`       | Switch focus (Sidebar → Content → Outline)|
-| `Shift+Tab` | Switch focus (reverse)                    |
-| `Enter/o`   | Open image / Jump to heading              |
-| `?`         | Show help dialog                          |
-| `q`         | Quit                                      |
-
-### Sidebar
-
-| Key     | Action                       |
-| ------- | ---------------------------- |
-| `n`     | Create new note              |
-| `N`     | Create new folder            |
-| `Enter` | Toggle folder / Open note    |
-| `r`     | Rename note/folder           |
-| `d`     | Delete note/folder           |
-| `e`     | Edit note                    |
-| `/`     | Search notes                 |
-
-### Content View
-
-| Key         | Action                                           |
-| ----------- | ------------------------------------------------ |
-| `j/k`       | Navigate lines                                   |
-| `Shift+J/K` | Toggle floating cursor mode                      |
-| `Space`     | Toggle task checkbox                             |
-| `Enter/o`   | Open image in system viewer                      |
-
-**Floating Cursor Mode**: When enabled (yellow border, `[FLOAT]` indicator), the cursor moves freely within the visible area. The view only scrolls when the cursor reaches the top or bottom edge. Toggle with `Shift+J` or `Shift+K`.
-
-### Edit Mode
-
-| Key      | Action                    |
-| -------- | ------------------------- |
-| `Ctrl+s` | Save and exit edit mode   |
-| `Esc`    | Exit (discard changes)    |
-
-See **Vim Keybindings** section above for full edit mode controls.
+---
 
 ## Contributing
 
@@ -413,8 +456,10 @@ make run
 
 ### Branch Strategy
 
-- `main` - Development branch
-- `release` - Stable release branch
+| Branch    | Purpose               |
+| --------- | --------------------- |
+| `main`    | Development branch    |
+| `release` | Stable release branch |
 
 ### Workflow
 
@@ -423,13 +468,15 @@ make run
 3. Make your changes
 4. Submit a PR to the `main` branch
 
+---
+
 ## Disclaimer
 
-This project is in an early development stage, so there will be frequent unexpected breaking changes throughout the pre-release, but things should remain usable throughout this stage.
+This project is in an early development stage. There may be frequent unexpected breaking changes throughout the pre-release, but things should remain usable throughout this stage.
 
 ## Socials
 
-We don't have socials yet, but things are open for discussion, go create a discussion in this repo for how socials should be done
+We don't have socials yet, but things are open for discussion. Feel free to create a discussion in this repo.
 
 ## License
 
