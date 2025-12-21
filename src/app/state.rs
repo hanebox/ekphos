@@ -399,6 +399,8 @@ pub struct App<'a> {
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
     pub highlighter: Highlighter,
+    pub sidebar_collapsed: bool,
+    pub outline_collapsed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -511,6 +513,8 @@ impl<'a> App<'a> {
             selected_link_index: 0,
             details_open_states: HashMap::new(),
             highlighter: Highlighter::new(&syntax_theme),
+            sidebar_collapsed: false,
+            outline_collapsed: false,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1610,6 +1614,14 @@ impl<'a> App<'a> {
             Focus::Content => if backwards { Focus::Sidebar } else { Focus::Outline },
             Focus::Outline => if backwards {Focus::Content} else {Focus::Sidebar},
         };
+    }
+
+    pub fn toggle_sidebar_collapsed(&mut self) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+    }
+
+    pub fn toggle_outline_collapsed(&mut self) {
+        self.outline_collapsed = !self.outline_collapsed;
     }
 
     pub fn update_filtered_indices(&mut self) {

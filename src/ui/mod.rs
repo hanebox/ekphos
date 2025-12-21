@@ -34,13 +34,26 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
+    // Determine panel widths based on collapsed state
+    let sidebar_constraint = if app.sidebar_collapsed {
+        Constraint::Length(5) 
+    } else {
+        Constraint::Percentage(20)
+    };
+
+    let outline_constraint = if app.outline_collapsed {
+        Constraint::Length(5) 
+    } else {
+        Constraint::Percentage(20)
+    };
+
     // Create main layout with left sidebar, content, and right outline
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(20), // Left Sidebar (Notes)
-            Constraint::Percentage(60), // Content
-            Constraint::Percentage(20), // Right Sidebar (Outline)
+            sidebar_constraint,     
+            Constraint::Min(20),    
+            outline_constraint,    
         ])
         .split(vertical_chunks[0]);
 

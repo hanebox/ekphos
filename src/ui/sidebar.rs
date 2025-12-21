@@ -10,7 +10,10 @@ use crate::app::{App, Focus, Mode, SidebarItemKind};
 
 pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
-
+    if app.sidebar_collapsed {
+        render_collapsed_sidebar(f, app, area);
+        return;
+    }
     // Split area for search input when search is active
     let (search_area, list_area) = if app.search_active {
         let chunks = Layout::default()
@@ -129,4 +132,45 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     list_state.select(Some(app.selected_sidebar_index));
 
     f.render_stateful_widget(sidebar, list_area, &mut list_state);
+}
+
+fn render_collapsed_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+
+    let border_style = if app.focus == Focus::Sidebar && app.mode == Mode::Normal {
+        Style::default().fg(theme.bright_blue)
+    } else {
+        Style::default().fg(theme.bright_black)
+    };
+
+    let note_count = app.sidebar_items
+        .iter()
+        .filter(|item| matches!(item.kind, SidebarItemKind::Note { .. }))
+        .count();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    let available_height = area.height.saturating_sub(2) as usize; // subtract borders
+    let padding_top = available_height / 2;
+
+    for _ in 0..padding_top {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        " ≡",
+        Style::default().fg(theme.cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(" {}", note_count),
+        Style::default().fg(theme.foreground),
+    )));
+
+    let collapsed = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        );
+
+    f.render_widget(collapsed, area);
 }

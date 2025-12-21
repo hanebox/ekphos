@@ -608,6 +608,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 Focus::Sidebar => app.handle_sidebar_enter(),
             }
         }
+        KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+            app.toggle_outline_collapsed();
+        }
         KeyCode::Char('o') => {
             if app.focus == Focus::Content {
                 app.open_current_image();
@@ -650,6 +653,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             if app.focus == Focus::Content {
                 app.toggle_floating_cursor();
             }
+        }
+        KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
+            app.toggle_sidebar_collapsed();
         }
         _ => {}
     }

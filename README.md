@@ -242,6 +242,10 @@ Ekphos has three panels:
 
 Use `Tab` or `Shift+Tab` to switch between panels.
 
+**Collapsible Panels:**
+- Press `Ctrl+b` to collapse/expand the sidebar (shows ≡ icon with note count when collapsed)
+- Press `Ctrl+o` to collapse/expand the outline (shows heading symbols ◆■▸ when collapsed)
+
 ### Folder Tree
 
 The sidebar displays a hierarchical folder tree that automatically detects subdirectories containing `.md` files:
@@ -462,6 +466,8 @@ The outline panel shows all headings in your note:
 | `Enter/o`   | Open image / Jump to heading               |
 | `?`         | Show help dialog                           |
 | `q`         | Quit                                       |
+| `Ctrl+b`    | Toggle sidebar collapse                    |
+| `Ctrl+o`    | Toggle outline collapse                    |
 
 ### Sidebar
 

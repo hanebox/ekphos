@@ -773,6 +773,14 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
             Span::styled(" q         ", key_style),
             Span::styled("Quit", desc_style),
         ]),
+        Line::from(vec![
+            Span::styled(" Ctrl+b    ", key_style),
+            Span::styled("Toggle sidebar", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" Ctrl+o    ", key_style),
+            Span::styled("Toggle outline", desc_style),
+        ]),
         Line::from(""),
         Line::from(Span::styled(" Sidebar", header_style)),
         Line::from(vec![
