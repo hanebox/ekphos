@@ -1,6 +1,6 @@
 use std::io;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tui_textarea::Input;
 
@@ -32,9 +32,66 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
 }
 
 fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
-    // Handle mouse scroll in normal mode only
+    // Handle mouse in normal mode only
     if app.mode == Mode::Normal && app.dialog == DialogState::None && !app.show_welcome {
+        let mouse_x = mouse.column;
+        let mouse_y = mouse.row;
+
+        let in_content_area = mouse_x >= app.content_area.x
+            && mouse_x < app.content_area.x + app.content_area.width
+            && mouse_y >= app.content_area.y
+            && mouse_y < app.content_area.y + app.content_area.height;
+
         match mouse.kind {
+            MouseEventKind::Moved => {
+                if in_content_area {
+                    let hovered_item = app.content_item_rects.iter().find(|(_, rect)| {
+                        mouse_y >= rect.y && mouse_y < rect.y + rect.height
+                    }).map(|(idx, _)| *idx);
+
+                    if let Some(idx) = hovered_item {
+                        if app.item_link_at(idx).is_some() || app.item_is_image_at(idx).is_some() {
+                            app.mouse_hover_item = Some(idx);
+                        } else {
+                            app.mouse_hover_item = None;
+                        }
+                    } else {
+                        app.mouse_hover_item = None;
+                    }
+                } else {
+                    app.mouse_hover_item = None;
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if in_content_area {
+                    let clicked_item = app.content_item_rects.iter().find(|(_, rect)| {
+                        mouse_y >= rect.y && mouse_y < rect.y + rect.height
+                    }).map(|(idx, _)| *idx);
+
+                    if let Some(idx) = clicked_item {
+                        if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
+                            #[cfg(target_os = "macos")]
+                            let _ = std::process::Command::new("open").arg(&url).spawn();
+                            #[cfg(target_os = "linux")]
+                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                            #[cfg(target_os = "windows")]
+                            let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+                        }
+                        else if let Some(path) = app.item_is_image_at(idx) {
+                            let is_url = path.starts_with("http://") || path.starts_with("https://");
+                            let should_open = is_url || std::path::PathBuf::from(path).exists();
+                            if should_open {
+                                #[cfg(target_os = "macos")]
+                                let _ = std::process::Command::new("open").arg(path).spawn();
+                                #[cfg(target_os = "linux")]
+                                let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                                #[cfg(target_os = "windows")]
+                                let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
+                            }
+                        }
+                    }
+                }
+            }
             MouseEventKind::ScrollDown => {
                 match app.focus {
                     Focus::Sidebar => app.next_sidebar_item(),
@@ -567,7 +624,21 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char(' ') => {
             if app.focus == Focus::Content {
-                app.toggle_current_task();
+                if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
+                    app.toggle_current_task();
+                } else if app.current_item_link().is_some() {
+                    app.open_current_link();
+                }
+            }
+        }
+        KeyCode::Char(']') => {
+            if app.focus == Focus::Content {
+                app.next_link();
+            }
+        }
+        KeyCode::Char('[') => {
+            if app.focus == Focus::Content {
+                app.previous_link();
             }
         }
         KeyCode::Char('J') | KeyCode::Char('K') => {

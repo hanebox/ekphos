@@ -6,6 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use image::DynamicImage;
 use ratatui::{
+    layout::Rect,
     style::Style,
     widgets::{Block, Borders, ListState},
 };
@@ -34,6 +35,8 @@ Use `Tab` to switch between panels.
 - `J/K` (Shift): Toggle floating cursor mode (view stays fixed)
 - `Tab`: Switch focus between panels
 - `Enter`: Jump to heading (in Outline) or open image (in Content)
+- `Space`: Toggle task checkbox or open link in browser
+- `]/[`: Next/previous link (when multiple links on same line)
 - `/`: Search notes (in Sidebar)
 - `?`: Show help dialog
 
@@ -148,11 +151,26 @@ Images can be embedded using standard markdown syntax:
 
 Both local files and remote URLs (http/https) are supported.
 
-Press `Enter` or `o` on an image line to open it in your system viewer.
+Click on an image or press `Enter`/`o` to open it in your system viewer.
 
 Supported formats: PNG, JPEG, GIF, WebP, BMP
 
 For inline preview, use a compatible terminal (iTerm2, Kitty, WezTerm, Sixel).
+
+### Links
+
+Links are rendered with special styling. Click or press `Space` to open in your browser:
+
+- Visit the [Ekphos Website](https://ekphos.xyz) for more information
+- Check out [GitHub](https://github.com) for the source code
+- Multiple links on one line: [Google](https://google.com) and [DuckDuckGo](https://duckduckgo.com)
+
+**Keyboard navigation:**
+- `Space`: Open the selected link
+- `]`: Next link (when multiple links on same line)
+- `[`: Previous link
+
+The selected link is highlighted with a yellow background.
 
 ## CLI Options
 
@@ -322,6 +340,10 @@ pub struct App<'a> {
     pub target_folder: Option<PathBuf>,
     pub dialog_error: Option<String>,
     pub search_matched_notes: Vec<usize>,
+    pub content_area: Rect,
+    pub mouse_hover_item: Option<usize>,
+    pub content_item_rects: Vec<(usize, Rect)>,
+    pub selected_link_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -427,6 +449,10 @@ impl<'a> App<'a> {
             target_folder: None,
             dialog_error: None,
             search_matched_notes: Vec::new(),
+            content_area: Rect::default(),
+            mouse_hover_item: None,
+            content_item_rects: Vec::new(),
+            selected_link_index: 0,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -702,6 +728,7 @@ impl<'a> App<'a> {
 
             self.update_outline();
             self.update_content_items();
+            self.focus = Focus::Content;
         }
 
         self.target_folder = None;
@@ -1097,12 +1124,14 @@ impl<'a> App<'a> {
         }
         if self.content_cursor < self.content_items.len() - 1 {
             self.content_cursor += 1;
+            self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
     pub fn previous_content_line(&mut self) {
         if self.content_cursor > 0 {
             self.content_cursor -= 1;
+            self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
@@ -1117,6 +1146,7 @@ impl<'a> App<'a> {
 
         if self.content_cursor < self.content_items.len() - 1 {
             self.content_cursor += 1;
+            self.selected_link_index = 0;
         }
     }
 
@@ -1127,6 +1157,7 @@ impl<'a> App<'a> {
 
         if self.content_cursor > 0 {
             self.content_cursor -= 1;
+            self.selected_link_index = 0;
         }
     }
 
@@ -1189,6 +1220,174 @@ impl<'a> App<'a> {
             Some(path)
         } else {
             None
+        }
+    }
+
+    pub fn current_item_link(&self) -> Option<String> {
+        let links = self.item_links_at(self.content_cursor);
+        if links.is_empty() {
+            return None;
+        }
+        let idx = self.selected_link_index.min(links.len().saturating_sub(1));
+        links.get(idx).map(|(_, url, _, _)| url.clone())
+    }
+
+    pub fn current_line_link_count(&self) -> usize {
+        self.item_links_at(self.content_cursor).len()
+    }
+
+    pub fn next_link(&mut self) {
+        let link_count = self.current_line_link_count();
+        if link_count > 1 {
+            self.selected_link_index = (self.selected_link_index + 1) % link_count;
+        }
+    }
+
+    pub fn previous_link(&mut self) {
+        let link_count = self.current_line_link_count();
+        if link_count > 1 {
+            if self.selected_link_index == 0 {
+                self.selected_link_index = link_count - 1;
+            } else {
+                self.selected_link_index -= 1;
+            }
+        }
+    }
+
+    pub fn item_link_at(&self, index: usize) -> Option<String> {
+        self.item_links_at(index).first().map(|(_, url, _, _)| url.clone())
+    }
+
+    /// Extract all links from a specific content item as (text, url, start_col, end_col) tuples
+    /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
+    pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
+        let text = match self.content_items.get(index) {
+            Some(ContentItem::TextLine(line)) => line.as_str(),
+            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            _ => return Vec::new(),
+        };
+
+        let mut links = Vec::new();
+        let mut search_start = 0;
+
+        while search_start < text.len() {
+            let remaining = &text[search_start..];
+            if let Some(bracket_pos) = remaining.find('[') {
+                let abs_bracket_pos = search_start + bracket_pos;
+                let from_bracket = &text[abs_bracket_pos..];
+
+                if let Some(bracket_end) = from_bracket.find("](") {
+                    let after_bracket = &from_bracket[bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let link_text = &from_bracket[1..bracket_end];
+                        let url = &after_bracket[..paren_end];
+
+                        if !url.is_empty() {
+                            let rendered_start = Self::calc_rendered_pos(text, abs_bracket_pos);
+                            let rendered_end = rendered_start + link_text.chars().count();
+
+                            links.push((
+                                link_text.to_string(),
+                                url.to_string(),
+                                rendered_start,
+                                rendered_end,
+                            ));
+                        }
+
+                        search_start = abs_bracket_pos + bracket_end + 2 + paren_end + 1;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+
+        links
+    }
+
+    fn calc_rendered_pos(text: &str, target_pos: usize) -> usize {
+        let mut rendered_pos = 0;
+        let mut i = 0;
+
+        while i < target_pos && i < text.len() {
+            let remaining = &text[i..];
+            if remaining.starts_with('[') {
+                if let Some(bracket_end) = remaining.find("](") {
+                    let after_bracket = &remaining[bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let link_text = &remaining[1..bracket_end];
+                        let full_link_len = bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            rendered_pos += link_text.chars().count();
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            rendered_pos += 1;
+            i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        }
+
+        rendered_pos
+    }
+
+    /// find which link was clicked based on column position within the content area
+    /// Returns the URL if a link was clicked, None otherwise
+    /// `col` is the column relative to the content area start
+    pub fn find_clicked_link(&self, index: usize, col: u16, content_x: u16) -> Option<String> {
+        let links = self.item_links_at(index);
+        if links.is_empty() {
+            return None;
+        }
+
+        let prefix_len = self.get_line_prefix_len(index);
+        let click_col = (col.saturating_sub(content_x)) as usize;
+
+        for (_, url, start, end) in &links {
+            let adjusted_start = prefix_len + *start;
+            let adjusted_end = prefix_len + *end;
+            if click_col >= adjusted_start && click_col < adjusted_end {
+                return Some(url.clone());
+            }
+        }
+
+        links.first().map(|(_, url, _, _)| url.clone())
+    }
+
+    fn get_line_prefix_len(&self, index: usize) -> usize {
+        match self.content_items.get(index) {
+            Some(ContentItem::TextLine(line)) => {
+                let mut len = 2; 
+                if line.starts_with("- ") || line.starts_with("* ") {
+                    len += 2; 
+                }
+                len
+            }
+            Some(ContentItem::TaskItem { .. }) => 6, 
+            _ => 2,
+        }
+    }
+
+    pub fn item_is_image_at(&self, index: usize) -> Option<&str> {
+        if let Some(ContentItem::Image(path)) = self.content_items.get(index) {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    pub fn open_current_link(&self) {
+        if let Some(url) = self.current_item_link() {
+            #[cfg(target_os = "macos")]
+            let _ = Command::new("open").arg(&url).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = Command::new("xdg-open").arg(&url).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = Command::new("cmd").args(["/c", "start", "", &url]).spawn();
         }
     }
 

@@ -316,6 +316,8 @@ Press `v` in normal mode to enter visual mode for text selection.
 | `` `code` ``      | Inline code (green)   |
 | ` ``` `           | Code block            |
 | `![alt](path)`    | Inline image          |
+| `[text](url)`     | Clickable link (cyan) |
+| `| table |`       | Formatted table       |
 
 ### Adding Images
 
@@ -335,7 +337,26 @@ Supported formats: PNG, JPEG, GIF, WebP, BMP
 ### Viewing Images
 
 1. Navigate to the image line in content view
-2. Press `Enter` or `o` to open in system viewer
+2. Click on the image or press `Enter`/`o` to open in system viewer
+
+### Links
+
+Markdown links are rendered with underlined cyan text:
+
+```markdown
+[Ekphos Website](https://ekphos.xyz)
+[GitHub](https://github.com)
+```
+
+**Opening links:**
+- Click on a link to open in your default browser
+- Or navigate to the line and press `Space`
+- Hover over a link to see the "Open ↗" hint
+
+**Multiple links on same line:**
+- Use `]` to select next link, `[` to select previous
+- Selected link is highlighted with yellow background
+- `Space` opens the currently selected link
 
 ### Terminal Image Support
 
@@ -385,8 +406,10 @@ The outline panel shows all headings in your note:
 | ----------- | ------------------------------------------------ |
 | `j/k`       | Navigate lines                                   |
 | `Shift+J/K` | Toggle floating cursor mode                      |
-| `Space`     | Toggle task checkbox                             |
+| `Space`     | Toggle task checkbox / Open link                 |
+| `]/[`       | Next/previous link (multi-link lines)            |
 | `Enter/o`   | Open image in system viewer                      |
+| `Click`     | Open link or image                               |
 
 **Floating Cursor Mode**: When enabled (yellow border, `[FLOAT]` indicator), the cursor moves freely within the visible area. The view only scrolls when the cursor reaches the top or bottom edge. Toggle with `Shift+J` or `Shift+K`.
 

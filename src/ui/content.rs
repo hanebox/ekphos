@@ -168,6 +168,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if constraints.is_empty() {
+        app.content_area = inner_area;
+        app.content_item_rects.clear();
         return;
     }
 
@@ -176,21 +178,32 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints(constraints)
         .split(inner_area);
 
+    app.content_area = inner_area;
+    app.content_item_rects.clear();
+    for (chunk_idx, &item_idx) in visible_indices.iter().enumerate() {
+        if chunk_idx < chunks.len() {
+            app.content_item_rects.push((item_idx, chunks[chunk_idx]));
+        }
+    }
+
     for (chunk_idx, &item_idx) in visible_indices.iter().enumerate() {
         if chunk_idx >= chunks.len() {
             break;
         }
         let is_cursor_line = item_idx == cursor && is_focused;
+        let is_hovered = app.mouse_hover_item == Some(item_idx);
 
         // Clone the item data to avoid borrow conflicts
         let item_clone = app.content_items[item_idx].clone();
 
         match item_clone {
             ContentItem::TextLine(line) => {
-                render_content_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line);
+                let has_link = (is_cursor_line || is_hovered) && app.item_link_at(item_idx).is_some();
+                let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
+                render_content_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line, has_link, selected_link);
             }
             ContentItem::Image(path) => {
-                render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line);
+                render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
             }
             ContentItem::CodeLine(line) => {
                 render_code_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line);
@@ -208,10 +221,11 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
+fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme, selected_link: Option<usize>) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut current_start = 0;
+    let mut link_index = 0;
 
     while let Some((i, c)) = chars.next() {
         // Check for **bold**
@@ -276,6 +290,44 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
             }
             continue;
         }
+
+        // Check for [link text](url)
+        if c == '[' {
+            let remaining = &text[i..];
+            if let Some(bracket_end) = remaining.find("](") {
+                let after_bracket = &remaining[bracket_end + 2..];
+                if let Some(paren_end) = after_bracket.find(')') {
+                    if i > current_start {
+                        spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.foreground)));
+                    }
+
+                    let link_text = &remaining[1..bracket_end];
+                    let _link_url = &after_bracket[..paren_end];
+
+                    let is_selected = selected_link == Some(link_index);
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(theme.black)
+                            .bg(theme.yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                            .fg(theme.cyan)
+                            .add_modifier(Modifier::UNDERLINED)
+                    };
+
+                    spans.push(Span::styled(link_text, style));
+                    link_index += 1;
+
+                    let total_link_len = bracket_end + 2 + paren_end + 1; // [text](url)
+                    for _ in 0..total_link_len - 1 {
+                        chars.next();
+                    }
+                    current_start = i + total_link_len;
+                    continue;
+                }
+            }
+        }
     }
 
     // Add remaining text
@@ -290,7 +342,7 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme) -> Vec<Span<'a>> {
     spans
 }
 
-fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cursor: bool) {
+fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cursor: bool, has_link: bool, selected_link: usize) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
 
     // Check headings from most specific (######) to least specific (#)
@@ -366,11 +418,12 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         ])
     } else if line.starts_with("- ") {
         // Bullet list
+        let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
             Span::styled("• ", Style::default().fg(theme.magenta)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme));
+        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme, selected));
         Line::from(spans)
     } else if line.starts_with("> ") {
         // Blockquote
@@ -390,19 +443,29 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         ])
     } else if line.starts_with("* ") {
         // Bullet list (asterisk variant)
+        let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
             Span::styled("• ", Style::default().fg(theme.magenta)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme));
+        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme, selected));
         Line::from(spans)
     } else {
         // Regular text lines (including numbered lists)
+        let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
         ];
-        spans.extend(parse_inline_formatting(line, theme));
+        spans.extend(parse_inline_formatting(line, theme, selected));
         Line::from(spans)
+    };
+
+    let final_line = if has_link {
+        let mut spans = styled_line.spans;
+        spans.push(Span::styled(" Open ↗", Style::default().fg(theme.cyan)));
+        Line::from(spans)
+    } else {
+        styled_line
     };
 
     let style = if is_cursor {
@@ -411,7 +474,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         Style::default()
     };
 
-    let paragraph = Paragraph::new(styled_line)
+    let paragraph = Paragraph::new(final_line)
         .style(style)
         .wrap(Wrap { trim: true });
     f.render_widget(paragraph, area);
@@ -548,7 +611,7 @@ fn render_table_row(
     f.render_widget(paragraph, area);
 }
 
-fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool) {
+fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool, is_hovered: bool) {
     let is_remote = path.starts_with("http://") || path.starts_with("https://");
     let is_pending = is_remote && app.is_image_pending(path);
     let is_cached = app.image_cache.contains_key(path);
@@ -567,7 +630,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             if !is_pending {
                 app.start_remote_image_fetch(path);
             }
-            None 
+            None
         } else {
             let path_buf = PathBuf::from(path);
             if path_buf.exists() {
@@ -593,8 +656,11 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     // Create a bordered area for the image with cursor indicator
     let theme = &app.theme;
+    let show_hint = is_cursor || is_hovered;
     let border_color = if is_cursor {
         theme.yellow
+    } else if is_hovered {
+        theme.cyan
     } else if is_pending {
         theme.magenta
     } else {
@@ -603,8 +669,8 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     let title = if is_pending {
         format!(" Loading: {} ", path)
-    } else if is_cursor {
-        format!(" Image: {} [Enter/o to open] ", path)
+    } else if show_hint {
+        format!(" Image: {} Open  ↗ ", path)
     } else {
         format!(" Image: {} ", path)
     };
