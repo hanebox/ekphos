@@ -1,4 +1,5 @@
 mod app;
+mod editor;
 mod event;
 mod highlight;
 mod theme;

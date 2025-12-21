@@ -17,6 +17,26 @@ pub struct Config {
     pub show_empty_dir: bool,
     #[serde(default = "default_syntax_theme")]
     pub syntax_theme: String,
+    #[serde(default)]
+    pub editor: EditorConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorConfig {
+    #[serde(default = "default_line_wrap")]
+    pub line_wrap: bool,
+}
+
+fn default_line_wrap() -> bool {
+    true
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            line_wrap: default_line_wrap(),
+        }
+    }
 }
 
 fn default_notes_dir() -> String {
@@ -47,6 +67,7 @@ impl Default for Config {
             theme: default_theme_name(),
             show_empty_dir: default_show_empty_dir(),
             syntax_theme: default_syntax_theme(),
+            editor: EditorConfig::default(),
         }
     }
 }

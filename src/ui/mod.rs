@@ -1,4 +1,5 @@
 mod content;
+mod context_menu;
 mod dialogs;
 mod editor;
 mod outline;
@@ -10,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DialogState, Mode};
+use crate::app::{App, ContextMenuState, DialogState, Mode};
 
 pub use content::render_content;
 pub use dialogs::{
@@ -92,5 +93,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 render_welcome_dialog(f, &app.theme);
             }
         }
+    }
+
+    // Render context menu on top of everything (Edit mode only)
+    if app.mode == Mode::Edit && app.context_menu_state != ContextMenuState::None {
+        context_menu::render_context_menu(f, app);
     }
 }

@@ -11,8 +11,8 @@ use ratatui::{
     widgets::{Block, Borders, ListState},
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
-use tui_textarea::TextArea;
 
+use crate::editor::{CursorMove, Editor};
 use crate::highlight::Highlighter;
 use crate::theme::{Config, Theme};
 
@@ -326,6 +326,43 @@ pub enum VimMode {
     Visual,
 }
 
+/// Context menu state for right-click actions
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ContextMenuState {
+    #[default]
+    None,
+    Open { x: u16, y: u16, selected_index: usize },
+}
+
+/// Context menu items
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContextMenuItem {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+}
+
+impl ContextMenuItem {
+    pub fn all() -> &'static [ContextMenuItem] {
+        &[
+            ContextMenuItem::Copy,
+            ContextMenuItem::Cut,
+            ContextMenuItem::Paste,
+            ContextMenuItem::SelectAll,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ContextMenuItem::Copy => "Copy",
+            ContextMenuItem::Cut => "Cut",
+            ContextMenuItem::Paste => "Paste",
+            ContextMenuItem::SelectAll => "Select All",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
     Folder {
@@ -354,13 +391,13 @@ pub enum SidebarItemKind {
     Note { note_index: usize },
 }
 
-pub struct App<'a> {
+pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
     pub list_state: ListState,
     pub focus: Focus,
     pub mode: Mode,
-    pub textarea: TextArea<'a>,
+    pub editor: Editor,
     pub picker: Option<Picker>,
     pub image_cache: HashMap<String, DynamicImage>,
     pub current_image: Option<ImageState>,
@@ -401,6 +438,12 @@ pub struct App<'a> {
     pub highlighter: Highlighter,
     pub sidebar_collapsed: bool,
     pub outline_collapsed: bool,
+    // Mouse selection state
+    pub mouse_button_held: bool,
+    pub mouse_drag_start: Option<(u16, u16)>,
+    pub last_mouse_y: u16,
+    pub editor_area: Rect,
+    pub context_menu_state: ContextMenuState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -409,7 +452,7 @@ pub enum DeleteType {
     Line,
 }
 
-impl<'a> App<'a> {
+impl App {
     pub fn new() -> Self {
         // Check if config exists before loading (determines if onboarding is needed)
         // This must be checked before load_or_create() which creates the config
@@ -426,16 +469,17 @@ impl<'a> App<'a> {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
-        let mut textarea = TextArea::default();
-        textarea.set_block(
+        let mut editor = Editor::default();
+        editor.set_line_wrap(config.editor.line_wrap);
+        editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.blue))
                 .title(" NORMAL | Ctrl+S: Save, Esc: Exit "),
         );
         // No line highlighting in normal mode - only word highlighting via selection
-        textarea.set_cursor_line_style(Style::default());
-        textarea.set_selection_style(
+        editor.set_cursor_line_style(Style::default());
+        editor.set_selection_style(
             Style::default()
                 .fg(theme.selection_text)
                 .bg(theme.selection_bg)
@@ -474,7 +518,7 @@ impl<'a> App<'a> {
             list_state,
             focus: Focus::Sidebar,
             mode: Mode::Normal,
-            textarea,
+            editor,
             picker,
             image_cache: HashMap::new(),
             current_image: None,
@@ -515,6 +559,12 @@ impl<'a> App<'a> {
             highlighter: Highlighter::new(&syntax_theme),
             sidebar_collapsed: false,
             outline_collapsed: false,
+            // Mouse selection state
+            mouse_button_held: false,
+            mouse_drag_start: None,
+            last_mouse_y: 0,
+            editor_area: Rect::default(),
+            context_menu_state: ContextMenuState::None,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1757,11 +1807,11 @@ impl<'a> App<'a> {
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
             let target_row = self.content_cursor.min(lines.len().saturating_sub(1));
-            self.textarea = TextArea::new(lines);
+            self.editor = Editor::new(lines);
             self.vim_mode = VimMode::Normal;
             self.editor_scroll_top = 0;
             for _ in 0..target_row {
-                self.textarea.move_cursor(tui_textarea::CursorMove::Down);
+                self.editor.move_cursor(CursorMove::Down);
             }
             self.update_editor_block();
             self.mode = Mode::Edit;
@@ -1771,14 +1821,8 @@ impl<'a> App<'a> {
 
     pub fn update_editor_scroll(&mut self, view_height: usize) {
         self.editor_view_height = view_height;
-        let (cursor_row, _) = self.textarea.cursor();
-
-        if cursor_row < self.editor_scroll_top {
-            self.editor_scroll_top = cursor_row;
-        }
-        else if cursor_row >= self.editor_scroll_top + view_height {
-            self.editor_scroll_top = cursor_row - view_height + 1;
-        }
+        self.editor.update_scroll(view_height);
+        self.editor_scroll_top = self.editor.scroll_offset();
     }
 
     pub fn update_editor_block(&mut self) {
@@ -1805,24 +1849,24 @@ impl<'a> App<'a> {
             (None, _) if self.pending_operator == Some('d') => "d: Line, w: Word→, b: Word←",
             _ => "Ctrl+S: Save, Esc: Exit",
         };
-        self.textarea.set_block(
+        self.editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(color))
                 .title(format!(" {}{} | {} ", mode_str, pending_str, hint)),
         );
-        self.textarea.set_selection_style(
+        self.editor.set_selection_style(
             Style::default()
                 .fg(self.theme.selection_text)
                 .bg(self.theme.selection_bg)
         );
-        self.textarea.set_cursor_line_style(Style::default());
+        self.editor.set_cursor_line_style(Style::default());
     }
 
     pub fn save_edit(&mut self) {
-        let (cursor_row, _) = self.textarea.cursor();
+        let (cursor_row, _) = self.editor.cursor();
         if let Some(note) = self.notes.get_mut(self.selected_note) {
-            note.content = self.textarea.lines().join("\n");
+            note.content = self.editor.lines().join("\n");
             // Save to file
             if let Some(ref path) = note.file_path {
                 let _ = fs::write(path, &note.content);
@@ -1835,14 +1879,14 @@ impl<'a> App<'a> {
     }
 
     pub fn cancel_edit(&mut self) {
-        let (cursor_row, _) = self.textarea.cursor();
+        let (cursor_row, _) = self.editor.cursor();
         self.mode = Mode::Normal;
         self.content_cursor = cursor_row.min(self.content_items.len().saturating_sub(1));
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
         if let Some(note) = self.notes.get(self.selected_note) {
-            let current_content = self.textarea.lines().join("\n");
+            let current_content = self.editor.lines().join("\n");
             current_content != note.content
         } else {
             false
@@ -1875,6 +1919,50 @@ impl<'a> App<'a> {
             }
         });
     }
+
+    // ==================== Mouse Selection Helpers ====================
+
+    /// Convert mouse screen coordinates to editor row/col.
+    /// Returns None if mouse is outside the editor area.
+    pub fn screen_to_editor_coords(&self, mouse_x: u16, mouse_y: u16) -> Option<(usize, usize)> {
+        // Check if mouse is within editor bounds (account for border)
+        let inner_x = self.editor_area.x + 1;
+        let inner_y = self.editor_area.y + 1;
+        let inner_width = self.editor_area.width.saturating_sub(2);
+        let inner_height = self.editor_area.height.saturating_sub(2);
+
+        if mouse_x < inner_x || mouse_x >= inner_x + inner_width ||
+           mouse_y < inner_y || mouse_y >= inner_y + inner_height {
+            return None;
+        }
+
+        // Calculate relative position within editor
+        let rel_x = (mouse_x - inner_x) as usize;
+        let rel_y = (mouse_y - inner_y) as usize;
+
+        // Add scroll offset to get actual row
+        let row = rel_y + self.editor_scroll_top;
+        let col = rel_x;
+
+        Some((row, col))
+    }
+
+    /// Check if mouse is in the auto-scroll zone (top or bottom edge).
+    /// Returns scroll direction: -1 for up, 1 for down, 0 for no scroll.
+    pub fn get_auto_scroll_direction(&self, mouse_y: u16) -> i8 {
+        const SCROLL_THRESHOLD: u16 = 2;
+
+        let inner_y = self.editor_area.y + 1;
+        let inner_height = self.editor_area.height.saturating_sub(2);
+
+        if mouse_y < inner_y + SCROLL_THRESHOLD && self.editor_scroll_top > 0 {
+            -1 // Scroll up
+        } else if mouse_y >= inner_y + inner_height - SCROLL_THRESHOLD {
+            1 // Scroll down
+        } else {
+            0
+        }
+    }
 }
 
 fn fetch_remote_image_blocking(url: &str) -> Option<DynamicImage> {
@@ -1900,7 +1988,7 @@ fn fetch_remote_image_blocking(url: &str) -> Option<DynamicImage> {
     image::load_from_memory(&bytes).ok()
 }
 
-impl Default for App<'_> {
+impl Default for App {
     fn default() -> Self {
         Self::new()
     }

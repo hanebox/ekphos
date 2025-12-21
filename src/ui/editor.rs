@@ -8,36 +8,30 @@ use ratatui::{
 use crate::app::App;
 
 pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
+    // Store editor area for mouse coordinate translation
+    app.editor_area = area;
+
     let inner_width = area.width.saturating_sub(2) as usize;
     let inner_height = area.height.saturating_sub(2) as usize;
 
+    // Update editor view dimensions and scroll
+    app.editor.set_view_size(inner_width, inner_height);
     app.update_editor_scroll(inner_height);
 
-    f.render_widget(&app.textarea, area);
+    f.render_widget(&app.editor, area);
 
-    let theme = &app.theme;
-    let (cursor_row, cursor_col) = app.textarea.cursor();
-    let lines = app.textarea.lines();
-    let scroll_top = app.editor_scroll_top;
+    // Only show overflow indicators when line wrap is disabled
+    if !app.editor.line_wrap_enabled() {
+        let theme = &app.theme;
+        let (cursor_row, _cursor_col) = app.editor.cursor();
+        let scroll_top = app.editor_scroll_top;
 
-    /* Check if the cursor exists within a line that contains overflow.
-    If it does, render the overflow indicators.
+        // Get overflow info from editor's horizontal scroll tracking
+        let (has_left_overflow, has_right_overflow) = app.editor.get_overflow_info();
 
-    NOTE: A sticky overflow indicator that remains visible during scrolling
-    would be ideal, but this would likely require a custom textarea implementation. */
-    if cursor_row >= scroll_top && cursor_row < scroll_top + inner_height {
-        if let Some(line) = lines.get(cursor_row) {
-            let line_len = line.chars().count();
+        // Render overflow indicators on the cursor line
+        if cursor_row >= scroll_top && cursor_row < scroll_top + inner_height {
             let y = area.y + 1 + (cursor_row - scroll_top) as u16;
-
-            let h_scroll = if cursor_col > inner_width.saturating_sub(1) {
-                cursor_col.saturating_sub(inner_width.saturating_sub(1))
-            } else {
-                0
-            };
-
-            let has_left_overflow = h_scroll > 0;
-            let has_right_overflow = line_len > h_scroll + inner_width;
 
             if has_left_overflow {
                 let indicator = Paragraph::new("«│")

@@ -2,9 +2,9 @@ use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use tui_textarea::Input;
 
-use crate::app::{App, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode};
+use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode};
+use crate::editor::CursorMove;
 use crate::ui;
 
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
@@ -13,7 +13,14 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
 
         terminal.draw(|f| ui::render(f, app))?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // Use shorter poll time for smoother auto-scroll
+        let poll_duration = if app.mouse_button_held && app.mode == Mode::Edit {
+            std::time::Duration::from_millis(50)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+
+        if event::poll(poll_duration)? {
             match event::read()? {
                 Event::Mouse(mouse) => {
                     handle_mouse_event(app, mouse);
@@ -27,16 +34,55 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
                 }
                 _ => {}
             }
+        } else {
+            // No event - check for continuous auto-scroll while mouse is held
+            if app.mouse_button_held && app.mode == Mode::Edit {
+                handle_continuous_auto_scroll(app);
+            }
         }
     }
 }
 
 fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
-    // Handle mouse in normal mode only
-    if app.mode == Mode::Normal && app.dialog == DialogState::None && !app.show_welcome {
-        let mouse_x = mouse.column;
-        let mouse_y = mouse.row;
+    let mouse_x = mouse.column;
+    let mouse_y = mouse.row;
 
+    // Handle context menu interactions first (highest priority)
+    if let ContextMenuState::Open { x, y, selected_index: _ } = app.context_menu_state {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Check if click is inside context menu
+                if let Some(action) = get_context_menu_click(mouse_x, mouse_y, x, y) {
+                    execute_context_menu_action(app, action);
+                }
+                app.context_menu_state = ContextMenuState::None;
+                return;
+            }
+            MouseEventKind::Moved => {
+                // Update hover selection in context menu
+                if let Some(new_idx) = get_context_menu_hover_index(mouse_x, mouse_y, x, y) {
+                    app.context_menu_state = ContextMenuState::Open { x, y, selected_index: new_idx };
+                }
+                return;
+            }
+            _ => {
+                // Any other mouse event closes the context menu
+                if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                    app.context_menu_state = ContextMenuState::None;
+                }
+                return;
+            }
+        }
+    }
+
+    // Handle Edit mode mouse events
+    if app.mode == Mode::Edit {
+        handle_edit_mode_mouse(app, mouse);
+        return;
+    }
+
+    // Handle Normal mode mouse events (existing logic)
+    if app.mode == Mode::Normal && app.dialog == DialogState::None && !app.show_welcome {
         let in_content_area = mouse_x >= app.content_area.x
             && mouse_x < app.content_area.x + app.content_area.width
             && mouse_y >= app.content_area.y
@@ -126,6 +172,217 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
             _ => {}
         }
     }
+}
+
+fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    let mouse_x = mouse.column;
+    let mouse_y = mouse.row;
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Close context menu if open
+            app.context_menu_state = ContextMenuState::None;
+
+            if let Some((row, col)) = app.screen_to_editor_coords(mouse_x, mouse_y) {
+                // Clamp to valid line count
+                let line_count = app.editor.line_count();
+                let row = row.min(line_count.saturating_sub(1));
+                let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                let col = col.min(line_len);
+
+                // Start selection if in Normal vim mode, switch to Visual
+                if app.vim_mode == VimMode::Normal {
+                    // Move cursor to clicked position first
+                    move_editor_cursor_to(app, row, col);
+                    app.vim_mode = VimMode::Visual;
+                    app.editor.start_selection();
+                } else if app.vim_mode == VimMode::Visual {
+                    // Already in visual, cancel and restart
+                    app.editor.cancel_selection();
+                    move_editor_cursor_to(app, row, col);
+                    app.editor.start_selection();
+                } else {
+                    // In Insert mode, just move cursor
+                    move_editor_cursor_to(app, row, col);
+                }
+
+                app.mouse_button_held = true;
+                app.mouse_drag_start = Some((row as u16, col as u16));
+                app.update_editor_block();
+            }
+        }
+
+        MouseEventKind::Down(MouseButton::Right) => {
+            // Right-click shows context menu
+            app.context_menu_state = ContextMenuState::Open {
+                x: mouse_x,
+                y: mouse_y,
+                selected_index: 0,
+            };
+        }
+
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.mouse_button_held = false;
+            app.mouse_drag_start = None;
+        }
+
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.mouse_button_held {
+                // Store last mouse Y for continuous scrolling
+                app.last_mouse_y = mouse_y;
+
+                // Handle auto-scroll when near edges
+                handle_auto_scroll(app, mouse_y);
+
+                if let Some((row, col)) = app.screen_to_editor_coords(mouse_x, mouse_y) {
+                    let line_count = app.editor.line_count();
+                    let row = row.min(line_count.saturating_sub(1));
+                    let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                    let col = col.min(line_len);
+
+                    // Extend selection to new position
+                    move_editor_cursor_to(app, row, col);
+                }
+            }
+        }
+
+        MouseEventKind::ScrollUp => {
+            if app.editor_scroll_top > 0 {
+                app.editor_scroll_top = app.editor_scroll_top.saturating_sub(3);
+                app.editor.set_scroll_offset(app.editor_scroll_top);
+            }
+        }
+
+        MouseEventKind::ScrollDown => {
+            let max_scroll = app.editor.line_count().saturating_sub(app.editor_view_height);
+            if app.editor_scroll_top < max_scroll {
+                app.editor_scroll_top = (app.editor_scroll_top + 3).min(max_scroll);
+                app.editor.set_scroll_offset(app.editor_scroll_top);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn handle_auto_scroll(app: &mut App, mouse_y: u16) {
+    let direction = app.get_auto_scroll_direction(mouse_y);
+    if direction == 0 {
+        return;
+    }
+
+    perform_auto_scroll(app, direction);
+}
+
+/// Continuous auto-scroll when mouse is held near edges (called from main loop)
+fn handle_continuous_auto_scroll(app: &mut App) {
+    let direction = app.get_auto_scroll_direction(app.last_mouse_y);
+    if direction == 0 {
+        return;
+    }
+
+    perform_auto_scroll(app, direction);
+}
+
+/// Perform the actual scrolling in the given direction
+fn perform_auto_scroll(app: &mut App, direction: i8) {
+    if direction < 0 {
+        // Scroll up
+        if app.editor_scroll_top > 0 {
+            app.editor_scroll_top = app.editor_scroll_top.saturating_sub(1);
+            app.editor.set_scroll_offset(app.editor_scroll_top);
+            app.editor.move_cursor(CursorMove::Up);
+        }
+    } else {
+        // Scroll down
+        let max_scroll = app.editor.line_count().saturating_sub(app.editor_view_height);
+        if app.editor_scroll_top < max_scroll {
+            app.editor_scroll_top += 1;
+            app.editor.set_scroll_offset(app.editor_scroll_top);
+            app.editor.move_cursor(CursorMove::Down);
+        }
+    }
+}
+
+/// Move editor cursor to specific row/col position
+fn move_editor_cursor_to(app: &mut App, target_row: usize, target_col: usize) {
+    let (current_row, _) = app.editor.cursor();
+
+    // Move to target row
+    if target_row < current_row {
+        for _ in 0..(current_row - target_row) {
+            app.editor.move_cursor(CursorMove::Up);
+        }
+    } else if target_row > current_row {
+        for _ in 0..(target_row - current_row) {
+            app.editor.move_cursor(CursorMove::Down);
+        }
+    }
+
+    // Move to start of line, then to target column
+    app.editor.move_cursor(CursorMove::Head);
+    for _ in 0..target_col {
+        app.editor.move_cursor(CursorMove::Forward);
+    }
+}
+
+// ==================== Context Menu Helpers ====================
+
+const MENU_WIDTH: u16 = 14;
+
+fn get_context_menu_click(mouse_x: u16, mouse_y: u16, menu_x: u16, menu_y: u16) -> Option<ContextMenuItem> {
+    let items = ContextMenuItem::all();
+    let menu_height = items.len() as u16 + 2; // +2 for borders
+
+    // Check if click is within menu bounds
+    if mouse_x >= menu_x && mouse_x < menu_x + MENU_WIDTH &&
+       mouse_y >= menu_y && mouse_y < menu_y + menu_height {
+        let relative_y = mouse_y.saturating_sub(menu_y).saturating_sub(1); // -1 for top border
+        let index = relative_y as usize;
+        if index < items.len() {
+            return Some(items[index]);
+        }
+    }
+
+    None
+}
+
+fn get_context_menu_hover_index(mouse_x: u16, mouse_y: u16, menu_x: u16, menu_y: u16) -> Option<usize> {
+    let items = ContextMenuItem::all();
+    let menu_height = items.len() as u16 + 2;
+
+    if mouse_x >= menu_x && mouse_x < menu_x + MENU_WIDTH &&
+       mouse_y > menu_y && mouse_y < menu_y + menu_height - 1 {
+        let index = (mouse_y - menu_y - 1) as usize;
+        if index < items.len() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn execute_context_menu_action(app: &mut App, action: ContextMenuItem) {
+    match action {
+        ContextMenuItem::Copy => {
+            app.editor.copy();
+            app.editor.cancel_selection();
+            app.vim_mode = VimMode::Normal;
+        }
+        ContextMenuItem::Cut => {
+            app.editor.cut();
+            app.vim_mode = VimMode::Normal;
+        }
+        ContextMenuItem::Paste => {
+            app.editor.paste();
+        }
+        ContextMenuItem::SelectAll => {
+            app.editor.move_cursor(CursorMove::Top);
+            app.editor.start_selection();
+            app.editor.move_cursor(CursorMove::Bottom);
+            app.vim_mode = VimMode::Visual;
+        }
+    }
+    app.update_editor_block();
 }
 
 /// Returns true if the app should quit
@@ -663,23 +920,49 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 }
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    // Handle context menu keyboard navigation first
+    if let ContextMenuState::Open { x, y, selected_index } = app.context_menu_state {
+        let items = ContextMenuItem::all();
+        match key.code {
+            KeyCode::Esc => {
+                app.context_menu_state = ContextMenuState::None;
+            }
+            KeyCode::Enter => {
+                if let Some(&action) = items.get(selected_index) {
+                    execute_context_menu_action(app, action);
+                }
+                app.context_menu_state = ContextMenuState::None;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let new_index = (selected_index + 1) % items.len();
+                app.context_menu_state = ContextMenuState::Open { x, y, selected_index: new_index };
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let new_index = if selected_index == 0 { items.len() - 1 } else { selected_index - 1 };
+                app.context_menu_state = ContextMenuState::Open { x, y, selected_index: new_index };
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Handle pending delete confirmation
     if let Some(delete_type) = app.pending_delete {
         match key.code {
             KeyCode::Char('d') => {
                 app.pending_delete = None;
-                app.textarea.cut();
+                app.editor.cut();
                 if delete_type == DeleteType::Line {
-                    app.textarea.delete_newline();
+                    app.editor.delete_newline();
                 }
             }
             KeyCode::Esc => {
                 app.pending_delete = None;
-                app.textarea.cancel_selection();
+                app.editor.cancel_selection();
             }
             _ => {
                 app.pending_delete = None;
-                app.textarea.cancel_selection();
+                app.editor.cancel_selection();
                 match app.vim_mode {
                     VimMode::Normal => handle_vim_normal_mode(app, key),
                     VimMode::Insert => handle_vim_insert_mode(app, key),
@@ -703,126 +986,126 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Char('i') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
         }
         KeyCode::Char('a') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
-            app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
+            app.editor.move_cursor(CursorMove::Forward);
         }
         KeyCode::Char('A') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
-            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+            app.editor.move_cursor(CursorMove::End);
         }
         KeyCode::Char('I') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
-            app.textarea.move_cursor(tui_textarea::CursorMove::Head);
+            app.editor.move_cursor(CursorMove::Head);
         }
         KeyCode::Char('o') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
-            app.textarea.move_cursor(tui_textarea::CursorMove::End);
-            app.textarea.insert_newline();
+            app.editor.move_cursor(CursorMove::End);
+            app.editor.insert_newline();
         }
         KeyCode::Char('O') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
-            app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-            app.textarea.insert_newline();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Up);
+            app.editor.move_cursor(CursorMove::Head);
+            app.editor.insert_newline();
+            app.editor.move_cursor(CursorMove::Up);
         }
         KeyCode::Char('v') => {
             app.pending_operator = None;
             app.vim_mode = VimMode::Visual;
-            app.textarea.cancel_selection();
-            app.textarea.start_selection();
+            app.editor.cancel_selection();
+            app.editor.start_selection();
         }
         KeyCode::Char('h') | KeyCode::Left => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Back);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Back);
         }
         KeyCode::Char('j') | KeyCode::Down => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Down);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Down);
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Up);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Up);
         }
         KeyCode::Char('l') | KeyCode::Right => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Forward);
         }
         KeyCode::Char('w') => {
             if app.pending_operator == Some('d') {
                 // dw: delete word forward - highlight then delete on next key
                 app.pending_operator = None;
-                app.textarea.cancel_selection();
-                app.textarea.start_selection();
-                app.textarea.move_cursor(tui_textarea::CursorMove::WordForward);
+                app.editor.cancel_selection();
+                app.editor.start_selection();
+                app.editor.move_cursor(CursorMove::WordForward);
                 app.pending_delete = Some(DeleteType::Word);
             } else {
                 app.pending_operator = None;
-                app.textarea.move_cursor(tui_textarea::CursorMove::WordForward);
+                app.editor.move_cursor(CursorMove::WordForward);
             }
         }
         KeyCode::Char('b') => {
             if app.pending_operator == Some('d') {
                 // db: delete word backward - highlight then delete on next key
                 app.pending_operator = None;
-                app.textarea.cancel_selection();
-                app.textarea.start_selection();
-                app.textarea.move_cursor(tui_textarea::CursorMove::WordBack);
+                app.editor.cancel_selection();
+                app.editor.start_selection();
+                app.editor.move_cursor(CursorMove::WordBack);
                 app.pending_delete = Some(DeleteType::Word);
             } else {
                 app.pending_operator = None;
-                app.textarea.move_cursor(tui_textarea::CursorMove::WordBack);
+                app.editor.move_cursor(CursorMove::WordBack);
             }
         }
         KeyCode::Char('0') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Head);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Head);
         }
         KeyCode::Char('$') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::End);
         }
         KeyCode::Char('g') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Top);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Top);
         }
         KeyCode::Char('G') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
+            app.editor.cancel_selection();
+            app.editor.move_cursor(CursorMove::Bottom);
         }
         KeyCode::Char('x') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.delete_char();
+            app.editor.cancel_selection();
+            app.editor.delete_char();
         }
         KeyCode::Char('d') => {
             if app.pending_operator == Some('d') {
                 app.pending_operator = None;
-                app.textarea.cancel_selection();
-                app.textarea.move_cursor(tui_textarea::CursorMove::Head);
-                app.textarea.start_selection();
-                app.textarea.move_cursor(tui_textarea::CursorMove::End);
+                app.editor.cancel_selection();
+                app.editor.move_cursor(CursorMove::Head);
+                app.editor.start_selection();
+                app.editor.move_cursor(CursorMove::End);
                 app.pending_delete = Some(DeleteType::Line);
             } else {
                 app.pending_operator = Some('d');
@@ -831,26 +1114,26 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('y') => {
             app.pending_operator = None;
             // Yank current selection
-            app.textarea.copy();
+            app.editor.copy();
         }
         KeyCode::Char('p') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.paste();
+            app.editor.cancel_selection();
+            app.editor.paste();
         }
         KeyCode::Char('u') => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.undo();
+            app.editor.cancel_selection();
+            app.editor.undo();
         }
         KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
-            app.textarea.redo();
+            app.editor.cancel_selection();
+            app.editor.redo();
         }
         KeyCode::Esc => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             if app.has_unsaved_changes() {
                 app.dialog = DialogState::UnsavedChanges;
             } else {
@@ -860,7 +1143,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
             app.pending_operator = None;
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
         }
@@ -880,8 +1163,7 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim_mode = VimMode::Normal;
         }
         _ => {
-            let input = Input::from(key);
-            app.textarea.input(input);
+            app.editor.input(key);
         }
     }
 }
@@ -889,50 +1171,50 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
 fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Esc => {
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Normal;
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Back);
+            app.editor.move_cursor(CursorMove::Back);
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Down);
+            app.editor.move_cursor(CursorMove::Down);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Up);
+            app.editor.move_cursor(CursorMove::Up);
         }
         KeyCode::Char('l') | KeyCode::Right => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Forward);
+            app.editor.move_cursor(CursorMove::Forward);
         }
         KeyCode::Char('w') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::WordForward);
+            app.editor.move_cursor(CursorMove::WordForward);
         }
         KeyCode::Char('b') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::WordBack);
+            app.editor.move_cursor(CursorMove::WordBack);
         }
         KeyCode::Char('0') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Head);
+            app.editor.move_cursor(CursorMove::Head);
         }
         KeyCode::Char('$') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::End);
+            app.editor.move_cursor(CursorMove::End);
         }
         KeyCode::Char('g') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Top);
+            app.editor.move_cursor(CursorMove::Top);
         }
         KeyCode::Char('G') => {
-            app.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
+            app.editor.move_cursor(CursorMove::Bottom);
         }
         KeyCode::Char('y') => {
-            app.textarea.copy();
-            app.textarea.cancel_selection();
+            app.editor.copy();
+            app.editor.cancel_selection();
             app.vim_mode = VimMode::Normal;
         }
         KeyCode::Char('d') | KeyCode::Char('x') => {
-            app.textarea.cut();
+            app.editor.cut();
             app.vim_mode = VimMode::Normal;
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
-            app.textarea.cancel_selection();
+            app.editor.cancel_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
         }

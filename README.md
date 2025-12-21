@@ -51,6 +51,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
     - [Normal Mode](#normal-mode)
     - [Delete Commands Flow](#delete-commands-flow)
   - [Visual Mode](#visual-mode)
+  - [Mouse Selection](#mouse-selection)
 - [Contributing](#contributing)
   - [Development Setup](#development-setup)
   - [Branch Strategy](#branch-strategy)
@@ -143,6 +144,9 @@ welcome_shown = false
 theme = "catppuccin-mocha"
 show_empty_dir = true
 syntax_theme = "base16-ocean.dark"
+
+[editor]
+line_wrap = true
 ```
 
 | Setting          | Description                            | Default              |
@@ -152,6 +156,12 @@ syntax_theme = "base16-ocean.dark"
 | `theme`          | Theme name (without .toml extension)   | `catppuccin-mocha`   |
 | `show_empty_dir` | Show folders that contain no .md files | `true`               |
 | `syntax_theme`   | Syntax highlighting theme for code     | `base16-ocean.dark`  |
+
+**Editor settings:**
+
+| Setting              | Description                          | Default |
+| -------------------- | ------------------------------------ | ------- |
+| `editor.line_wrap`   | Enable soft line wrapping in editor  | `true`  |
 
 > **Note:** This configuration format requires v0.3.0 or later.
 
@@ -545,6 +555,19 @@ Press `v` in normal mode to enter visual mode for text selection.
 | `y`       | Yank selection   |
 | `d/x`     | Delete selection |
 | `Esc`     | Cancel           |
+
+### Mouse Selection
+
+In edit mode, use the mouse for quick text selection:
+
+| Action           | Result                                  |
+| ---------------- | --------------------------------------- |
+| **Click**        | Position cursor                         |
+| **Drag**         | Select text (enters visual mode)        |
+| **Right-click**  | Context menu (Copy / Cut / Paste)       |
+| **Drag to edge** | Auto-scroll while selecting             |
+
+**Auto-scroll:** When dragging near the top or bottom edge of the editor, the view automatically scrolls to allow selecting text beyond the visible area.
 
 ---
 
