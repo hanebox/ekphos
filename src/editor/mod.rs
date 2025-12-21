@@ -202,7 +202,11 @@ impl Editor {
     // Clipboard
     pub fn copy(&mut self) {
         if let Some(text) = self.selected_text() {
-            self.clipboard = Some(text);
+            self.clipboard = Some(text.clone());
+            // Sorryyy forgot the damn system clipboard 
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&text);
+            }
         }
     }
 
@@ -211,6 +215,10 @@ impl Editor {
             let cursor_before = self.cursor.pos();
             let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
             self.clipboard = Some(deleted.clone());
+            // This one too copy to system clipboard
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&deleted);
+            }
             self.wrap_cache.invalidate_from(start.row);
 
             self.history.record(

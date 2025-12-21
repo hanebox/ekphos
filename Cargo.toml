@@ -21,6 +21,7 @@ dirs = "5.0"
 shellexpand = "3.1"
 ureq = "2.9"
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
+arboard = "3.4"
 
 [profile.release]
 opt-level = 3
