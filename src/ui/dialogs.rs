@@ -815,7 +815,7 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
         ]),
         Line::from(vec![
             Span::styled(" Space     ", key_style),
-            Span::styled("Toggle task checkbox", desc_style),
+            Span::styled("Toggle task/details", desc_style),
         ]),
         Line::from(""),
         Line::from(Span::styled(

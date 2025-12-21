@@ -118,6 +118,37 @@ Track your tasks with checkboxes! Press `Space` to toggle:
 | Lists | Done | Bullets |
 | Tables | Done | New! |
 
+### Collapsible Details
+
+Use `<details>` for collapsible sections. Press `Space` to toggle:
+
+<details>
+<summary>Click to expand this section</summary>
+
+This content is hidden by default.
+
+You can include any text here, and it will be revealed when the details section is expanded.
+
+Use this for FAQs, spoilers, or optional information.
+</details>
+
+<details>
+<summary>Another collapsible section</summary>
+
+More hidden content here!
+</details>
+
+**Syntax example:**
+
+```html
+<details>
+<summary>Summary text here</summary>
+
+Your hidden content goes here.
+Multiple lines are supported.
+</details>
+```
+
 ### Blockquotes
 
 > This is a blockquote.
@@ -264,6 +295,7 @@ pub enum ContentItem {
     CodeFence(String),
     TaskItem { text: String, checked: bool, line_index: usize },
     TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
+    Details { summary: String, content_lines: Vec<String>, id: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -344,6 +376,7 @@ pub struct App<'a> {
     pub mouse_hover_item: Option<usize>,
     pub content_item_rects: Vec<(usize, Rect)>,
     pub selected_link_index: usize,
+    pub details_open_states: HashMap<usize, bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -453,6 +486,7 @@ impl<'a> App<'a> {
             mouse_hover_item: None,
             content_item_rects: Vec::new(),
             selected_link_index: 0,
+            details_open_states: HashMap::new(),
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1059,8 +1093,62 @@ impl<'a> App<'a> {
                     continue;
                 }
 
-                // check for table row starts and ends with "|"
                 let trimmed_line = line.trim();
+                if trimmed_line.starts_with("<details") && (trimmed_line.ends_with(">") || trimmed_line.contains("><")) {
+                    let details_start_line = line_index;
+                    let mut summary = String::new();
+                    let mut content_lines: Vec<String> = Vec::new();
+                    let mut found_end = false;
+                    i += 1;
+
+                    while i < lines.len() {
+                        let dline = lines[i].trim();
+
+                        if dline.contains("</details>") {
+                            found_end = true;
+                            i += 1;
+                            break;
+                        }
+
+                        if dline.starts_with("<summary>") || dline.contains("<summary>") {
+                            if dline.contains("</summary>") {
+                                if let Some(start) = dline.find("<summary>") {
+                                    if let Some(end) = dline.find("</summary>") {
+                                        summary = dline[start + 9..end].trim().to_string();
+                                    }
+                                }
+                            } else {
+                                summary = dline.trim_start_matches("<summary>").trim().to_string();
+                            }
+                            i += 1;
+                            continue;
+                        }
+
+                        if dline == "</summary>" {
+                            i += 1;
+                            continue;
+                        }
+
+                        content_lines.push(lines[i].to_string());
+                        i += 1;
+                    }
+
+                    if found_end {
+                        if summary.is_empty() {
+                            summary = "Details".to_string();
+                        }
+                        self.content_items.push(ContentItem::Details {
+                            summary,
+                            content_lines,
+                            id: details_start_line,
+                        });
+                        continue;
+                    } else {
+                        self.content_items.push(ContentItem::TextLine(line.to_string()));
+                        continue;
+                    }
+                }
+
                 if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') {
                     let mut table_rows: Vec<(Vec<String>, bool)> = Vec::new();
 
@@ -1192,6 +1280,16 @@ impl<'a> App<'a> {
 
                 self.update_content_items();
                 self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
+            }
+        }
+    }
+
+    pub fn toggle_current_details(&mut self) {
+        if let Some(item) = self.content_items.get(self.content_cursor) {
+            if let ContentItem::Details { id, .. } = item {
+                let id = *id;
+                let current = self.details_open_states.get(&id).copied().unwrap_or(false);
+                self.details_open_states.insert(id, !current);
             }
         }
     }
@@ -1377,6 +1475,18 @@ impl<'a> App<'a> {
             Some(path)
         } else {
             None
+        }
+    }
+
+    pub fn item_is_details_at(&self, index: usize) -> bool {
+        matches!(self.content_items.get(index), Some(ContentItem::Details { .. }))
+    }
+
+    pub fn toggle_details_at(&mut self, index: usize) {
+        if let Some(ContentItem::Details { id, .. }) = self.content_items.get(index) {
+            let id = *id;
+            let current = self.details_open_states.get(&id).copied().unwrap_or(false);
+            self.details_open_states.insert(id, !current);
         }
     }
 

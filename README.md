@@ -302,22 +302,23 @@ Press `v` in normal mode to enter visual mode for text selection.
 
 ### Supported Markdown
 
-| Syntax            | Rendered As           |
-| ----------------- | --------------------- |
-| `# Heading`       | ◆ HEADING (blue)      |
-| `## Heading`      | ■ Heading (green)     |
-| `### Heading`     | ▸ Heading (yellow)    |
-| `#### Heading`    | › Heading (mauve)     |
-| `##### Heading`   | Heading (teal)        |
-| `###### Heading`  | _Heading_ (subtle)    |
-| `- item`          | • item                |
-| `- [ ] task`      | [ ] task (unchecked)  |
-| `- [x] task`      | [x] task (checked)    |
-| `` `code` ``      | Inline code (green)   |
-| ` ``` `           | Code block            |
-| `![alt](path)`    | Inline image          |
-| `[text](url)`     | Clickable link (cyan) |
-| `| table |`       | Formatted table       |
+| Syntax            | Rendered As                |
+| ----------------- | -------------------------- |
+| `# Heading`       | ◆ HEADING (blue)           |
+| `## Heading`      | ■ Heading (green)          |
+| `### Heading`     | ▸ Heading (yellow)         |
+| `#### Heading`    | › Heading (mauve)          |
+| `##### Heading`   | Heading (teal)             |
+| `###### Heading`  | _Heading_ (subtle)         |
+| `- item`          | • item                     |
+| `- [ ] task`      | [ ] task (unchecked)       |
+| `- [x] task`      | [x] task (checked)         |
+| `` `code` ``      | Inline code (green)        |
+| ` ``` `           | Code block                 |
+| `![alt](path)`    | Inline image               |
+| `[text](url)`     | Clickable link (cyan)      |
+| `| table |`       | Formatted table            |
+| `<details>`       | Collapsible dropdown (cyan)|
 
 ### Adding Images
 
@@ -357,6 +358,27 @@ Markdown links are rendered with underlined cyan text:
 - Use `]` to select next link, `[` to select previous
 - Selected link is highlighted with yellow background
 - `Space` opens the currently selected link
+
+### Collapsible Details
+
+Use HTML `<details>` tags for collapsible/expandable sections:
+
+```markdown
+<details>
+<summary>Click to expand</summary>
+
+Hidden content goes here.
+This can include multiple lines.
+</details>
+```
+
+**Usage:**
+- Click on the details line to toggle open/close
+- Or navigate with keyboard and press `Space`
+- When collapsed, shows `▶` indicator
+- When expanded, shows `▼` indicator with content below
+
+Use cases: FAQs, spoilers, optional information, long code examples.
 
 ### Terminal Image Support
 
@@ -406,7 +428,7 @@ The outline panel shows all headings in your note:
 | ----------- | ------------------------------------------------ |
 | `j/k`       | Navigate lines                                   |
 | `Shift+J/K` | Toggle floating cursor mode                      |
-| `Space`     | Toggle task checkbox / Open link                 |
+| `Space`     | Toggle task / details dropdown / Open link       |
 | `]/[`       | Next/previous link (multi-link lines)            |
 | `Enter/o`   | Open image in system viewer                      |
 | `Click`     | Open link or image                               |

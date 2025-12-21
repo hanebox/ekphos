@@ -56,7 +56,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         ((total_len as f64 / available_width as f64).ceil() as u16).max(1)
     };
 
-    // Helper to get item height
+    let details_states = &app.details_open_states;
     let get_item_height = |item: &ContentItem| -> u16 {
         match item {
             ContentItem::TextLine(line) => calc_wrapped_height(line, 4),
@@ -65,6 +65,14 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::CodeFence(_) => 1u16,
             ContentItem::TaskItem { text, .. } => calc_wrapped_height(text, 6),
             ContentItem::TableRow { .. } => 1u16,
+            ContentItem::Details { content_lines, id, .. } => {
+                let is_open = details_states.get(id).copied().unwrap_or(false);
+                if is_open {
+                    1 + content_lines.len() as u16
+                } else {
+                    1u16 
+                }
+            }
         }
     };
 
@@ -216,6 +224,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
             ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
                 render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::Details { summary, content_lines, id } => {
+                let is_open = app.details_open_states.get(&id).copied().unwrap_or(false);
+                render_details(f, &app.theme, &summary, &content_lines, is_open, chunks[chunk_idx], is_cursor_line);
             }
         }
     }
@@ -707,4 +719,51 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             .style(Style::default().fg(theme.red).add_modifier(Modifier::ITALIC));
         f.render_widget(placeholder, inner_area);
     }
+}
+
+fn render_details(
+    f: &mut Frame,
+    theme: &Theme,
+    summary: &str,
+    content_lines: &[String],
+    is_open: bool,
+    area: Rect,
+    is_cursor: bool,
+) {
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let toggle_indicator = if is_open { "▼ " } else { "▶ " };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    let summary_spans = vec![
+        Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
+        Span::styled(toggle_indicator, Style::default().fg(theme.cyan)),
+        Span::styled(
+            summary,
+            Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    lines.push(Line::from(summary_spans));
+
+    if is_open {
+        for content in content_lines {
+            let content_spans = vec![
+                Span::styled("  ", Style::default()),
+                Span::styled("│ ", Style::default().fg(theme.bright_black)),
+                Span::styled(content, Style::default().fg(theme.foreground)),
+            ];
+            lines.push(Line::from(content_spans));
+        }
+    }
+
+    let style = if is_cursor {
+        Style::default().bg(theme.bright_black)
+    } else {
+        Style::default()
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .style(style)
+        .wrap(Wrap { trim: false });
+    f.render_widget(paragraph, area);
 }

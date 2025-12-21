@@ -89,6 +89,9 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                                 let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
                             }
                         }
+                        else if app.item_is_details_at(idx) {
+                            app.toggle_details_at(idx);
+                        }
                     }
                 }
             }
@@ -626,6 +629,8 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             if app.focus == Focus::Content {
                 if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
                     app.toggle_current_task();
+                } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
+                    app.toggle_current_details();
                 } else if app.current_item_link().is_some() {
                     app.open_current_link();
                 }
