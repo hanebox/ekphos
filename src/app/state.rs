@@ -106,6 +106,14 @@ Track your tasks with checkboxes! Press `Space` to toggle:
 - [ ] Another pending task
 - [x] This one is done too
 
+### Tables
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Headings | Done | H1-H6 |
+| Lists | Done | Bullets |
+| Tables | Done | New! |
+
 ### Blockquotes
 
 > This is a blockquote.
@@ -236,6 +244,7 @@ pub enum ContentItem {
     CodeLine(String),
     CodeFence(String),
     TaskItem { text: String, checked: bool, line_index: usize },
+    TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -968,19 +977,26 @@ impl<'a> App<'a> {
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
             let mut in_code_block = false;
+            let lines: Vec<&str> = content.lines().collect();
+            let mut i = 0;
 
-            for (line_index, line) in content.lines().enumerate() {
+            while i < lines.len() {
+                let line = lines[i];
+                let line_index = i;
+
                 // Check for code fence
                 if line.starts_with("```") {
                     let lang = line.trim_start_matches('`').to_string();
                     self.content_items.push(ContentItem::CodeFence(lang));
                     in_code_block = !in_code_block;
+                    i += 1;
                     continue;
                 }
 
                 // If inside code block, add as CodeLine
                 if in_code_block {
                     self.content_items.push(ContentItem::CodeLine(line.to_string()));
+                    i += 1;
                     continue;
                 }
 
@@ -991,6 +1007,7 @@ impl<'a> App<'a> {
                             let path = &line[start + 2..start + end];
                             if !path.is_empty() {
                                 self.content_items.push(ContentItem::Image(path.to_string()));
+                                i += 1;
                                 continue;
                             }
                         }
@@ -1002,10 +1019,64 @@ impl<'a> App<'a> {
                     let checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
                     let text = trimmed[6..].to_string();
                     self.content_items.push(ContentItem::TaskItem { text, checked, line_index });
+                    i += 1;
+                    continue;
+                }
+
+                // check for table row starts and ends with "|"
+                let trimmed_line = line.trim();
+                if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') {
+                    let mut table_rows: Vec<(Vec<String>, bool)> = Vec::new();
+
+                    while i < lines.len() {
+                        let tline = lines[i].trim();
+                        if tline.starts_with('|') && tline.ends_with('|') {
+                            let inner = &tline[1..tline.len()-1];
+                            let cells: Vec<String> = inner.split('|').map(|s| s.trim().to_string()).collect();
+                            let is_separator = cells.iter().all(|cell| {
+                                let c = cell.trim();
+                                !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
+                            });
+                            table_rows.push((cells, is_separator));
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let num_cols = table_rows.iter().map(|(cells, _)| cells.len()).max().unwrap_or(0);
+                    let mut column_widths: Vec<usize> = vec![0; num_cols];
+
+                    for (cells, is_sep) in &table_rows {
+                        if !is_sep {
+                            for (col_idx, cell) in cells.iter().enumerate() {
+                                if col_idx < column_widths.len() {
+                                    column_widths[col_idx] = column_widths[col_idx].max(cell.chars().count());
+                                }
+                            }
+                        }
+                    }
+
+                    for w in &mut column_widths {
+                        *w = (*w).max(3);
+                    }
+
+                    let separator_idx = table_rows.iter().position(|(_, is_sep)| *is_sep);
+
+                    for (row_idx, (cells, is_separator)) in table_rows.into_iter().enumerate() {
+                        let is_header = separator_idx.map(|sep_idx| row_idx < sep_idx).unwrap_or(false);
+                        self.content_items.push(ContentItem::TableRow {
+                            cells,
+                            is_separator,
+                            is_header,
+                            column_widths: column_widths.clone(),
+                        });
+                    }
                     continue;
                 }
 
                 self.content_items.push(ContentItem::TextLine(line.to_string()));
+                i += 1;
             }
         }
         self.content_cursor = 0;

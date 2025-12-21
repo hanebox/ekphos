@@ -65,6 +65,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::CodeLine(line) => calc_wrapped_height(line, 6),
             ContentItem::CodeFence(_) => 1u16,
             ContentItem::TaskItem { text, .. } => calc_wrapped_height(text, 6),
+            ContentItem::TableRow { .. } => 1u16,
         }
     };
 
@@ -200,6 +201,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
             ContentItem::TaskItem { text, checked, .. } => {
                 render_task_item(f, &app.theme, &text, checked, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
+                render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line);
             }
         }
     }
@@ -471,6 +475,67 @@ fn render_task_item(f: &mut Frame, theme: &Theme, text: &str, checked: bool, are
         Span::styled("] ", Style::default().fg(checkbox_color)),
         Span::styled(text, text_style),
     ]);
+
+    let style = if is_cursor {
+        Style::default().bg(theme.bright_black)
+    } else {
+        Style::default()
+    };
+
+    let paragraph = Paragraph::new(styled_line)
+        .style(style)
+        .wrap(Wrap { trim: false });
+    f.render_widget(paragraph, area);
+}
+
+fn render_table_row(
+    f: &mut Frame,
+    theme: &Theme,
+    cells: &[String],
+    is_separator: bool,
+    is_header: bool,
+    column_widths: &[usize],
+    area: Rect,
+    is_cursor: bool,
+) {
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let border_color = theme.bright_black;
+
+    let mut spans = vec![
+        Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ];
+
+    if is_separator {
+        for (i, &width) in column_widths.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("┼", Style::default().fg(border_color)));
+            }
+            let dashes = "─".repeat(width + 2);
+            spans.push(Span::styled(dashes, Style::default().fg(border_color)));
+        }
+    } else {
+        for (i, cell) in cells.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("│", Style::default().fg(border_color)));
+            }
+
+            let width = column_widths.get(i).copied().unwrap_or(cell.chars().count());
+            let cell_content = format!(" {:^width$} ", cell, width = width);
+
+            let cell_style = if is_header {
+                Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+
+            spans.push(Span::styled(cell_content, cell_style));
+        }
+    }
+
+    spans.push(Span::styled("│", Style::default().fg(border_color)));
+
+    let styled_line = Line::from(spans);
 
     let style = if is_cursor {
         Style::default().bg(theme.bright_black)
