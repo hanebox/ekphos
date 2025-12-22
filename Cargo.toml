@@ -23,6 +23,8 @@ ureq = "2.9"
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 arboard = "3.4"
 unicode-width = "0.2"
+htmd = "0.5"
+clipboard-rs = "0.3"
 
 [profile.release]
 opt-level = 3

@@ -4,6 +4,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseBu
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteState};
+use crate::clipboard::{self, ClipboardContent};
 use crate::editor::CursorMove;
 use crate::ui;
 
@@ -258,13 +259,22 @@ fn handle_paste_event(app: &mut App, text: String) {
         app.vim_mode = VimMode::Insert;
     }
 
+    // Try to get html from clipboard and convert to Markdown
+    // falls back to plain text if html not available or conversion fails
+    let paste_text = match clipboard::get_content_as_markdown() {
+        Ok(ClipboardContent::Markdown(md)) => md,
+        Ok(ClipboardContent::PlainText(txt)) => txt,
+        Ok(ClipboardContent::Empty) => text.clone(),
+        Err(_) => text.clone(),
+    };
+
     // Force full clear for multiline paste to prevent ghosting
-    if text.contains('\n') {
+    if paste_text.contains('\n') {
         app.needs_full_clear = true;
     }
 
     // Insert the entire pasted text at once
-    app.editor.insert_str(&text);
+    app.editor.insert_str(&paste_text);
     app.update_editor_highlights();
     app.update_editor_block();
 

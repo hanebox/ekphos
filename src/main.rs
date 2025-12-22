@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod editor;
 mod event;
 mod highlight;
