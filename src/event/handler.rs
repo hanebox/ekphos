@@ -8,43 +8,107 @@ use crate::editor::CursorMove;
 use crate::ui;
 
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    let mut prev_mode = app.mode;
+    let mut prev_sidebar_collapsed = app.sidebar_collapsed;
+    let mut prev_outline_collapsed = app.outline_collapsed;
+    let mut prev_selected_note = app.selected_note;
+    let mut needs_render = true;
+
     loop {
+        let pending_before = app.pending_images.len();
+        let highlighter_was_loading = app.highlighter_loading;
         app.poll_pending_images();
         app.poll_highlighter();
 
-        terminal.draw(|f| ui::render(f, app))?;
+        if app.pending_images.len() < pending_before
+            || (highlighter_was_loading && !app.highlighter_loading)
+        {
+            needs_render = true;
+        }
 
-        // Use shorter poll time for smoother auto-scroll
-        let poll_duration = if app.mouse_button_held && app.mode == Mode::Edit {
-            std::time::Duration::from_millis(50)
-        } else {
-            std::time::Duration::from_millis(100)
-        };
+        let needs_clear = prev_sidebar_collapsed != app.sidebar_collapsed
+            || prev_outline_collapsed != app.outline_collapsed
+            || prev_mode != app.mode
+            || prev_selected_note != app.selected_note  
+            || app.needs_full_clear;
 
-        if event::poll(poll_duration)? {
-            match event::read()? {
-                Event::Mouse(mouse) => {
-                    handle_mouse_event(app, mouse);
+        if needs_clear {
+            terminal.clear()?;
+            app.needs_full_clear = false;
+            needs_render = true;
+        }
+
+        prev_mode = app.mode;
+        prev_sidebar_collapsed = app.sidebar_collapsed;
+        prev_outline_collapsed = app.outline_collapsed;
+        prev_selected_note = app.selected_note;
+
+        if needs_render {
+            terminal.draw(|f| ui::render(f, app))?;
+            needs_render = false;
+        }
+
+        let has_background_work = !app.pending_images.is_empty()
+            || app.highlighter_loading
+            || app.mouse_button_held;
+
+        if has_background_work {
+            let timeout = if app.mouse_button_held {
+                std::time::Duration::from_millis(33)  
+            } else {
+                std::time::Duration::from_millis(100) 
+            };
+
+            if event::poll(timeout)? {
+                if process_events(terminal, app, &mut needs_render)? {
+                    return Ok(()); 
                 }
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press {
-                        if handle_key_event(app, key)? {
-                            return Ok(());
-                        }
-                    }
-                }
-                Event::Paste(text) => {
-                    handle_paste_event(app, text);
-                }
-                _ => {}
+            } else if app.mouse_button_held && app.mode == Mode::Edit {
+                handle_continuous_auto_scroll(app);
+                needs_render = true;
             }
         } else {
-            // No event - check for continuous auto-scroll while mouse is held
-            if app.mouse_button_held && app.mode == Mode::Edit {
-                handle_continuous_auto_scroll(app);
+            // Idle: block until event to avoid cpu trashing
+            if process_events(terminal, app, &mut needs_render)? {
+                return Ok(()); 
             }
         }
     }
+}
+
+// Default event handling can't keep up with fast frame update
+// this one is okayish solution to batch event 
+fn process_events(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    needs_render: &mut bool,
+) -> io::Result<bool> {
+    const MAX_EVENTS_PER_BATCH: u8 = 8;
+    let mut count = 0u8;
+
+    loop {
+        let event = event::read()?;
+        count += 1;
+        *needs_render = true;
+
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if handle_key_event(app, key)? {
+                    return Ok(true); 
+                }
+            }
+            Event::Mouse(mouse) => handle_mouse_event(app, mouse),
+            Event::Paste(text) => handle_paste_event(app, text),
+            Event::Resize(_, _) => terminal.clear()?,
+            _ => {}
+        }
+
+        if count >= MAX_EVENTS_PER_BATCH || !event::poll(std::time::Duration::ZERO)? {
+            break;
+        }
+    }
+
+    Ok(false)
 }
 
 fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
@@ -194,10 +258,21 @@ fn handle_paste_event(app: &mut App, text: String) {
         app.vim_mode = VimMode::Insert;
     }
 
+    // Force full clear for multiline paste to prevent ghosting
+    if text.contains('\n') {
+        app.needs_full_clear = true;
+    }
+
     // Insert the entire pasted text at once
     app.editor.insert_str(&text);
     app.update_editor_highlights();
     app.update_editor_block();
+
+    if let Some(view_height) = app.editor_view_height.checked_sub(2) {
+        if view_height > 0 {
+            app.update_editor_scroll(view_height);
+        }
+    }
 }
 
 fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
@@ -1000,9 +1075,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { note_index } => {
-                        app.input_buffer = app.notes[*note_index].title.clone();
-                        app.dialog_error = None;
-                        app.dialog = DialogState::RenameNote;
+                        if let Some(note) = app.notes.get(*note_index) {
+                            app.input_buffer = note.title.clone();
+                            app.dialog_error = None;
+                            app.dialog = DialogState::RenameNote;
+                        }
                     }
                     SidebarItemKind::Folder { .. } => {
                         app.input_buffer = item.display_name.clone();

@@ -485,6 +485,7 @@ pub struct App {
     // Wiki link support
     pub wiki_autocomplete: WikiAutocompleteState,
     pub pending_wiki_target: Option<String>,
+    pub needs_full_clear: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -611,6 +612,7 @@ impl App {
             context_menu_state: ContextMenuState::None,
             wiki_autocomplete: WikiAutocompleteState::None,
             pending_wiki_target: None,
+            needs_full_clear: false,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1168,6 +1170,7 @@ impl App {
 
     pub fn update_content_items(&mut self) {
         self.content_items.clear();
+        self.details_open_states.clear();
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
             let mut in_code_block = false;
@@ -2270,6 +2273,13 @@ impl App {
     pub fn poll_pending_images(&mut self) {
         while let Ok((url, img)) = self.image_receiver.try_recv() {
             self.pending_images.remove(&url);
+            const MAX_CACHED_IMAGES: usize = 20;
+            if self.image_cache.len() >= MAX_CACHED_IMAGES {
+                if let Some(key) = self.image_cache.keys().next().cloned() {
+                    self.image_cache.remove(&key);
+                }
+            }
+
             self.image_cache.insert(url, img);
         }
     }
