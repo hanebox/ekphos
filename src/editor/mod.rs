@@ -19,6 +19,7 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{Block, Widget},
 };
+use unicode_width::UnicodeWidthChar;
 
 pub struct Editor {
     buffer: TextBuffer,
@@ -639,16 +640,17 @@ impl Editor {
                     let mut x = area.x;
 
                     for c in col..segment_end {
+                        let ch = chars[c];
                         let mut style = self.get_char_style(row, c, selection);
                         if is_cursor_line && c == cursor_pos.col {
                             style = style.add_modifier(Modifier::REVERSED);
                         }
 
                         if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                            cell.set_char(chars[c]);
+                            cell.set_char(ch);
                             cell.set_style(style);
                         }
-                        x += 1;
+                        x += ch.width().unwrap_or(1) as u16;
                     }
 
                     if is_cursor_line && cursor_pos.col >= chars.len() && segment_end == chars.len() {
@@ -700,16 +702,17 @@ impl Editor {
                     break;
                 }
 
+                let ch = chars[col];
                 let mut style = self.get_char_style(row, col, selection);
                 if is_cursor_line && col == cursor_pos.col {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
 
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(chars[col]);
+                    cell.set_char(ch);
                     cell.set_style(style);
                 }
-                x += 1;
+                x += ch.width().unwrap_or(1) as u16;
             }
 
             if is_cursor_line && cursor_pos.col >= chars.len() {
