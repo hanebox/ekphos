@@ -44,16 +44,16 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 
     let cursor = app.content_cursor;
     let available_width = inner_area.width.saturating_sub(4) as usize;
+    let max_item_height = inner_area.height.max(1);
 
-    // calculate wrapped text row height
     let calc_wrapped_height = |text: &str, prefix_len: usize| -> u16 {
         if text.is_empty() || available_width == 0 {
             return 1;
         }
 
         let total_len = text.chars().count() + prefix_len;
-
-        ((total_len as f64 / available_width as f64).ceil() as u16).max(1)
+        let height = ((total_len as f64 / available_width as f64).ceil() as u16).max(1);
+        height.min(max_item_height)
     };
 
     let details_states = &app.details_open_states;
@@ -421,6 +421,21 @@ where
     spans
 }
 
+/// Normalize whitespace, replace tabs with spaces and handle special Unicode whitespace
+fn normalize_whitespace(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\t' => ' ',  // Tab to space
+            '\u{00A0}' => ' ',  // Non-breaking space
+            '\u{2000}'..='\u{200B}' => ' ',  // Various Unicode spaces
+            '\u{202F}' => ' ',  // Narrow no-break space
+            '\u{205F}' => ' ',  // Medium mathematical space
+            '\u{3000}' => ' ',  // Ideographic space
+            _ => c,
+        })
+        .collect()
+}
+
 fn render_content_line<F>(
     f: &mut Frame,
     theme: &Theme,
@@ -433,6 +448,7 @@ fn render_content_line<F>(
 ) where
     F: Fn(&str) -> bool,
 {
+    let line = &normalize_whitespace(line);
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
 
     // Check headings from most specific (######) to least specific (#)
@@ -566,7 +582,7 @@ fn render_content_line<F>(
 
     let paragraph = Paragraph::new(final_line)
         .style(style)
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
