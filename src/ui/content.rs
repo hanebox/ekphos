@@ -218,9 +218,12 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 
         match item_clone {
             ContentItem::TextLine(line) => {
-                let has_link = (is_cursor_line || is_hovered) && app.item_link_at(item_idx).is_some();
+                let has_regular_link = app.item_link_at(item_idx).is_some();
+                let has_wiki_link = !app.item_wiki_links_at(item_idx).is_empty();
+                let has_link = (is_cursor_line || is_hovered) && (has_regular_link || has_wiki_link);
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
-                render_content_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line, has_link, selected_link);
+                let wiki_validator = |target: &str| app.wiki_link_exists(target);
+                render_content_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator));
             }
             ContentItem::Image(path) => {
                 render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
@@ -247,7 +250,15 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme, selected_link: Option<usize>) -> Vec<Span<'a>> {
+fn parse_inline_formatting<'a, F>(
+    text: &'a str,
+    theme: &Theme,
+    selected_link: Option<usize>,
+    wiki_link_validator: Option<F>,
+) -> Vec<Span<'a>>
+where
+    F: Fn(&str) -> bool,
+{
     let mut spans = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut current_start = 0;
@@ -317,9 +328,51 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme, selected_link: Opti
             continue;
         }
 
-        // Check for [link text](url)
+        // Check for [[wiki link]]
         if c == '[' {
             let remaining = &text[i..];
+            if remaining.starts_with("[[") {
+                if let Some(close_pos) = remaining[2..].find("]]") {
+                    let target = &remaining[2..2 + close_pos];
+                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                        if i > current_start {
+                            spans.push(Span::styled(&text[current_start..i], Style::default().fg(theme.foreground)));
+                        }
+
+                        let is_selected = selected_link == Some(link_index);
+                        let is_valid = wiki_link_validator
+                            .as_ref()
+                            .map(|f| f(target))
+                            .unwrap_or(false);
+
+                        let style = if is_selected {
+                            Style::default()
+                                .fg(theme.black)
+                                .bg(theme.yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else if is_valid {
+                            Style::default()
+                                .fg(theme.cyan)
+                                .add_modifier(Modifier::UNDERLINED)
+                        } else {
+                            Style::default()
+                                .fg(theme.red)
+                                .add_modifier(Modifier::UNDERLINED)
+                        };
+
+                        spans.push(Span::styled(target.to_string(), style));
+                        link_index += 1;
+
+                        let total_link_len = 2 + close_pos + 2; // [[target]]
+                        for _ in 0..total_link_len - 1 {
+                            chars.next();
+                        }
+                        current_start = i + total_link_len;
+                        continue;
+                    }
+                }
+            }
+
             if let Some(bracket_end) = remaining.find("](") {
                 let after_bracket = &remaining[bracket_end + 2..];
                 if let Some(paren_end) = after_bracket.find(')') {
@@ -368,7 +421,18 @@ fn parse_inline_formatting<'a>(text: &'a str, theme: &Theme, selected_link: Opti
     spans
 }
 
-fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_cursor: bool, has_link: bool, selected_link: usize) {
+fn render_content_line<F>(
+    f: &mut Frame,
+    theme: &Theme,
+    line: &str,
+    area: Rect,
+    is_cursor: bool,
+    has_link: bool,
+    selected_link: usize,
+    wiki_link_validator: Option<F>,
+) where
+    F: Fn(&str) -> bool,
+{
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
 
     // Check headings from most specific (######) to least specific (#)
@@ -449,7 +513,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
             Span::styled("• ", Style::default().fg(theme.magenta)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme, selected));
+        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme, selected, wiki_link_validator));
         Line::from(spans)
     } else if line.starts_with("> ") {
         // Blockquote
@@ -474,7 +538,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
             Span::styled("• ", Style::default().fg(theme.magenta)),
         ];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme, selected));
+        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme, selected, wiki_link_validator));
         Line::from(spans)
     } else {
         // Regular text lines (including numbered lists)
@@ -482,7 +546,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
         let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
         ];
-        spans.extend(parse_inline_formatting(line, theme, selected));
+        spans.extend(parse_inline_formatting(line, theme, selected, wiki_link_validator));
         Line::from(spans)
     };
 

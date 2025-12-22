@@ -5,20 +5,22 @@ mod editor;
 mod outline;
 mod sidebar;
 mod status_bar;
+mod wiki_autocomplete;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     Frame,
 };
 
-use crate::app::{App, ContextMenuState, DialogState, Mode};
+use crate::app::{App, ContextMenuState, DialogState, Mode, WikiAutocompleteState};
 
 pub use content::render_content;
 pub use dialogs::{
     render_create_folder_dialog, render_create_note_dialog, render_create_note_in_folder_dialog,
-    render_delete_confirm_dialog, render_delete_folder_confirm_dialog, render_directory_not_found_dialog,
-    render_empty_directory_dialog, render_help_dialog, render_onboarding_dialog, render_rename_folder_dialog,
-    render_rename_note_dialog, render_unsaved_changes_dialog, render_welcome_dialog,
+    render_create_wiki_note_dialog, render_delete_confirm_dialog, render_delete_folder_confirm_dialog,
+    render_directory_not_found_dialog, render_empty_directory_dialog, render_help_dialog,
+    render_onboarding_dialog, render_rename_folder_dialog, render_rename_note_dialog,
+    render_unsaved_changes_dialog, render_welcome_dialog,
 };
 pub use editor::render_editor;
 pub use outline::render_outline;
@@ -87,6 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         DialogState::EmptyDirectory => render_empty_directory_dialog(f, app),
         DialogState::DirectoryNotFound => render_directory_not_found_dialog(f, app),
         DialogState::UnsavedChanges => render_unsaved_changes_dialog(f, app),
+        DialogState::CreateWikiNote => render_create_wiki_note_dialog(f, app),
         DialogState::None => {
             // Render welcome dialog on top if active
             if app.show_welcome {
@@ -98,5 +101,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Render context menu on top of everything (Edit mode only)
     if app.mode == Mode::Edit && app.context_menu_state != ContextMenuState::None {
         context_menu::render_context_menu(f, app);
+    }
+
+    if app.mode == Mode::Edit && !matches!(app.wiki_autocomplete, WikiAutocompleteState::None) {
+        wiki_autocomplete::render_wiki_autocomplete(f, app);
     }
 }

@@ -3,7 +3,7 @@ use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode};
+use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteState};
 use crate::editor::CursorMove;
 use crate::ui;
 
@@ -437,6 +437,10 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
             handle_unsaved_changes_dialog(app, key);
             return Ok(false);
         }
+        DialogState::CreateWikiNote => {
+            handle_create_wiki_note_dialog(app, key);
+            return Ok(false);
+        }
         DialogState::None => {}
     }
 
@@ -619,6 +623,158 @@ fn handle_unsaved_changes_dialog(app: &mut App, key: crossterm::event::KeyEvent)
             app.dialog = DialogState::None;
         }
         _ => {}
+    }
+}
+
+fn handle_create_wiki_note_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            if let Some(target) = app.pending_wiki_target.take() {
+                app.create_note_from_wiki_target(&target);
+            }
+            app.dialog = DialogState::None;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.pending_wiki_target = None;
+            app.dialog = DialogState::None;
+        }
+        _ => {}
+    }
+}
+
+fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    let is_open = matches!(app.wiki_autocomplete, WikiAutocompleteState::Open { .. });
+    if !is_open {
+        return false;
+    }
+
+    let (query, suggestions_len) = if let WikiAutocompleteState::Open {
+        ref query,
+        ref suggestions,
+        ..
+    } = app.wiki_autocomplete
+    {
+        (query.clone(), suggestions.len())
+    } else {
+        return false;
+    };
+
+    match key.code {
+        KeyCode::Esc => {
+            app.wiki_autocomplete = WikiAutocompleteState::None;
+            return true;
+        }
+        KeyCode::Enter | KeyCode::Tab => {
+            let suggestion = if let WikiAutocompleteState::Open { ref suggestions, selected_index, .. } = app.wiki_autocomplete {
+                suggestions.get(selected_index).cloned()
+            } else {
+                None
+            };
+
+            if let Some(suggestion) = suggestion {
+                for _ in 0..query.len() {
+                    app.editor.delete_newline();
+                }
+                if suggestion.is_folder {
+                    app.editor.insert_str(&suggestion.insert_text);
+                    let new_query = suggestion.insert_text.clone();
+                    let new_suggestions = app.build_wiki_suggestions(&new_query);
+                    app.wiki_autocomplete = WikiAutocompleteState::Open {
+                        trigger_pos: (0, 0),
+                        query: new_query,
+                        suggestions: new_suggestions,
+                        selected_index: 0,
+                    };
+                } else {
+                    app.editor.insert_str(&suggestion.insert_text);
+                    app.editor.insert_str("]]");
+                    app.wiki_autocomplete = WikiAutocompleteState::None;
+                    app.update_editor_highlights();
+                }
+            }
+            return true;
+        }
+        KeyCode::Down => {
+            if suggestions_len > 0 {
+                if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
+                    *selected_index = (*selected_index + 1) % suggestions_len;
+                }
+            }
+            return true;
+        }
+        KeyCode::Up => {
+            if suggestions_len > 0 {
+                if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
+                    *selected_index = if *selected_index == 0 {
+                        suggestions_len - 1
+                    } else {
+                        *selected_index - 1
+                    };
+                }
+            }
+            return true;
+        }
+        KeyCode::Backspace => {
+            if query.is_empty() {
+                // Close autocomplete and delete the [[
+                app.editor.delete_newline(); // Delete first [
+                app.editor.delete_newline(); // Delete second [
+                app.wiki_autocomplete = WikiAutocompleteState::None;
+            } else {
+                // Delete character from query and editor
+                let mut new_query = query.clone();
+                new_query.pop();
+                app.editor.delete_newline();
+                let new_suggestions = app.build_wiki_suggestions(&new_query);
+                app.wiki_autocomplete = WikiAutocompleteState::Open {
+                    trigger_pos: (0, 0),
+                    query: new_query,
+                    suggestions: new_suggestions,
+                    selected_index: 0,
+                };
+            }
+            return true;
+        }
+        KeyCode::Char(']') => {
+            // Check if user is closing the wiki link manually
+            app.editor.insert_char(']');
+
+            // Get the current line to check if we have ]]
+            let (row, col) = app.editor.cursor();
+            let lines = app.editor.lines();
+            if let Some(line) = lines.get(row) {
+                let chars: Vec<char> = line.chars().collect();
+                // Check for ]] pattern (current char should be ])
+                if col >= 2 {
+                    if chars.get(col.saturating_sub(2)) == Some(&']')
+                        && chars.get(col.saturating_sub(1)) == Some(&']')
+                    {
+                        // User typed ]], close autocomplete
+                        app.wiki_autocomplete = WikiAutocompleteState::None;
+                        app.update_editor_highlights();
+                    }
+                }
+            }
+            return true;
+        }
+        KeyCode::Char(c) => {
+            // Add character to query and editor
+            let mut new_query = query.clone();
+            new_query.push(c);
+            app.editor.insert_char(c);
+            let new_suggestions = app.build_wiki_suggestions(&new_query);
+            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                trigger_pos: (0, 0),
+                query: new_query,
+                suggestions: new_suggestions,
+                selected_index: 0,
+            };
+            return true;
+        }
+        _ => {
+            app.wiki_autocomplete = WikiAutocompleteState::None;
+            return false;
+        }
     }
 }
 
@@ -894,6 +1050,17 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                     app.toggle_current_details();
                 } else if app.current_item_link().is_some() {
                     app.open_current_link();
+                } else {
+                    let wiki_links = app.item_wiki_links_at(app.content_cursor);
+                    if let Some(wiki_link) = wiki_links.get(app.selected_link_index) {
+                        let target = wiki_link.target.clone();
+                        if wiki_link.is_valid {
+                            app.navigate_to_wiki_link(&target);
+                        } else {
+                            app.pending_wiki_target = Some(target);
+                            app.dialog = DialogState::CreateWikiNote;
+                        }
+                    }
                 }
             }
         }
@@ -921,6 +1088,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 }
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if handle_wiki_autocomplete(app, key) {
+        return;
+    }
+
     // Handle context menu keyboard navigation first
     if let ContextMenuState::Open { x, y, selected_index } = app.context_menu_state {
         let items = ContextMenuItem::all();
@@ -1163,8 +1334,34 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.save_edit();
             app.vim_mode = VimMode::Normal;
         }
+        KeyCode::Char('[') => {
+            app.editor.input(key);
+
+            let (row, col) = app.editor.cursor();
+            let lines = app.editor.lines();
+            if let Some(line) = lines.get(row) {
+                let chars: Vec<char> = line.chars().collect();
+                if col >= 2 {
+                    if chars.get(col.saturating_sub(2)) == Some(&'[')
+                        && chars.get(col.saturating_sub(1)) == Some(&'[')
+                    {
+                        let trigger_pos = (row, col.saturating_sub(2));
+                        let suggestions = app.build_wiki_suggestions("");
+                        app.wiki_autocomplete = WikiAutocompleteState::Open {
+                            trigger_pos,
+                            query: String::new(),
+                            suggestions,
+                            selected_index: 0,
+                        };
+                    }
+                }
+            }
+        }
         _ => {
             app.editor.input(key);
+            if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
+                app.update_editor_highlights();
+            }
         }
     }
 }

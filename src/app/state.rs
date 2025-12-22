@@ -287,6 +287,7 @@ pub enum DialogState {
     EmptyDirectory,
     DirectoryNotFound,
     UnsavedChanges,
+    CreateWikiNote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -361,6 +362,40 @@ impl ContextMenuItem {
             ContextMenuItem::SelectAll => "Select All",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum WikiAutocompleteState {
+    #[default]
+    None,
+    Open {
+        trigger_pos: (usize, usize),
+        query: String,
+        suggestions: Vec<WikiSuggestion>,
+        selected_index: usize,
+    },
+}
+
+/// A suggestion item for wiki link autocomplete
+#[derive(Debug, Clone, PartialEq)]
+pub struct WikiSuggestion {
+    /// Display name shown in the list
+    pub display_name: String,
+    /// Text to insert when selected
+    pub insert_text: String,
+    /// True if this is a folder, false if it's a note
+    pub is_folder: bool,
+    /// Full path for reference
+    pub path: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct WikiLinkInfo {
+    pub target: String,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub is_valid: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +482,9 @@ pub struct App {
     pub last_mouse_y: u16,
     pub editor_area: Rect,
     pub context_menu_state: ContextMenuState,
+    // Wiki link support
+    pub wiki_autocomplete: WikiAutocompleteState,
+    pub pending_wiki_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -571,6 +609,8 @@ impl App {
             last_mouse_y: 0,
             editor_area: Rect::default(),
             context_menu_state: ContextMenuState::None,
+            wiki_autocomplete: WikiAutocompleteState::None,
+            pending_wiki_target: None,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1585,6 +1625,270 @@ impl App {
         }
     }
 
+    // ==================== Wiki Link Support ====================
+
+    /// Resolve a wiki link target to a note index
+    /// "note" -> searches all notes for matching title
+    /// "folder/note" -> searches for note in specific folder
+    pub fn resolve_wiki_link(&self, target: &str) -> Option<usize> {
+        if target.is_empty() {
+            return None;
+        }
+
+        let notes_path = self.config.notes_path();
+
+        if target.contains('/') {
+            let expected_path = notes_path.join(format!("{}.md", target));
+            for (idx, note) in self.notes.iter().enumerate() {
+                if let Some(file_path) = &note.file_path {
+                    if file_path == &expected_path {
+                        return Some(idx);
+                    }
+                }
+            }
+        } else {
+            for (idx, note) in self.notes.iter().enumerate() {
+                if note.title.eq_ignore_ascii_case(target) {
+                    if let Some(file_path) = &note.file_path {
+                        if file_path.parent() == Some(&notes_path) {
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if a wiki link target exists
+    pub fn wiki_link_exists(&self, target: &str) -> bool {
+        self.resolve_wiki_link(target).is_some()
+    }
+
+    pub fn get_wiki_path_for_note(&self, note_idx: usize) -> Option<String> {
+        let note = self.notes.get(note_idx)?;
+        let file_path = note.file_path.as_ref()?;
+        let notes_path = self.config.notes_path();
+        if let Ok(relative) = file_path.strip_prefix(&notes_path) {
+            let path_str = relative.to_string_lossy();
+            if let Some(stripped) = path_str.strip_suffix(".md") {
+                return Some(stripped.to_string());
+            }
+        }
+        Some(note.title.clone())
+    }
+
+    pub fn item_wiki_links_at(&self, index: usize) -> Vec<WikiLinkInfo> {
+        let text = match self.content_items.get(index) {
+            Some(ContentItem::TextLine(line)) => line.as_str(),
+            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            _ => return Vec::new(),
+        };
+
+        self.extract_wiki_links_from_text(text)
+    }
+
+    pub fn extract_wiki_links_from_text(&self, text: &str) -> Vec<WikiLinkInfo> {
+        let mut links = Vec::new();
+        let mut search_start = 0;
+
+        while search_start < text.len() {
+            let remaining = &text[search_start..];
+            if let Some(start_pos) = remaining.find("[[") {
+                let abs_start = search_start + start_pos;
+                let after_brackets = &text[abs_start + 2..];
+
+                if let Some(end_pos) = after_brackets.find("]]") {
+                    let target = &after_brackets[..end_pos];
+                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                        let rendered_start = Self::calc_wiki_rendered_pos(text, abs_start);
+                        let rendered_end = rendered_start + target.chars().count();
+                        let is_valid = self.wiki_link_exists(target);
+
+                        links.push(WikiLinkInfo {
+                            target: target.to_string(),
+                            start_col: rendered_start,
+                            end_col: rendered_end,
+                            is_valid,
+                        });
+                    }
+
+                    search_start = abs_start + 2 + end_pos + 2;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        links
+    }
+
+    fn calc_wiki_rendered_pos(text: &str, target_pos: usize) -> usize {
+        let mut rendered_pos = 0;
+        let mut i = 0;
+
+        while i < target_pos && i < text.len() {
+            let remaining = &text[i..];
+
+            if remaining.starts_with("[[") {
+                if let Some(end_pos) = remaining[2..].find("]]") {
+                    let target = &remaining[2..2 + end_pos];
+                    let full_link_len = 2 + end_pos + 2;
+
+                    if i + full_link_len <= target_pos {
+                        rendered_pos += target.chars().count();
+                        i += full_link_len;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            if remaining.starts_with('[') {
+                if let Some(bracket_end) = remaining.find("](") {
+                    let after_bracket = &remaining[bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let link_text = &remaining[1..bracket_end];
+                        let full_link_len = bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            rendered_pos += link_text.chars().count();
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            rendered_pos += 1;
+            i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        }
+
+        rendered_pos
+    }
+
+    #[allow(dead_code)]
+    pub fn current_wiki_link_target(&self) -> Option<String> {
+        let wiki_links = self.item_wiki_links_at(self.content_cursor);
+        wiki_links.get(self.selected_link_index).map(|info| info.target.clone())
+    }
+
+    pub fn navigate_to_wiki_link(&mut self, target: &str) -> bool {
+        if let Some(note_idx) = self.resolve_wiki_link(target) {
+            for (idx, item) in self.sidebar_items.iter().enumerate() {
+                if let SidebarItemKind::Note { note_index } = &item.kind {
+                    if *note_index == note_idx {
+                        self.selected_sidebar_index = idx;
+                        self.selected_note = note_idx;
+                        self.content_cursor = 0;
+                        self.content_scroll_offset = 0;
+                        self.selected_link_index = 0;
+                        self.update_outline();
+                        self.update_content_items();
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn build_wiki_suggestions(&self, query: &str) -> Vec<WikiSuggestion> {
+        let mut suggestions = Vec::new();
+        let notes_path = self.config.notes_path();
+        let (folder_prefix, note_query) = if let Some(last_slash) = query.rfind('/') {
+            (&query[..=last_slash], &query[last_slash + 1..])
+        } else {
+            ("", query)
+        };
+
+        let note_query_lower = note_query.to_lowercase();
+        for (idx, note) in self.notes.iter().enumerate() {
+            if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
+                if !folder_prefix.is_empty() {
+                    if !wiki_path.to_lowercase().starts_with(&folder_prefix.to_lowercase()) {
+                        continue;
+                    }
+                }
+
+                if note.title.to_lowercase().contains(&note_query_lower) {
+                    suggestions.push(WikiSuggestion {
+                        display_name: note.title.clone(),
+                        insert_text: wiki_path.clone(),
+                        is_folder: false,
+                        path: note.file_path.as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+        }
+
+        for item in &self.sidebar_items {
+            if let SidebarItemKind::Folder { path, .. } = &item.kind {
+                if let Ok(relative) = path.strip_prefix(&notes_path) {
+                    let folder_path = relative.to_string_lossy().to_string();
+
+                    if folder_path.is_empty() {
+                        continue;
+                    }
+
+                    if !folder_prefix.is_empty() {
+                        if !folder_path.to_lowercase().starts_with(&folder_prefix.to_lowercase().trim_end_matches('/')) {
+                            continue;
+                        }
+                    }
+
+                    if item.display_name.to_lowercase().contains(&note_query_lower) {
+                        suggestions.push(WikiSuggestion {
+                            display_name: item.display_name.clone(),
+                            insert_text: format!("{}/", folder_path),
+                            is_folder: true,
+                            path: path.display().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        suggestions.sort_by(|a, b| {
+            match (a.is_folder, b.is_folder) {
+                (false, true) => std::cmp::Ordering::Less,
+                (true, false) => std::cmp::Ordering::Greater,
+                _ => a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()),
+            }
+        });
+
+        suggestions
+    }
+
+    pub fn create_note_from_wiki_target(&mut self, target: &str) -> bool {
+        let notes_path = self.config.notes_path();
+        let file_path = notes_path.join(format!("{}.md", target));
+
+        if let Some(parent) = file_path.parent() {
+            if !parent.exists() {
+                if fs::create_dir_all(parent).is_err() {
+                    return false;
+                }
+            }
+        }
+
+        let title = target.rsplit('/').next().unwrap_or(target);
+
+        let content = format!("# {}\n\n", title);
+        if fs::write(&file_path, &content).is_err() {
+            return false;
+        }
+
+        self.load_notes_from_dir();
+
+        self.navigate_to_wiki_link(target)
+    }
+
     pub fn open_current_image(&self) {
         if let Some(path) = self.current_item_is_image() {
             let is_url = path.starts_with("http://") || path.starts_with("https://");
@@ -1821,6 +2125,15 @@ impl App {
             self.editor = Editor::new(lines);
             self.vim_mode = VimMode::Normal;
 
+            // Set wiki link styles from theme
+            self.editor.set_wiki_link_styles(
+                ratatui::style::Style::default().fg(self.theme.cyan),
+                ratatui::style::Style::default().fg(self.theme.red),
+            );
+
+            // Update all editor syntax highlighting
+            self.update_editor_highlights();
+
             self.editor.set_cursor(target_row, 0);
 
             let editor_scroll = target_row.saturating_sub(cursor_offset_from_top);
@@ -1831,6 +2144,40 @@ impl App {
             self.mode = Mode::Edit;
             self.focus = Focus::Content;
         }
+    }
+
+    pub fn update_editor_highlights(&mut self) {
+        self.update_editor_wiki_links();
+        self.editor.update_markdown_highlights();
+    }
+
+    pub fn update_editor_wiki_links(&mut self) {
+        let notes_path = self.config.notes_path();
+        let mut valid_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for note in &self.notes {
+            if let Some(file_path) = &note.file_path {
+                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
+                    let path_str = relative.to_string_lossy();
+                    if let Some(stripped) = path_str.strip_suffix(".md") {
+                        valid_targets.insert(stripped.to_string());
+                        if !stripped.contains('/') {
+                            valid_targets.insert(stripped.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+
+        self.editor.update_wiki_links(|target| {
+            if valid_targets.contains(target) {
+                return true;
+            }
+            if !target.contains('/') {
+                return valid_targets.contains(&target.to_lowercase());
+            }
+            false
+        });
     }
 
     pub fn update_editor_scroll(&mut self, view_height: usize) {

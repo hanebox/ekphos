@@ -16,10 +16,71 @@ use crossterm::event::KeyEvent;
 use ratatui::{
     buffer::Buffer as RatatuiBuffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Widget},
 };
 use unicode_width::UnicodeWidthChar;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HighlightType {
+    WikiLink,
+    Header,
+    Bold,
+    Italic,
+    InlineCode,
+    CodeBlock,
+    Link,
+    Blockquote,
+    ListMarker,
+    HorizontalRule,
+    Custom(u8),
+}
+
+#[derive(Debug, Clone)]
+pub struct HighlightRange {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub style: Style,
+    pub highlight_type: HighlightType,
+    pub priority: u8,
+}
+
+impl HighlightRange {
+    pub fn new(
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        style: Style,
+        highlight_type: HighlightType,
+    ) -> Self {
+        Self {
+            row,
+            start_col,
+            end_col,
+            style,
+            highlight_type,
+            priority: 0,
+        }
+    }
+
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        self.row == row && col >= self.start_col && col < self.end_col
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WikiLinkRange {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub is_valid: bool,
+}
 
 pub struct Editor {
     buffer: TextBuffer,
@@ -35,6 +96,12 @@ pub struct Editor {
     cursor_line_style: Style,
     selection_style: Style,
     clipboard: Option<String>,
+    // General highlighting system
+    highlights: Vec<HighlightRange>,
+    // Wiki link highlighting (legacy, kept for compatibility)
+    wiki_link_ranges: Vec<WikiLinkRange>,
+    wiki_link_valid_style: Style,
+    wiki_link_invalid_style: Style,
 }
 
 impl Default for Editor {
@@ -59,6 +126,10 @@ impl Editor {
             cursor_line_style: Style::default(),
             selection_style: Style::default().bg(ratatui::style::Color::DarkGray),
             clipboard: None,
+            highlights: Vec::new(),
+            wiki_link_ranges: Vec::new(),
+            wiki_link_valid_style: Style::default().fg(Color::Cyan),
+            wiki_link_invalid_style: Style::default().fg(Color::Red),
         }
     }
 
@@ -94,6 +165,406 @@ impl Editor {
 
     pub fn set_selection_style(&mut self, style: Style) {
         self.selection_style = style;
+    }
+
+    pub fn set_wiki_link_styles(&mut self, valid_style: Style, invalid_style: Style) {
+        self.wiki_link_valid_style = valid_style;
+        self.wiki_link_invalid_style = invalid_style;
+    }
+
+    pub fn update_wiki_links<F>(&mut self, validator: F)
+    where
+        F: Fn(&str) -> bool,
+    {
+        self.wiki_link_ranges.clear();
+
+        for (row, line) in self.buffer.lines().iter().enumerate() {
+            let mut search_start = 0;
+
+            while search_start < line.len() {
+                let remaining = &line[search_start..];
+
+                if let Some(start_pos) = remaining.find("[[") {
+                    let abs_start = search_start + start_pos;
+                    let after_brackets = &line[abs_start + 2..];
+
+                    if let Some(end_pos) = after_brackets.find("]]") {
+                        let target = &after_brackets[..end_pos];
+
+                        if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                            let is_valid = validator(target);
+
+                            let start_col = line[..abs_start].chars().count();
+                            let end_col = start_col + 2 + target.chars().count() + 2; // [[target]]
+
+                            self.wiki_link_ranges.push(WikiLinkRange {
+                                row,
+                                start_col,
+                                end_col,
+                                is_valid,
+                            });
+                        }
+
+                        search_start = abs_start + 2 + end_pos + 2;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    fn wiki_link_style_at(&self, row: usize, col: usize) -> Option<Style> {
+        for range in &self.wiki_link_ranges {
+            if range.row == row && col >= range.start_col && col < range.end_col {
+                return if range.is_valid {
+                    Some(self.wiki_link_valid_style)
+                } else {
+                    Some(self.wiki_link_invalid_style)
+                };
+            }
+        }
+        None
+    }
+
+    // ==================== Highlight Management ====================
+
+    pub fn add_highlight(&mut self, highlight: HighlightRange) {
+        self.highlights.push(highlight);
+    }
+
+    pub fn add_highlights(&mut self, highlights: impl IntoIterator<Item = HighlightRange>) {
+        self.highlights.extend(highlights);
+    }
+
+    pub fn clear_highlights(&mut self) {
+        self.highlights.clear();
+    }
+    pub fn clear_highlights_of_type(&mut self, highlight_type: HighlightType) {
+        self.highlights.retain(|h| h.highlight_type != highlight_type);
+    }
+
+    pub fn clear_highlights_for_row(&mut self, row: usize) {
+        self.highlights.retain(|h| h.row != row);
+    }
+
+    pub fn clear_highlights_for_row_and_type(&mut self, row: usize, highlight_type: HighlightType) {
+        self.highlights.retain(|h| h.row != row || h.highlight_type != highlight_type);
+    }
+
+    fn highlight_style_at(&self, row: usize, col: usize) -> Option<Style> {
+        let mut best_match: Option<&HighlightRange> = None;
+
+        for highlight in &self.highlights {
+            if highlight.contains(row, col) {
+                match best_match {
+                    None => best_match = Some(highlight),
+                    Some(current) if highlight.priority > current.priority => {
+                        best_match = Some(highlight);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best_match.map(|h| h.style)
+    }
+
+    #[allow(dead_code)]
+    pub fn highlights_for_row(&self, row: usize) -> Vec<&HighlightRange> {
+        self.highlights.iter().filter(|h| h.row == row).collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn highlights_of_type(&self, highlight_type: HighlightType) -> Vec<&HighlightRange> {
+        self.highlights.iter().filter(|h| h.highlight_type == highlight_type).collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn has_highlights(&self) -> bool {
+        !self.highlights.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub fn highlight_count(&self) -> usize {
+        self.highlights.len()
+    }
+
+    // ==================== Markdown Syntax Highlighting ====================
+
+    pub fn update_markdown_highlights(&mut self) {
+        self.highlights.retain(|h| h.highlight_type == HighlightType::WikiLink);
+
+        let line_count = self.buffer.line_count();
+        let mut in_code_block = false;
+
+        for row in 0..line_count {
+            let line = self.buffer.line(row).unwrap_or("").to_string();
+
+            if line.trim_start().starts_with("```") {
+                in_code_block = !in_code_block;
+                let start = line.find("```").unwrap_or(0);
+                self.highlights.push(HighlightRange::new(
+                    row,
+                    start,
+                    line.chars().count(),
+                    Style::default().fg(Color::Green),
+                    HighlightType::CodeBlock,
+                ));
+                continue;
+            }
+
+            if in_code_block {
+                self.highlights.push(HighlightRange::new(
+                    row,
+                    0,
+                    line.chars().count(),
+                    Style::default().fg(Color::Green),
+                    HighlightType::CodeBlock,
+                ));
+                continue;
+            }
+
+            self.highlight_line_markdown(row, &line);
+        }
+    }
+
+    fn highlight_line_markdown(&mut self, row: usize, line: &str) {
+        let chars: Vec<char> = line.chars().collect();
+        let line_len = chars.len();
+
+        if line_len == 0 {
+            return;
+        }
+
+        if let Some(header_end) = self.detect_header(line) {
+            let level = line.chars().take_while(|&c| c == '#').count();
+            let color = match level {
+                1 => Color::Blue,
+                2 => Color::Green,
+                3 => Color::Yellow,
+                4 => Color::Magenta,
+                5 => Color::Cyan,
+                _ => Color::Gray,
+            };
+            self.highlights.push(HighlightRange::new(
+                row,
+                0,
+                header_end.min(line_len),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                HighlightType::Header,
+            ));
+            return; 
+        }
+
+        if line.trim_start().starts_with('>') {
+            let start = line.find('>').unwrap_or(0);
+            self.highlights.push(HighlightRange::new(
+                row,
+                start,
+                start + 1,
+                Style::default().fg(Color::Cyan),
+                HighlightType::Blockquote,
+            ));
+        }
+
+        self.highlight_list_marker(row, line);
+
+        self.highlight_inline_code(row, line);
+        self.highlight_links(row, line);
+        self.highlight_bold(row, line);
+        self.highlight_italic(row, line);
+    }
+
+    fn detect_header(&self, line: &str) -> Option<usize> {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            let hash_count = trimmed.chars().take_while(|&c| c == '#').count();
+            if hash_count <= 6 {
+                let after_hashes = &trimmed[hash_count..];
+                if after_hashes.is_empty() || after_hashes.starts_with(' ') {
+                    return Some(line.chars().count());
+                }
+            }
+        }
+        None
+    }
+
+    fn highlight_list_marker(&mut self, row: usize, line: &str) {
+        let trimmed = line.trim_start();
+        let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
+
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+            self.highlights.push(HighlightRange::new(
+                row,
+                indent_chars,
+                indent_chars + 1,
+                Style::default().fg(Color::Yellow),
+                HighlightType::ListMarker,
+            ));
+
+            if trimmed.len() >= 5 {
+                let after_marker = &trimmed[2..];
+                if after_marker.starts_with("[ ] ") || after_marker.starts_with("[x] ") || after_marker.starts_with("[X] ") {
+                    self.highlights.push(HighlightRange::new(
+                        row,
+                        indent_chars + 2,
+                        indent_chars + 5,
+                        Style::default().fg(Color::Cyan),
+                        HighlightType::ListMarker,
+                    ));
+                }
+            }
+        }
+        else if let Some(dot_pos) = trimmed.find(". ") {
+            let num_part = &trimmed[..dot_pos];
+            if num_part.chars().all(|c| c.is_ascii_digit()) && !num_part.is_empty() {
+                self.highlights.push(HighlightRange::new(
+                    row,
+                    indent_chars,
+                    indent_chars + dot_pos + 1,
+                    Style::default().fg(Color::Yellow),
+                    HighlightType::ListMarker,
+                ));
+            }
+        }
+    }
+
+    fn highlight_inline_code(&mut self, row: usize, line: &str) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '`' && (i + 1 >= chars.len() || chars[i + 1] != '`') {
+                if let Some(end) = chars[i + 1..].iter().position(|&c| c == '`') {
+                    let end_pos = i + 1 + end;
+                    self.highlights.push(HighlightRange::new(
+                        row,
+                        i,
+                        end_pos + 1,
+                        Style::default().fg(Color::Green),
+                        HighlightType::InlineCode,
+                    ).with_priority(2)); 
+                    i = end_pos + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn highlight_links(&mut self, row: usize, line: &str) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '[' {
+                if let Some(bracket_end) = chars[i + 1..].iter().position(|&c| c == ']') {
+                    let bracket_end_pos = i + 1 + bracket_end;
+                    if bracket_end_pos + 1 < chars.len() && chars[bracket_end_pos + 1] == '(' {
+                        if let Some(paren_end) = chars[bracket_end_pos + 2..].iter().position(|&c| c == ')') {
+                            let paren_end_pos = bracket_end_pos + 2 + paren_end;
+                            self.highlights.push(HighlightRange::new(
+                                row,
+                                i,
+                                paren_end_pos + 1,
+                                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                                HighlightType::Link,
+                            ).with_priority(1));
+                            i = paren_end_pos + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn highlight_bold(&mut self, row: usize, line: &str) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len().saturating_sub(1) {
+            if (chars[i] == '*' && chars[i + 1] == '*') || (chars[i] == '_' && chars[i + 1] == '_') {
+                let marker = chars[i];
+                let mut j = i + 2;
+                while j < chars.len().saturating_sub(1) {
+                    if chars[j] == marker && chars[j + 1] == marker {
+                        if !self.is_position_highlighted(row, i) {
+                            self.highlights.push(HighlightRange::new(
+                                row,
+                                i,
+                                j + 2,
+                                Style::default().add_modifier(Modifier::BOLD),
+                                HighlightType::Bold,
+                            ));
+                        }
+                        i = j + 2;
+                        break;
+                    }
+                    j += 1;
+                }
+                if j >= chars.len().saturating_sub(1) {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn highlight_italic(&mut self, row: usize, line: &str) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '*' || chars[i] == '_' {
+                let marker = chars[i];
+                if i + 1 < chars.len() && chars[i + 1] == marker {
+                    i += 2;
+                    continue;
+                }
+                if i > 0 && chars[i - 1] == marker {
+                    i += 1;
+                    continue;
+                }
+
+                let mut j = i + 1;
+                while j < chars.len() {
+                    if chars[j] == marker {
+                        if j + 1 < chars.len() && chars[j + 1] == marker {
+                            j += 2;
+                            continue;
+                        }
+                        if !self.is_position_highlighted(row, i) {
+                            self.highlights.push(HighlightRange::new(
+                                row,
+                                i,
+                                j + 1,
+                                Style::default().add_modifier(Modifier::ITALIC),
+                                HighlightType::Italic,
+                            ));
+                        }
+                        i = j + 1;
+                        break;
+                    }
+                    j += 1;
+                }
+                if j >= chars.len() {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn is_position_highlighted(&self, row: usize, col: usize) -> bool {
+        self.highlights.iter().any(|h| {
+            h.row == row && col >= h.start_col && col < h.end_col &&
+            (h.highlight_type == HighlightType::InlineCode || h.highlight_type == HighlightType::Link)
+        })
     }
 
     // Cursor
@@ -789,6 +1260,7 @@ impl Editor {
     }
 
     fn get_char_style(&self, row: usize, col: usize, selection: Option<(Position, Position)>) -> Style {
+        // Selection takes priority (highest)
         if let Some((start, end)) = selection {
             let in_selection = if start.row == end.row {
                 row == start.row && col >= start.col && col < end.col
@@ -804,6 +1276,14 @@ impl Editor {
                 return self.selection_style;
             }
         }
+
+        if let Some(highlight_style) = self.highlight_style_at(row, col) {
+            return highlight_style;
+        }
+        if let Some(wiki_style) = self.wiki_link_style_at(row, col) {
+            return wiki_style;
+        }
+
         Style::default()
     }
 }

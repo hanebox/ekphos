@@ -344,6 +344,55 @@ pub fn render_unsaved_changes_dialog(f: &mut Frame, app: &App) {
     f.render_widget(dialog, dialog_area);
 }
 
+pub fn render_create_wiki_note_dialog(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let theme = &app.theme;
+
+    let dialog_width = 55.min(area.width.saturating_sub(4));
+    let dialog_height = 10.min(area.height.saturating_sub(4));
+
+    let dialog_area = Rect {
+        x: (area.width.saturating_sub(dialog_width)) / 2,
+        y: (area.height.saturating_sub(dialog_height)) / 2,
+        width: dialog_width,
+        height: dialog_height,
+    };
+
+    f.render_widget(Clear, dialog_area);
+
+    let target = app.pending_wiki_target.as_deref().unwrap_or("note");
+
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Note '[[{}]]' doesn't exist.", target),
+            Style::default().fg(theme.yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Would you like to create it?",
+            Style::default().fg(theme.foreground),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "y: Create  |  n: Cancel",
+            Style::default().fg(theme.white).add_modifier(Modifier::ITALIC),
+        )),
+    ];
+
+    let dialog = Paragraph::new(content)
+        .block(
+            Block::default()
+                .title(" Create Note ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.cyan))
+                .style(Style::default().bg(theme.background)),
+        )
+        .alignment(Alignment::Center);
+
+    f.render_widget(dialog, dialog_area);
+}
+
 pub fn render_delete_folder_confirm_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
     let theme = &app.theme;

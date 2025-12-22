@@ -34,6 +34,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
   - [Deleting](#deleting)
   - [Searching Notes](#searching-notes)
   - [Editing Notes](#editing-notes)
+  - [Editor Syntax Highlighting](#editor-syntax-highlighting)
   - [Markdown Support](#markdown-support)
   - [Syntax Highlighting](#syntax-highlighting)
   - [Images](#images)
@@ -41,6 +42,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
     - [Viewing Images](#viewing-images)
     - [Terminal Image Support](#terminal-image-support)
   - [Links](#links)
+  - [Wiki Links](#wiki-links)
   - [Collapsible Details](#collapsible-details)
   - [Using the Outline](#using-the-outline)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -322,6 +324,31 @@ Notes are stored as `.md` files in your configured notes directory.
 4. Press `Ctrl+s` to save
 5. Press `Esc` to exit edit mode (discards unsaved changes)
 
+### Editor Syntax Highlighting
+
+The editor provides real-time markdown syntax highlighting while you type:
+
+| Syntax | Style |
+| --- | --- |
+| `# H1` | Blue + Bold |
+| `## H2` | Green + Bold |
+| `### H3` | Yellow + Bold |
+| `#### H4` | Magenta + Bold |
+| `##### H5` | Cyan + Bold |
+| `###### H6` | Gray + Bold |
+| `**bold**` | Bold |
+| `*italic*` | Italic |
+| `` `code` `` | Green |
+| ` ``` ` blocks | Green |
+| `[link](url)` | Cyan + Underline |
+| `[[wiki link]]` | Cyan (valid) / Red (invalid) |
+| `>` blockquote | Cyan |
+| `- * +` list markers | Yellow |
+| `1. 2.` ordered list | Yellow |
+| `[ ] [x]` task boxes | Cyan |
+
+Highlighting updates automatically as you edit, helping you visualize markdown structure without leaving edit mode.
+
 ### Markdown Support
 
 | Syntax           | Rendered As                  |
@@ -339,6 +366,7 @@ Notes are stored as `.md` files in your configured notes directory.
 | ` ```lang `      | Syntax-highlighted code      |
 | `![alt](path)`   | Inline image                 |
 | `[text](url)`    | Clickable link (cyan)        |
+| `[[note]]`       | Wiki link (cyan/red)         |
 | `\| table \|`    | Formatted table              |
 | `<details>`      | Collapsible dropdown (cyan)  |
 
@@ -430,6 +458,48 @@ Markdown links are rendered with underlined cyan text:
 - Use `]` to select next link, `[` to select previous
 - Selected link is highlighted with yellow background
 - `Space` opens the currently selected link
+
+### Wiki Links
+
+Ekphos supports Obsidian-style wiki links for inter-document linking:
+
+```markdown
+[[note name]]
+[[folder/nested note]]
+```
+
+**Syntax:**
+
+| Format | Description |
+| --- | --- |
+| `[[note]]` | Link to a note in the root directory |
+| `[[folder/note]]` | Link to a note in a subfolder |
+
+**Preview Mode:**
+
+- Valid links appear in cyan with underline
+- Invalid links (non-existent notes) appear in red
+- Navigate to link and press `Space` to open the linked note
+- If the target doesn't exist, you'll be prompted to create it
+
+**Edit Mode:**
+
+- Wiki links are syntax-highlighted (cyan for valid, red for invalid)
+- Type `[[` to trigger the autocomplete popup
+- Use `↑/↓` to navigate suggestions (max 5 visible at a time)
+- Folders are prefixed with `dir:`
+- Press `Enter` to insert the selected note/folder
+- Press `Esc` to close the popup
+- Selecting a folder inserts `[[folder/` and continues autocomplete
+
+**Creating Notes from Links:**
+
+When you navigate to a wiki link that doesn't exist:
+1. A dialog appears asking if you want to create the note
+2. Press `y` to create the note at the specified path
+3. Press `n` or `Esc` to cancel
+
+This allows you to write links to notes you plan to create later, then create them when needed.
 
 ### Collapsible Details
 
