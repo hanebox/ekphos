@@ -527,6 +527,7 @@ pub struct App {
     pub wiki_autocomplete: WikiAutocompleteState,
     pub pending_wiki_target: Option<String>,
     pub needs_full_clear: bool,
+    pub pending_g: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -654,6 +655,7 @@ impl App {
             wiki_autocomplete: WikiAutocompleteState::None,
             pending_wiki_target: None,
             needs_full_clear: false,
+            pending_g: false,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -1402,6 +1404,18 @@ impl App {
         }
     }
 
+    pub fn goto_first_content_line(&mut self) {
+        self.content_cursor = 0;
+        self.selected_link_index = 0;
+    }
+
+    pub fn goto_last_content_line(&mut self) {
+        if !self.content_items.is_empty() {
+            self.content_cursor = self.content_items.len() - 1;
+            self.selected_link_index = 0;
+        }
+    }
+
     pub fn toggle_floating_cursor(&mut self) {
         self.floating_cursor_mode = !self.floating_cursor_mode;
     }
@@ -1984,6 +1998,26 @@ impl App {
         self.update_outline();
     }
 
+    pub fn goto_first_sidebar_item(&mut self) {
+        if self.sidebar_items.is_empty() {
+            return;
+        }
+        self.selected_sidebar_index = 0;
+        self.sync_selected_note_from_sidebar();
+        self.update_content_items();
+        self.update_outline();
+    }
+
+    pub fn goto_last_sidebar_item(&mut self) {
+        if self.sidebar_items.is_empty() {
+            return;
+        }
+        self.selected_sidebar_index = self.sidebar_items.len() - 1;
+        self.sync_selected_note_from_sidebar();
+        self.update_content_items();
+        self.update_outline();
+    }
+
     pub fn handle_sidebar_enter(&mut self) {
         if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
             match &item.kind {
@@ -2148,6 +2182,18 @@ impl App {
             None => 0,
         };
         self.outline_state.select(Some(i));
+    }
+
+    pub fn goto_first_outline(&mut self) {
+        if !self.outline.is_empty() {
+            self.outline_state.select(Some(0));
+        }
+    }
+
+    pub fn goto_last_outline(&mut self) {
+        if !self.outline.is_empty() {
+            self.outline_state.select(Some(self.outline.len() - 1));
+        }
     }
 
     pub fn jump_to_outline(&mut self) {

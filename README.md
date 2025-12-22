@@ -541,6 +541,8 @@ The outline panel shows all headings in your note:
 | Key         | Action                                     |
 | ----------- | ------------------------------------------ |
 | `j/k`       | Navigate up/down                           |
+| `gg`        | Go to first item                           |
+| `G`         | Go to last item                            |
 | `Tab`       | Switch focus (Sidebar → Content → Outline) |
 | `Shift+Tab` | Switch focus (reverse)                     |
 | `Enter/o`   | Open image / Jump to heading               |
@@ -567,6 +569,8 @@ The outline panel shows all headings in your note:
 | ----------- | ------------------------------------------ |
 | `j/k`       | Navigate lines                             |
 | `Shift+J/K` | Toggle floating cursor mode                |
+| `gg`        | Go to beginning of file                    |
+| `G`         | Go to end of file                          |
 | `Space`     | Toggle task / details dropdown / Open link |
 | `]/[`       | Next/previous link (multi-link lines)      |
 | `Enter/o`   | Open image in system viewer                |

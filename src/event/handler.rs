@@ -1042,6 +1042,9 @@ fn handle_search_input(app: &mut App, key: crossterm::event::KeyEvent) {
 
 /// Returns true if the app should quit
 fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    let was_pending_g = app.pending_g;
+    app.pending_g = false;
+
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Tab => app.toggle_focus(false),
@@ -1193,6 +1196,30 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_sidebar_collapsed();
+        }
+        KeyCode::Char('g') => {
+            if was_pending_g {
+                match app.focus {
+                    Focus::Sidebar => app.goto_first_sidebar_item(),
+                    Focus::Outline => app.goto_first_outline(),
+                    Focus::Content => {
+                        app.goto_first_content_line();
+                        app.sync_outline_to_content();
+                    }
+                }
+            } else {
+                app.pending_g = true;
+            }
+        }
+        KeyCode::Char('G') => {
+            match app.focus {
+                Focus::Sidebar => app.goto_last_sidebar_item(),
+                Focus::Outline => app.goto_last_outline(),
+                Focus::Content => {
+                    app.goto_last_content_line();
+                    app.sync_outline_to_content();
+                }
+            }
         }
         _ => {}
     }

@@ -871,6 +871,14 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
             Span::styled("Toggle floating cursor", desc_style),
         ]),
         Line::from(vec![
+            Span::styled(" gg        ", key_style),
+            Span::styled("Go to beginning", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" G         ", key_style),
+            Span::styled("Go to end", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled(" Space     ", key_style),
             Span::styled("Toggle task/details", desc_style),
         ]),
