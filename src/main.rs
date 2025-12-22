@@ -2,7 +2,7 @@ mod app;
 mod editor;
 mod event;
 mod highlight;
-mod theme;
+mod config;
 mod ui;
 
 use std::env;
@@ -48,11 +48,11 @@ fn main() -> io::Result<()> {
                 return Ok(());
             }
             "-c" | "--config" => {
-                println!("{}", theme::Config::config_path().display());
+                println!("{}", config::Config::config_path().display());
                 return Ok(());
             }
             "-d" | "--dir" => {
-                let config = theme::Config::load();
+                let config = config::Config::load();
                 println!("{}", config.notes_path().display());
                 return Ok(());
             }

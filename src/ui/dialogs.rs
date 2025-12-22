@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme::Theme;
+use crate::config::Theme;
 
 pub fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
     let area = f.area();

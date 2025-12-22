@@ -10,7 +10,7 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 
 use crate::app::{App, ContentItem, Focus, ImageState, Mode};
-use crate::theme::Theme;
+use crate::config::Theme;
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focus == Focus::Content && app.mode == Mode::Normal;

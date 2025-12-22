@@ -14,7 +14,7 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
 use crate::editor::Editor;
 use crate::highlight::Highlighter;
-use crate::theme::{Config, Theme};
+use crate::config::{Config, Theme};
 
 const WELCOME_NOTE_CONTENT: &str = r#"# Welcome to Ekphos
 
