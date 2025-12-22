@@ -33,6 +33,9 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
                         }
                     }
                 }
+                Event::Paste(text) => {
+                    handle_paste_event(app, text);
+                }
                 _ => {}
             }
         } else {
@@ -173,6 +176,28 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
             _ => {}
         }
     }
+}
+
+fn handle_paste_event(app: &mut App, text: String) {
+    // Only handle paste in Edit mode
+    if app.mode != Mode::Edit {
+        return;
+    }
+
+    // Close any open menus/autocomplete
+    app.context_menu_state = ContextMenuState::None;
+    app.wiki_autocomplete = WikiAutocompleteState::None;
+
+    // If in Normal or Visual mode, switch to Insert mode
+    if app.vim_mode == VimMode::Normal || app.vim_mode == VimMode::Visual {
+        app.editor.cancel_selection();
+        app.vim_mode = VimMode::Insert;
+    }
+
+    // Insert the entire pasted text at once
+    app.editor.insert_str(&text);
+    app.update_editor_highlights();
+    app.update_editor_block();
 }
 
 fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
