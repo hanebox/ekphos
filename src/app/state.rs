@@ -435,7 +435,10 @@ pub struct App {
     pub content_item_rects: Vec<(usize, Rect)>,
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
-    pub highlighter: Highlighter,
+    pub highlighter: Option<Highlighter>,
+    pub highlighter_loading: bool,
+    pub highlighter_sender: Sender<Highlighter>,
+    pub highlighter_receiver: Receiver<Highlighter>,
     pub sidebar_collapsed: bool,
     pub outline_collapsed: bool,
     // Mouse selection state
@@ -464,7 +467,6 @@ impl App {
         let is_first_launch = !config_exists;
 
         let theme = Theme::from_name(&config.theme);
-        let syntax_theme = config.syntax_theme.clone();
 
         let mut list_state = ListState::default();
         list_state.select(Some(0));
@@ -511,6 +513,7 @@ impl App {
         let input_buffer = config.notes_dir.clone();
 
         let (image_sender, image_receiver) = mpsc::channel();
+        let (highlighter_sender, highlighter_receiver) = mpsc::channel();
 
         let mut app = Self {
             notes: Vec::new(),
@@ -556,7 +559,10 @@ impl App {
             content_item_rects: Vec::new(),
             selected_link_index: 0,
             details_open_states: HashMap::new(),
-            highlighter: Highlighter::new(&syntax_theme),
+            highlighter: None,
+            highlighter_loading: false,
+            highlighter_sender,
+            highlighter_receiver,
             sidebar_collapsed: false,
             outline_collapsed: false,
             // Mouse selection state
@@ -1918,6 +1924,39 @@ impl App {
                 let _ = sender.send((url_owned, img));
             }
         });
+    }
+
+    // ==================== Highlighter Lazy Loading ====================
+
+    // Syntect syntax highlighter takes around extra 30mb of memory, which I think it should be considered
+    // as quite bloated, the threshold of ekphos should be no more than 15mb if possible
+    // but unfortunately still can't find a better syntax highlighter than syntect for now
+    // I will enable this lazy load by default so markdown file without code syntax won't need to take extra 30mb of memory
+    
+    pub fn poll_highlighter(&mut self) {
+        if let Ok(highlighter) = self.highlighter_receiver.try_recv() {
+            self.highlighter = Some(highlighter);
+            self.highlighter_loading = false;
+        }
+    }
+
+    pub fn ensure_highlighter(&mut self) {
+        if self.highlighter.is_some() || self.highlighter_loading {
+            return;
+        }
+
+        self.highlighter_loading = true;
+        let syntax_theme = self.config.syntax_theme.clone();
+        let sender = self.highlighter_sender.clone();
+
+        std::thread::spawn(move || {
+            let highlighter = Highlighter::new(&syntax_theme);
+            let _ = sender.send(highlighter);
+        });
+    }
+
+    pub fn get_highlighter(&self) -> Option<&Highlighter> {
+        self.highlighter.as_ref()
     }
 
     // ==================== Mouse Selection Helpers ====================

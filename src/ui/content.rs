@@ -10,7 +10,6 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 
 use crate::app::{App, ContentItem, Focus, ImageState, Mode};
-use crate::highlight::Highlighter;
 use crate::theme::Theme;
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
@@ -227,7 +226,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
             }
             ContentItem::CodeLine(line) => {
-                render_code_line(f, &app.theme, &app.highlighter, &line, &current_lang, chunks[chunk_idx], is_cursor_line);
+                app.ensure_highlighter();
+                render_code_line(f, &app.theme, app.get_highlighter(), &line, &current_lang, chunks[chunk_idx], is_cursor_line);
             }
             ContentItem::CodeFence(lang) => {
                 current_lang = lang.clone();
@@ -509,7 +509,7 @@ fn render_content_line(f: &mut Frame, theme: &Theme, line: &str, area: Rect, is_
 fn render_code_line(
     f: &mut Frame,
     theme: &Theme,
-    highlighter: &Highlighter,
+    highlighter: Option<&crate::highlight::Highlighter>,
     line: &str,
     lang: &str,
     area: Rect,
@@ -523,7 +523,11 @@ fn render_code_line(
     ];
 
     if !lang.is_empty() {
-        spans.extend(highlighter.highlight_line(line, lang));
+        if let Some(hl) = highlighter {
+            spans.extend(hl.highlight_line(line, lang));
+        } else {
+            spans.push(Span::styled(line.to_string(), Style::default().fg(theme.green)));
+        }
     } else {
         spans.push(Span::styled(line.to_string(), Style::default().fg(theme.green)));
     }

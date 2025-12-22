@@ -10,6 +10,7 @@ use crate::ui;
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         app.poll_pending_images();
+        app.poll_highlighter();
 
         terminal.draw(|f| ui::render(f, app))?;
 
