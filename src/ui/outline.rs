@@ -8,6 +8,10 @@ use ratatui::{
 
 use crate::app::{App, Focus, Mode};
 
+fn expand_tabs(text: &str) -> String {
+    text.replace('\t', "    ")
+}
+
 pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     if app.outline_collapsed {
@@ -33,7 +37,7 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
                 _ => Style::default().fg(theme.foreground),
             };
             ListItem::new(Line::from(Span::styled(
-                format!("{}{}{}", indent, prefix, item.title),
+                format!("{}{}{}", indent, prefix, expand_tabs(&item.title)),
                 style,
             )))
         })

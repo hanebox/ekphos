@@ -149,6 +149,9 @@ syntax_theme = "base16-ocean.dark"
 
 [editor]
 line_wrap = true
+tab_width = 4
+left_padding = 0
+right_padding = 1
 ```
 
 | Setting          | Description                            | Default              |
@@ -161,9 +164,12 @@ line_wrap = true
 
 **Editor settings:**
 
-| Setting              | Description                          | Default |
-| -------------------- | ------------------------------------ | ------- |
-| `editor.line_wrap`   | Enable soft line wrapping in editor  | `true`  |
+| Setting               | Description                              | Default |
+| --------------------- | ---------------------------------------- | ------- |
+| `editor.line_wrap`    | Enable soft line wrapping in editor      | `true`  |
+| `editor.tab_width`    | Number of spaces to display for tabs     | `4`     |
+| `editor.left_padding` | Left padding in editor (columns)         | `0`     |
+| `editor.right_padding`| Right padding in editor (columns)        | `1`     |
 
 > **Note:** This configuration format requires v0.3.0 or later.
 

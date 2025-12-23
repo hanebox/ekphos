@@ -554,6 +554,8 @@ impl App {
 
         let mut editor = Editor::default();
         editor.set_line_wrap(config.editor.line_wrap);
+        editor.set_tab_width(config.editor.tab_width);
+        editor.set_padding(config.editor.left_padding, config.editor.right_padding);
         editor.set_block(
             Block::default()
                 .borders(Borders::ALL)

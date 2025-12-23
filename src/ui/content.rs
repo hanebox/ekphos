@@ -421,19 +421,25 @@ where
     spans
 }
 
+fn expand_tabs(text: &str) -> String {
+    text.replace('\t', "    ")
+}
+
 /// Normalize whitespace, replace tabs with spaces and handle special Unicode whitespace
 fn normalize_whitespace(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\t' => ' ',  // Tab to space
-            '\u{00A0}' => ' ',  // Non-breaking space
-            '\u{2000}'..='\u{200B}' => ' ',  // Various Unicode spaces
-            '\u{202F}' => ' ',  // Narrow no-break space
-            '\u{205F}' => ' ',  // Medium mathematical space
-            '\u{3000}' => ' ',  // Ideographic space
-            _ => c,
-        })
-        .collect()
+    let mut result = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\t' => result.push_str("    "),  // Tab to 4 spaces
+            '\u{00A0}' => result.push(' '),  // Non-breaking space
+            '\u{2000}'..='\u{200B}' => result.push(' '),  // Various Unicode spaces
+            '\u{202F}' => result.push(' '),  // Narrow no-break space
+            '\u{205F}' => result.push(' '),  // Medium mathematical space
+            '\u{3000}' => result.push(' '),  // Ideographic space
+            _ => result.push(c),
+        }
+    }
+    result
 }
 
 fn render_content_line<F>(
@@ -596,6 +602,7 @@ fn render_code_line(
     is_cursor: bool,
 ) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let expanded_line = expand_tabs(line);
 
     let mut spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
@@ -604,12 +611,12 @@ fn render_code_line(
 
     if !lang.is_empty() {
         if let Some(hl) = highlighter {
-            spans.extend(hl.highlight_line(line, lang));
+            spans.extend(hl.highlight_line(&expanded_line, lang));
         } else {
-            spans.push(Span::styled(line.to_string(), Style::default().fg(theme.green)));
+            spans.push(Span::styled(expanded_line, Style::default().fg(theme.green)));
         }
     } else {
-        spans.push(Span::styled(line.to_string(), Style::default().fg(theme.green)));
+        spans.push(Span::styled(expanded_line, Style::default().fg(theme.green)));
     }
 
     let styled_line = Line::from(spans);
@@ -654,13 +661,14 @@ fn render_task_item(f: &mut Frame, theme: &Theme, text: &str, checked: bool, are
     } else {
         Style::default().fg(theme.foreground)
     };
+    let expanded_text = expand_tabs(text);
 
     let styled_line = Line::from(vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
         Span::styled("[", Style::default().fg(checkbox_color)),
         Span::styled(if checked { "x" } else { " " }, Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)),
         Span::styled("] ", Style::default().fg(checkbox_color)),
-        Span::styled(text, text_style),
+        Span::styled(expanded_text, text_style),
     ]);
 
     let style = if is_cursor {
@@ -707,8 +715,9 @@ fn render_table_row(
                 spans.push(Span::styled("│", Style::default().fg(border_color)));
             }
 
-            let width = column_widths.get(i).copied().unwrap_or(cell.chars().count());
-            let cell_content = format!(" {:^width$} ", cell, width = width);
+            let expanded_cell = expand_tabs(cell);
+            let width = column_widths.get(i).copied().unwrap_or(expanded_cell.chars().count());
+            let cell_content = format!(" {:^width$} ", expanded_cell, width = width);
 
             let cell_style = if is_header {
                 Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
@@ -848,11 +857,12 @@ fn render_details(
 
     let mut lines: Vec<Line> = Vec::new();
 
+    let expanded_summary = expand_tabs(summary);
     let summary_spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
         Span::styled(toggle_indicator, Style::default().fg(theme.cyan)),
         Span::styled(
-            summary,
+            expanded_summary,
             Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
         ),
     ];
@@ -860,10 +870,11 @@ fn render_details(
 
     if is_open {
         for content in content_lines {
+            let expanded_content = expand_tabs(content);
             let content_spans = vec![
                 Span::styled("  ", Style::default()),
                 Span::styled("│ ", Style::default().fg(theme.bright_black)),
-                Span::styled(content, Style::default().fg(theme.foreground)),
+                Span::styled(expanded_content, Style::default().fg(theme.foreground)),
             ];
             lines.push(Line::from(content_spans));
         }

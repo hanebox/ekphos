@@ -25,16 +25,37 @@ pub struct Config {
 pub struct EditorConfig {
     #[serde(default = "default_line_wrap")]
     pub line_wrap: bool,
+    #[serde(default = "default_tab_width")]
+    pub tab_width: u16,
+    #[serde(default = "default_left_padding")]
+    pub left_padding: u16,
+    #[serde(default = "default_right_padding")]
+    pub right_padding: u16,
 }
 
 fn default_line_wrap() -> bool {
     true
 }
 
+fn default_tab_width() -> u16 {
+    4
+}
+
+fn default_left_padding() -> u16 {
+    0
+}
+
+fn default_right_padding() -> u16 {
+    1
+}
+
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
             line_wrap: default_line_wrap(),
+            tab_width: default_tab_width(),
+            left_padding: default_left_padding(),
+            right_padding: default_right_padding(),
         }
     }
 }
