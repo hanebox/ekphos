@@ -550,6 +550,7 @@ The outline panel shows all headings in your note:
 | `q`         | Quit                                       |
 | `Ctrl+b`    | Toggle sidebar collapse                    |
 | `Ctrl+o`    | Toggle outline collapse                    |
+| `R`         | Reload files from disk                     |
 
 ### Sidebar
 

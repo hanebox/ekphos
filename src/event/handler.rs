@@ -30,7 +30,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
         let needs_clear = prev_sidebar_collapsed != app.sidebar_collapsed
             || prev_outline_collapsed != app.outline_collapsed
             || prev_mode != app.mode
-            || prev_selected_note != app.selected_note  
+            || prev_selected_note != app.selected_note
             || app.needs_full_clear;
 
         if needs_clear {
@@ -55,23 +55,23 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
 
         if has_background_work {
             let timeout = if app.mouse_button_held {
-                std::time::Duration::from_millis(33)  
+                std::time::Duration::from_millis(33)
             } else {
-                std::time::Duration::from_millis(100) 
+                std::time::Duration::from_millis(100)
             };
 
             if event::poll(timeout)? {
                 if process_events(terminal, app, &mut needs_render)? {
-                    return Ok(()); 
+                    return Ok(());
                 }
             } else if app.mouse_button_held && app.mode == Mode::Edit {
                 handle_continuous_auto_scroll(app);
                 needs_render = true;
             }
         } else {
-            // Idle: block until event to avoid cpu trashing
+            // idle block until event to avoid unnecessary cpu usage
             if process_events(terminal, app, &mut needs_render)? {
-                return Ok(()); 
+                return Ok(());
             }
         }
     }
@@ -93,9 +93,13 @@ fn process_events(
         *needs_render = true;
 
         match event {
+            Event::FocusGained => {
+                app.reload_on_focus();
+                app.needs_full_clear = true;
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if handle_key_event(app, key)? {
-                    return Ok(true); 
+                    return Ok(true);
                 }
             }
             Event::Mouse(mouse) => handle_mouse_event(app, mouse),
@@ -1101,6 +1105,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                     }
                 }
             }
+        }
+        KeyCode::Char('R') => {
+            app.reload_on_focus();
+            app.needs_full_clear = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {

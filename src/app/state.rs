@@ -665,6 +665,35 @@ impl App {
         app
     }
 
+    pub fn reload_on_focus(&mut self) {
+        if self.mode == Mode::Edit {
+            return;
+        }
+        let current_note_path = self.current_note().and_then(|n| n.file_path.clone());
+        let scroll_offset = self.content_scroll_offset;
+        let content_cursor = self.content_cursor;
+        self.load_notes_from_dir();
+        if let Some(path) = current_note_path {
+            for (idx, item) in self.sidebar_items.iter().enumerate() {
+                if let SidebarItemKind::Note { note_index } = &item.kind {
+                    if self.notes.get(*note_index)
+                        .and_then(|n| n.file_path.as_ref())
+                        .map(|p| p == &path)
+                        .unwrap_or(false)
+                    {
+                        self.selected_sidebar_index = idx;
+                        self.selected_note = *note_index;
+                        break;
+                    }
+                }
+            }
+        }
+        self.content_cursor = content_cursor.min(self.content_items.len().saturating_sub(1));
+        self.content_scroll_offset = scroll_offset;
+        self.update_content_items();
+        self.update_outline();
+    }
+
     fn directory_has_notes(path: &PathBuf) -> bool {
         Self::directory_has_notes_recursive(path)
     }
@@ -875,35 +904,6 @@ impl App {
                 self.current_image = None;
             }
         }
-    }
-
-    fn create_welcome_notes(&mut self) {
-        let notes_path = self.config.notes_path();
-
-        let demo_content = DEMO_NOTE_CONTENT.to_string();
-        let demo_path = notes_path.join("Demo Note.md");
-        let _ = fs::write(&demo_path, &demo_content);
-
-        self.notes.push(Note {
-            title: "Demo Note".to_string(),
-            content: demo_content,
-            file_path: Some(demo_path),
-        });
-
-        let content = GETTING_STARTED_CONTENT.to_string();
-        let file_path = notes_path.join("Getting Started.md");
-        let _ = fs::write(&file_path, &content);
-
-        self.notes.push(Note {
-            title: "Getting Started".to_string(),
-            content,
-            file_path: Some(file_path),
-        });
-
-        self.selected_note = 1;
-        self.list_state.select(Some(1));
-        self.update_content_items();
-        self.update_outline();
     }
 
     pub fn create_note(&mut self, name: &str) {
@@ -1152,22 +1152,20 @@ impl App {
     }
 
     pub fn complete_onboarding(&mut self) {
+        // 1. Save config
         self.config.notes_dir = self.input_buffer.clone();
-        // Save config (this creates the config file, marking onboarding as complete)
         let _ = self.config.save();
 
-        // Create the notes directory
         let notes_path = self.config.notes_path();
         let _ = fs::create_dir_all(&notes_path);
 
+        let _ = fs::write(notes_path.join("Demo Note.md"), DEMO_NOTE_CONTENT);
+        let _ = fs::write(notes_path.join("Getting Started.md"), GETTING_STARTED_CONTENT);
         self.dialog = DialogState::None;
         self.load_notes_from_dir();
 
-        if self.notes.is_empty() {
-            self.create_welcome_notes();
-        }
-
         self.show_welcome = true;
+        self.needs_full_clear = true;
     }
 
     /// Create the notes directory when it doesn't exist
