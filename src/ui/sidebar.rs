@@ -130,11 +130,13 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut list_state = ListState::default();
     list_state.select(Some(app.selected_sidebar_index));
+    app.sidebar_area = list_area;
 
     f.render_stateful_widget(sidebar, list_area, &mut list_state);
 }
 
-fn render_collapsed_sidebar(f: &mut Frame, app: &App, area: Rect) {
+fn render_collapsed_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
+    app.sidebar_area = Rect::default();
     let theme = &app.theme;
 
     let border_style = if app.focus == Focus::Sidebar && app.mode == Mode::Normal {

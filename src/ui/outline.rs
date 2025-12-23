@@ -67,6 +67,8 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
             .highlight_symbol("▶ ");
     }
 
+    app.outline_area = area;
+
     f.render_stateful_widget(outline, area, &mut app.outline_state);
 }
 
@@ -126,6 +128,7 @@ fn render_collapsed_outline(f: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         );
     }
+    app.outline_area = area;
 
     f.render_stateful_widget(outline, area, &mut app.outline_state);
 }

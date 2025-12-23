@@ -182,7 +182,49 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if in_content_area {
+                let in_sidebar_area = app.sidebar_area.width > 0
+                    && mouse_x >= app.sidebar_area.x
+                    && mouse_x < app.sidebar_area.x + app.sidebar_area.width
+                    && mouse_y >= app.sidebar_area.y
+                    && mouse_y < app.sidebar_area.y + app.sidebar_area.height;
+
+                let in_outline_area = app.outline_area.width > 0
+                    && mouse_x >= app.outline_area.x
+                    && mouse_x < app.outline_area.x + app.outline_area.width
+                    && mouse_y >= app.outline_area.y
+                    && mouse_y < app.outline_area.y + app.outline_area.height;
+
+                if in_sidebar_area {
+                    let inner_y = mouse_y.saturating_sub(app.sidebar_area.y + 1); // +1 for top border
+                    let clicked_index = inner_y as usize;
+
+                    if clicked_index < app.sidebar_items.len() {
+                        app.selected_sidebar_index = clicked_index;
+                        app.focus = Focus::Sidebar;
+                        if let Some(item) = app.sidebar_items.get(clicked_index) {
+                            match &item.kind {
+                                SidebarItemKind::Folder { path, .. } => {
+                                    let path = path.clone();
+                                    app.toggle_folder(path);
+                                }
+                                SidebarItemKind::Note { .. } => {
+                                    app.sync_selected_note_from_sidebar();
+                                    app.update_content_items();
+                                    app.update_outline();
+                                }
+                            }
+                        }
+                    }
+                } else if in_outline_area {
+                    let inner_y = mouse_y.saturating_sub(app.outline_area.y + 1); // +1 for top border
+                    let clicked_index = inner_y as usize;
+
+                    if clicked_index < app.outline.len() {
+                        app.outline_state.select(Some(clicked_index));
+                        app.focus = Focus::Outline;
+                        app.jump_to_outline();
+                    }
+                } else if in_content_area {
                     let clicked_item = app.content_item_rects.iter().find(|(_, rect)| {
                         mouse_y >= rect.y && mouse_y < rect.y + rect.height
                     }).map(|(idx, _)| *idx);
