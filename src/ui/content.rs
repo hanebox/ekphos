@@ -425,6 +425,138 @@ fn expand_tabs(text: &str) -> String {
     text.replace('\t', "    ")
 }
 
+fn display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    s.width()
+}
+
+fn wrap_line_for_cursor<'a>(
+    first_line_spans: Vec<Span<'a>>,
+    available_width: usize,
+    _theme: &Theme,
+) -> Vec<Line<'a>> {
+    if available_width == 0 {
+        return vec![Line::from(first_line_spans)];
+    }
+    let mut prefix_spans: Vec<Span<'a>> = Vec::new();
+    let mut content_spans: Vec<Span<'a>> = Vec::new();
+    let mut prefix_width = 0usize;
+
+    for (i, span) in first_line_spans.into_iter().enumerate() {
+        let span_text = span.content.to_string();
+        let span_width = display_width(&span_text);
+        if i == 0 {
+            prefix_spans.push(span);
+            prefix_width += span_width;
+        } else if i == 1 && span_width <= 3 && !span_text.chars().any(|c| c.is_alphanumeric()) {
+            prefix_spans.push(span);
+            prefix_width += span_width;
+        } else {
+            content_spans.push(span);
+        }
+    }
+
+    let content_width: usize = content_spans.iter()
+        .map(|s| display_width(&s.content))
+        .sum();
+    let first_line_available = available_width.saturating_sub(prefix_width);
+
+    if content_width <= first_line_available {
+        let mut spans = prefix_spans;
+        spans.extend(content_spans);
+        return vec![Line::from(spans)];
+    }
+
+    let continuation_indent = " ".repeat(prefix_width);
+    let continuation_available = available_width.saturating_sub(prefix_width);
+    let mut lines: Vec<Line<'a>> = Vec::new();
+    let mut current_line_spans: Vec<Span<'a>> = Vec::new();
+    let mut current_line_width = 0usize;
+    let mut is_first_line = true;
+
+    for span in content_spans {
+        let span_style = span.style;
+        let span_text = span.content.to_string();
+        let mut remaining_text = span_text.as_str();
+
+        while !remaining_text.is_empty() {
+            let max_width = if is_first_line { first_line_available } else { continuation_available };
+            let available_in_line = max_width.saturating_sub(current_line_width);
+
+            if available_in_line == 0 {
+                if is_first_line {
+                    let mut line_spans = prefix_spans.clone();
+                    line_spans.extend(current_line_spans.drain(..));
+                    lines.push(Line::from(line_spans));
+                    is_first_line = false;
+                } else {
+                    let mut line_spans = vec![Span::styled(continuation_indent.clone(), Style::default())];
+                    line_spans.extend(current_line_spans.drain(..));
+                    lines.push(Line::from(line_spans));
+                }
+                current_line_width = 0;
+                continue;
+            }
+
+            let mut fit_chars = 0;
+            let mut fit_width = 0;
+            for ch in remaining_text.chars() {
+                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                if fit_width + ch_width > available_in_line {
+                    break;
+                }
+                fit_chars += ch.len_utf8();
+                fit_width += ch_width;
+            }
+
+            if fit_chars == 0 && current_line_width == 0 {
+                let ch = remaining_text.chars().next().unwrap();
+                fit_chars = ch.len_utf8();
+                fit_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+            }
+
+            if fit_chars > 0 {
+                let (fitting, rest) = remaining_text.split_at(fit_chars);
+                current_line_spans.push(Span::styled(fitting.to_string(), span_style));
+                current_line_width += fit_width;
+                remaining_text = rest;
+            }
+
+            if !remaining_text.is_empty() {
+                if is_first_line {
+                    let mut line_spans = prefix_spans.clone();
+                    line_spans.extend(current_line_spans.drain(..));
+                    lines.push(Line::from(line_spans));
+                    is_first_line = false;
+                } else {
+                    let mut line_spans = vec![Span::styled(continuation_indent.clone(), Style::default())];
+                    line_spans.extend(current_line_spans.drain(..));
+                    lines.push(Line::from(line_spans));
+                }
+                current_line_width = 0;
+            }
+        }
+    }
+
+    if !current_line_spans.is_empty() {
+        if is_first_line {
+            let mut line_spans = prefix_spans.clone();
+            line_spans.extend(current_line_spans);
+            lines.push(Line::from(line_spans));
+        } else {
+            let mut line_spans = vec![Span::styled(continuation_indent, Style::default())];
+            line_spans.extend(current_line_spans);
+            lines.push(Line::from(line_spans));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(prefix_spans));
+    }
+
+    lines
+}
+
 /// Normalize whitespace, replace tabs with spaces and handle special Unicode whitespace
 fn normalize_whitespace(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
@@ -456,6 +588,7 @@ fn render_content_line<F>(
 {
     let line = &normalize_whitespace(line);
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
     // Check headings from most specific (######) to least specific (#)
     let styled_line = if line.starts_with("###### ") {
@@ -580,16 +713,27 @@ fn render_content_line<F>(
         styled_line
     };
 
-    let style = if is_cursor {
+    // Manually handle wrapping so continuation lines have same padding as first line
+    let wrapped_lines = wrap_line_for_cursor(final_line.spans, available_width, theme);
+
+    let bg_style = if is_cursor {
         Style::default().bg(theme.bright_black)
     } else {
         Style::default()
     };
 
-    let paragraph = Paragraph::new(final_line)
-        .style(style)
-        .wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
+    for (i, wrapped_line) in wrapped_lines.iter().enumerate() {
+        let line_area = Rect {
+            x: area.x,
+            y: area.y.saturating_add(i as u16),
+            width: area.width,
+            height: 1,
+        };
+        if line_area.y < area.y + area.height {
+            let paragraph = Paragraph::new(wrapped_line.clone()).style(bg_style);
+            f.render_widget(paragraph, line_area);
+        }
+    }
 }
 
 fn render_code_line(
@@ -603,6 +747,7 @@ fn render_code_line(
 ) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let expanded_line = expand_tabs(line);
+    let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
     let mut spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
@@ -619,18 +764,25 @@ fn render_code_line(
         spans.push(Span::styled(expanded_line, Style::default().fg(theme.green)));
     }
 
-    let styled_line = Line::from(spans);
-
-    let style = if is_cursor {
+    let wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
+    let bg_style = if is_cursor {
         Style::default().bg(theme.bright_black)
     } else {
         Style::default().bg(theme.black)
     };
 
-    let paragraph = Paragraph::new(styled_line)
-        .style(style)
-        .wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
+    for (i, wrapped_line) in wrapped_lines.iter().enumerate() {
+        let line_area = Rect {
+            x: area.x,
+            y: area.y.saturating_add(i as u16),
+            width: area.width,
+            height: 1,
+        };
+        if line_area.y < area.y + area.height {
+            let paragraph = Paragraph::new(wrapped_line.clone()).style(bg_style);
+            f.render_widget(paragraph, line_area);
+        }
+    }
 }
 
 fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area: Rect, is_cursor: bool) {
@@ -662,25 +814,36 @@ fn render_task_item(f: &mut Frame, theme: &Theme, text: &str, checked: bool, are
         Style::default().fg(theme.foreground)
     };
     let expanded_text = expand_tabs(text);
+    let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
-    let styled_line = Line::from(vec![
+    let spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.yellow)),
         Span::styled("[", Style::default().fg(checkbox_color)),
         Span::styled(if checked { "x" } else { " " }, Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)),
         Span::styled("] ", Style::default().fg(checkbox_color)),
         Span::styled(expanded_text, text_style),
-    ]);
+    ];
 
-    let style = if is_cursor {
+    let wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
+
+    let bg_style = if is_cursor {
         Style::default().bg(theme.bright_black)
     } else {
         Style::default()
     };
 
-    let paragraph = Paragraph::new(styled_line)
-        .style(style)
-        .wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
+    for (i, wrapped_line) in wrapped_lines.iter().enumerate() {
+        let line_area = Rect {
+            x: area.x,
+            y: area.y.saturating_add(i as u16),
+            width: area.width,
+            height: 1,
+        };
+        if line_area.y < area.y + area.height {
+            let paragraph = Paragraph::new(wrapped_line.clone()).style(bg_style);
+            f.render_widget(paragraph, line_area);
+        }
+    }
 }
 
 fn render_table_row(
