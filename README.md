@@ -8,6 +8,8 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 
 ![Ekphos Preview](examples/ekphos-screenshot.png)
 
+> **Important:** Ekphos is moving fast. Always update to the latest version with `cargo install ekphos`. If you encounter config issues after updating, run `ekphos --reset` (available since v0.7.0) to reset your configuration and apply breaking changes correctly.
+
 ## Table of Contents
 
 - [Getting Started](#getting-started)
