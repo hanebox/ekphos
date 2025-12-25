@@ -1879,6 +1879,52 @@ impl App {
         self.resolve_wiki_link(target).is_some()
     }
 
+    /// Check if cursor position is inside code (inline code or code block)
+    pub fn is_cursor_in_code(&self, row: usize, col: usize) -> bool {
+        let lines = self.editor.lines();
+
+        // Check if we're inside a code block by counting ``` fences before this row
+        let mut in_code_block = false;
+        for (i, line) in lines.iter().enumerate() {
+            if i >= row {
+                break;
+            }
+            if line.trim_start().starts_with("```") {
+                in_code_block = !in_code_block;
+            }
+        }
+
+        // If current line starts with ```, we're on the fence line
+        if let Some(current_line) = lines.get(row) {
+            if current_line.trim_start().starts_with("```") {
+                return true;
+            }
+        }
+
+        if in_code_block {
+            return true;
+        }
+
+        // Check for inline code on the current line
+        if let Some(line) = lines.get(row) {
+            let chars: Vec<char> = line.chars().collect();
+            let mut in_inline_code = false;
+            for (i, &ch) in chars.iter().enumerate() {
+                if i >= col {
+                    break;
+                }
+                if ch == '`' {
+                    in_inline_code = !in_inline_code;
+                }
+            }
+            if in_inline_code {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn get_wiki_path_for_note(&self, note_idx: usize) -> Option<String> {
         let note = self.notes.get(note_idx)?;
         let file_path = note.file_path.as_ref()?;
@@ -1908,6 +1954,27 @@ impl App {
 
         while search_start < text.len() {
             let remaining = &text[search_start..];
+
+            // Check for inline code first - skip wikilinks inside backticks
+            if let Some(backtick_pos) = remaining.find('`') {
+                let wiki_pos = remaining.find("[[");
+
+                // If backtick comes before wikilink, we need to skip past the inline code
+                if wiki_pos.is_none() || backtick_pos < wiki_pos.unwrap() {
+                    let abs_backtick = search_start + backtick_pos;
+                    let after_backtick = &text[abs_backtick + 1..];
+
+                    if let Some(close_backtick) = after_backtick.find('`') {
+                        // Skip past the inline code
+                        search_start = abs_backtick + 1 + close_backtick + 1;
+                        continue;
+                    } else {
+                        // No closing backtick, rest of text is code
+                        break;
+                    }
+                }
+            }
+
             if let Some(start_pos) = remaining.find("[[") {
                 let abs_start = search_start + start_pos;
                 let after_brackets = &text[abs_start + 2..];

@@ -202,11 +202,36 @@ impl Editor {
     {
         self.wiki_link_ranges.clear();
 
+        let mut in_code_block = false;
+
         for (row, line) in self.buffer.lines().iter().enumerate() {
+            if line.trim_start().starts_with("```") {
+                in_code_block = !in_code_block;
+                continue;
+            }
+            if in_code_block {
+                continue;
+            }
+
             let mut search_start = 0;
 
             while search_start < line.len() {
                 let remaining = &line[search_start..];
+                if let Some(backtick_pos) = remaining.find('`') {
+                    let wiki_pos = remaining.find("[[");
+
+                    if wiki_pos.is_none() || backtick_pos < wiki_pos.unwrap() {
+                        let abs_backtick = search_start + backtick_pos;
+                        let after_backtick = &line[abs_backtick + 1..];
+
+                        if let Some(close_backtick) = after_backtick.find('`') {
+                            search_start = abs_backtick + 1 + close_backtick + 1;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
 
                 if let Some(start_pos) = remaining.find("[[") {
                     let abs_start = search_start + start_pos;

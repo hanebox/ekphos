@@ -1546,21 +1546,23 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.input(key);
 
             let (row, col) = app.editor.cursor();
-            let lines = app.editor.lines();
-            if let Some(line) = lines.get(row) {
-                let chars: Vec<char> = line.chars().collect();
-                if col >= 2 {
-                    if chars.get(col.saturating_sub(2)) == Some(&'[')
-                        && chars.get(col.saturating_sub(1)) == Some(&'[')
-                    {
-                        let trigger_pos = (row, col.saturating_sub(2));
-                        let suggestions = app.build_wiki_suggestions("");
-                        app.wiki_autocomplete = WikiAutocompleteState::Open {
-                            trigger_pos,
-                            query: String::new(),
-                            suggestions,
-                            selected_index: 0,
-                        };
+            if !app.is_cursor_in_code(row, col) {
+                let lines = app.editor.lines();
+                if let Some(line) = lines.get(row) {
+                    let chars: Vec<char> = line.chars().collect();
+                    if col >= 2 {
+                        if chars.get(col.saturating_sub(2)) == Some(&'[')
+                            && chars.get(col.saturating_sub(1)) == Some(&'[')
+                        {
+                            let trigger_pos = (row, col.saturating_sub(2));
+                            let suggestions = app.build_wiki_suggestions("");
+                            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                trigger_pos,
+                                query: String::new(),
+                                suggestions,
+                                selected_index: 0,
+                            };
+                        }
                     }
                 }
             }
