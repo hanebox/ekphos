@@ -21,6 +21,8 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
   - [Update](#update)
   - [Uninstall](#uninstall)
   - [CLI Options](#cli-options)
+    - [Opening Files and Folders](#opening-files-and-folders)
+    - [Resetting Configuration](#resetting-configuration)
 - [Configuration](#configuration)
   - [Config File](#config-file)
   - [Themes](#themes)
@@ -134,6 +136,27 @@ sudo make uninstall
 | `-c`, `--config`  | Print config file path              |
 | `-d`, `--dir`     | Print notes directory               |
 | `--reset`         | Reset config and themes to defaults |
+
+#### Opening Files and Folders
+
+You can open files or folders directly from the command line:
+
+```bash
+ekphos [PATH]
+```
+
+| Command                | Behavior                                                            |
+| ---------------------- | ------------------------------------------------------------------- |
+| `ekphos ~/notes`       | Opens `~/notes` folder as the notes directory                       |
+| `ekphos ./my-note.md`  | Opens `my-note.md` and sets its parent folder as the notes directory |
+| `ekphos .`             | Opens the current directory as the notes folder                     |
+
+**Features:**
+
+- Supports tilde (`~`) expansion for home directory paths
+- Accepts both relative and absolute paths
+- When opening a `.md` file, automatically selects it in the sidebar
+- Skips the welcome dialog when opening via CLI path
 
 #### Resetting Configuration
 

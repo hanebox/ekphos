@@ -9,6 +9,7 @@ mod ui;
 use std::env;
 use std::fs;
 use std::io;
+use std::path::PathBuf;
 
 use crossterm::{
     event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture},
@@ -27,7 +28,12 @@ fn print_help() {
     println!("A lightweight, fast, terminal-based markdown research tool");
     println!();
     println!("USAGE:");
-    println!("    ekphos [OPTIONS]");
+    println!("    ekphos [OPTIONS] [PATH]");
+    println!();
+    println!("ARGUMENTS:");
+    println!("    [PATH]           Open a file or folder directly");
+    println!("                     - If PATH is a folder, opens it as the notes directory");
+    println!("                     - If PATH is a .md file, opens it and its parent folder");
     println!();
     println!("OPTIONS:");
     println!("    -h, --help       Print help information");
@@ -35,6 +41,11 @@ fn print_help() {
     println!("    -c, --config     Print config file path");
     println!("    -d, --dir        Print notes directory path");
     println!("    --reset          Reset config and themes to defaults");
+    println!();
+    println!("EXAMPLES:");
+    println!("    ekphos ~/notes           Open the ~/notes folder");
+    println!("    ekphos ./my-note.md      Open a specific markdown file");
+    println!("    ekphos .                 Open current directory as notes folder");
 }
 
 fn reset_config_and_themes() {
@@ -75,9 +86,23 @@ fn reset_config_and_themes() {
     println!("Reset complete! Configuration restored to v{} defaults.", VERSION);
 }
 
+fn resolve_path(path_str: &str) -> Option<PathBuf> {
+    let expanded = shellexpand::tilde(path_str).to_string();
+    let path = PathBuf::from(&expanded);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir().ok()?.join(path)
+    };
+
+    absolute.canonicalize().ok().or(Some(absolute))
+}
+
 fn main() -> io::Result<()> {
     // Handle CLI arguments
     let args: Vec<String> = env::args().collect();
+    let mut initial_path: Option<PathBuf> = None;
+
     if args.len() > 1 {
         match args[1].as_str() {
             "-v" | "--version" => {
@@ -101,10 +126,25 @@ fn main() -> io::Result<()> {
                 reset_config_and_themes();
                 return Ok(());
             }
-            _ => {
-                eprintln!("Unknown option: {}", args[1]);
+            arg if arg.starts_with('-') => {
+                eprintln!("Unknown option: {}", arg);
                 eprintln!("Run 'ekphos --help' for usage information");
                 return Ok(());
+            }
+            path_arg => {
+                match resolve_path(path_arg) {
+                    Some(path) => {
+                        if !path.exists() {
+                            eprintln!("Path does not exist: {}", path.display());
+                            return Ok(());
+                        }
+                        initial_path = Some(path);
+                    }
+                    None => {
+                        eprintln!("Invalid path: {}", path_arg);
+                        return Ok(());
+                    }
+                }
             }
         }
     }
@@ -117,7 +157,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = App::new();
+    let mut app = App::new_with_path(initial_path);
 
     // Main loop
     let result = run_app(&mut terminal, &mut app);

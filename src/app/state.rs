@@ -707,6 +707,166 @@ impl App {
         app
     }
 
+    /// Create a new App instance with an optional initial path.
+    /// If the path is a directory, it becomes the notes directory.
+    /// If the path is a file, its parent becomes the notes directory and the file is selected.
+    pub fn new_with_path(initial_path: Option<PathBuf>) -> Self {
+        let initial_path = match initial_path {
+            Some(path) => path,
+            None => return Self::new(),
+        };
+        let (notes_dir, target_file) = if initial_path.is_dir() {
+            (initial_path, None)
+        } else if initial_path.is_file() {
+            let parent = initial_path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| initial_path.clone());
+            (parent, Some(initial_path))
+        } else {
+            return Self::new();
+        };
+        let _config_exists = Config::exists();
+        let mut config = Config::load_or_create();
+        config.notes_dir = notes_dir.to_string_lossy().to_string();
+
+        let theme = Theme::from_name(&config.theme);
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+
+        let mut editor = Editor::default();
+        editor.set_line_wrap(config.editor.line_wrap);
+        editor.set_tab_width(config.editor.tab_width);
+        editor.set_padding(config.editor.left_padding, config.editor.right_padding);
+        editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary))
+                .title(" NORMAL | Ctrl+S: Save, Esc: Exit "),
+        );
+        editor.set_cursor_line_style(Style::default());
+        editor.set_selection_style(
+            Style::default()
+                .fg(theme.foreground)
+                .bg(theme.selection)
+        );
+
+        let picker = Picker::from_query_stdio().ok();
+
+        let notes_dir_exists = config.notes_path().exists();
+        let notes_dir_empty = if notes_dir_exists {
+            !Self::directory_has_notes(&config.notes_path())
+        } else {
+            true
+        };
+
+        // Skip onboarding when path is explicitly provided
+        let dialog = if !notes_dir_exists {
+            DialogState::DirectoryNotFound
+        } else if notes_dir_empty {
+            DialogState::EmptyDirectory
+        } else {
+            DialogState::None
+        };
+
+        let input_buffer = config.notes_dir.clone();
+
+        let (image_sender, image_receiver) = mpsc::channel();
+        let (highlighter_sender, highlighter_receiver) = mpsc::channel();
+
+        let mut app = Self {
+            notes: Vec::new(),
+            selected_note: 0,
+            list_state,
+            focus: Focus::Sidebar,
+            mode: Mode::Normal,
+            editor,
+            picker,
+            image_cache: HashMap::new(),
+            current_image: None,
+            pending_images: HashSet::new(),
+            image_sender,
+            image_receiver,
+            show_welcome: false, // Don't show welcome when opening via CLI path
+            outline: Vec::new(),
+            outline_state: ListState::default(),
+            vim_mode: VimMode::Normal,
+            content_cursor: 0,
+            content_scroll_offset: 0,
+            floating_cursor_mode: false,
+            content_items: Vec::new(),
+            content_item_source_lines: Vec::new(),
+            theme,
+            config,
+            dialog,
+            input_buffer,
+            search_active: false,
+            search_query: String::new(),
+            filtered_indices: Vec::new(),
+            editor_scroll_top: 0,
+            editor_view_height: 0,
+            pending_operator: None,
+            pending_delete: None,
+            file_tree: Vec::new(),
+            sidebar_items: Vec::new(),
+            selected_sidebar_index: 0,
+            folder_states: HashMap::new(),
+            target_folder: None,
+            dialog_error: None,
+            search_matched_notes: Vec::new(),
+            content_area: Rect::default(),
+            sidebar_area: Rect::default(),
+            outline_area: Rect::default(),
+            mouse_hover_item: None,
+            content_item_rects: Vec::new(),
+            selected_link_index: 0,
+            details_open_states: HashMap::new(),
+            highlighter: None,
+            highlighter_loading: false,
+            highlighter_sender,
+            highlighter_receiver,
+            sidebar_collapsed: false,
+            outline_collapsed: false,
+            mouse_button_held: false,
+            mouse_drag_start: None,
+            last_mouse_y: 0,
+            editor_area: Rect::default(),
+            context_menu_state: ContextMenuState::None,
+            wiki_autocomplete: WikiAutocompleteState::None,
+            pending_wiki_target: None,
+            needs_full_clear: false,
+            pending_g: false,
+        };
+
+        if notes_dir_exists {
+            app.load_notes_from_dir();
+            if let Some(ref target_path) = target_file {
+                app.select_note_by_path(target_path);
+            }
+        }
+
+        app
+    }
+
+    /// Select a note by its file path
+    pub fn select_note_by_path(&mut self, target_path: &PathBuf) {
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if let Some(note) = self.notes.get(*note_index) {
+                    if let Some(ref path) = note.file_path {
+                        if path == target_path {
+                            self.selected_sidebar_index = idx;
+                            self.selected_note = *note_index;
+                            self.update_content_items();
+                            self.update_outline();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn reload_on_focus(&mut self) {
         if self.mode == Mode::Edit {
             return;
