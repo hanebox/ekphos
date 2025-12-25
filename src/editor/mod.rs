@@ -91,6 +91,74 @@ pub struct WikiLinkRange {
     pub is_valid: bool,
 }
 
+#[derive(Debug, Clone)]
+enum ListPrefix {
+    Unordered { indent: String, marker: char },
+    Task { indent: String, marker: char },
+    Ordered { indent: String, number: usize },
+}
+
+impl ListPrefix {
+    fn detect(line: &str) -> Option<Self> {
+        let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+            let marker = trimmed.chars().next().unwrap();
+
+            if trimmed.len() >= 5 {
+                let after_marker = &trimmed[2..];
+                if after_marker.starts_with("[ ] ")
+                    || after_marker.starts_with("[x] ")
+                    || after_marker.starts_with("[X] ")
+                {
+                    return Some(ListPrefix::Task { indent, marker });
+                }
+            }
+
+            return Some(ListPrefix::Unordered { indent, marker });
+        }
+
+        // Check for ordered lists (1. 2. etc.)
+        if let Some(dot_pos) = trimmed.find(". ") {
+            let num_part = &trimmed[..dot_pos];
+            if !num_part.is_empty() && num_part.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(number) = num_part.parse::<usize>() {
+                    return Some(ListPrefix::Ordered { indent, number });
+                }
+            }
+        }
+
+        None
+    }
+
+    fn next_prefix(&self) -> String {
+        match self {
+            ListPrefix::Unordered { indent, marker } => {
+                format!("{}{} ", indent, marker)
+            }
+            ListPrefix::Task { indent, marker } => {
+                format!("{}{} [ ] ", indent, marker)
+            }
+            ListPrefix::Ordered { indent, number } => {
+                format!("{}{}. ", indent, number + 1)
+            }
+        }
+    }
+
+    fn prefix_len(&self, line: &str) -> usize {
+        let trimmed = line.trim_start();
+        let indent_len = line.len() - trimmed.len();
+
+        match self {
+            ListPrefix::Unordered { .. } => indent_len + 2, // "- " or "* " or "+ "
+            ListPrefix::Task { .. } => indent_len + 6,      // "- [ ] "
+            ListPrefix::Ordered { number, .. } => {
+                indent_len + number.to_string().len() + 2 // "N. "
+            }
+        }
+    }
+}
+
 pub struct Editor {
     buffer: TextBuffer,
     cursor: Cursor,
@@ -872,6 +940,34 @@ impl Editor {
         }
 
         let pos = self.cursor.pos();
+
+        let list_prefix = self.buffer.line(pos.row).and_then(|line| {
+            let prefix = ListPrefix::detect(line)?;
+            let prefix_len = prefix.prefix_len(line);
+            let line_char_count = line.chars().count();
+
+            let is_empty_item = line_char_count <= prefix_len;
+
+            Some((prefix, prefix_len, is_empty_item))
+        });
+
+        if let Some((_, prefix_len, true)) = &list_prefix {
+            let deleted = self.buffer.delete_range(pos.row, 0, *prefix_len);
+            self.wrap_cache.invalidate_line(pos.row);
+            self.history.record(
+                EditOperation::Delete {
+                    start: Position::new(pos.row, 0),
+                    end: Position::new(pos.row, *prefix_len),
+                    deleted_text: deleted,
+                },
+                cursor_before,
+                Position::new(pos.row, 0),
+            );
+            self.cursor.move_to(pos.row, 0);
+            self.ensure_cursor_visible();
+            return;
+        }
+
         self.buffer.split_line(pos.row, pos.col);
         self.wrap_cache.insert_line(pos.row + 1);
         self.wrap_cache.invalidate_line(pos.row);
@@ -882,7 +978,24 @@ impl Editor {
             Position::new(pos.row + 1, 0),
         );
 
-        self.cursor.move_to(pos.row + 1, 0);
+        if let Some((prefix, _, false)) = list_prefix {
+            let next_prefix = prefix.next_prefix();
+            let prefix_char_count = next_prefix.chars().count();
+            self.buffer.insert_str(pos.row + 1, 0, &next_prefix);
+            self.wrap_cache.invalidate_line(pos.row + 1);
+            self.history.record(
+                EditOperation::Insert {
+                    pos: Position::new(pos.row + 1, 0),
+                    text: next_prefix,
+                },
+                Position::new(pos.row + 1, 0),
+                Position::new(pos.row + 1, prefix_char_count),
+            );
+            self.cursor.move_to(pos.row + 1, prefix_char_count);
+        } else {
+            self.cursor.move_to(pos.row + 1, 0);
+        }
+
         self.ensure_cursor_visible();
     }
 
