@@ -1,0 +1,68 @@
+# Dracula Theme
+# Compatible with ekphos
+
+[colors.primary]
+background = "#282a36"
+foreground = "#f8f8f2"
+dim_foreground = "#44475a"
+bright_foreground = "#6272a4"
+
+[colors.cursor]
+text = "#282a36"
+cursor = "#f8f8f2"
+
+[colors.vi_mode_cursor]
+text = "#282a36"
+cursor = "#6272a4"
+
+[colors.search.matches]
+foreground = "#282a36"
+background = "#6272a4"
+
+[colors.search.focused_match]
+foreground = "#282a36"
+background = "#50fa7b"
+
+[colors.footer_bar]
+foreground = "#282a36"
+background = "#6272a4"
+
+[colors.hints.start]
+foreground = "#282a36"
+background = "#f1fa8c"
+
+[colors.hints.end]
+foreground = "#282a36"
+background = "#6272a4"
+
+[colors.selection]
+text = "#282a36"
+background = "#f8f8f2"
+
+[colors.normal]
+black = "#44475a"
+red = "#ff5555"
+green = "#50fa7b"
+yellow = "#f1fa8c"
+blue = "#6272a4"
+magenta = "#ff79c6"
+cyan = "#8be9fd"
+white = "#f8f8f2"
+
+[colors.bright]
+black = "#44475a"
+red = "#ff5555"
+green = "#50fa7b"
+yellow = "#f1fa8c"
+blue = "#6272a4"
+magenta = "#ff79c6"
+cyan = "#8be9fd"
+white = "#f8f8f2"
+
+[[colors.indexed_colors]]
+index = 16
+color = "#ffb86c"
+
+[[colors.indexed_colors]]
+index = 17
+color = "#f8f8f2"
