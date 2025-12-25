@@ -516,6 +516,7 @@ pub struct App {
     pub content_scroll_offset: usize,
     pub floating_cursor_mode: bool,
     pub content_items: Vec<ContentItem>,
+    pub content_item_source_lines: Vec<usize>,
     pub theme: Theme,
     pub config: Config,
     pub dialog: DialogState,
@@ -649,6 +650,7 @@ impl App {
             content_scroll_offset: 0,
             floating_cursor_mode: false,
             content_items: Vec::new(),
+            content_item_source_lines: Vec::new(),
             theme,
             config,
             dialog,
@@ -1287,6 +1289,7 @@ impl App {
 
     pub fn update_content_items(&mut self) {
         self.content_items.clear();
+        self.content_item_source_lines.clear();
         self.details_open_states.clear();
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
@@ -1302,6 +1305,7 @@ impl App {
                 if line.starts_with("```") {
                     let lang = line.trim_start_matches('`').to_string();
                     self.content_items.push(ContentItem::CodeFence(lang));
+                    self.content_item_source_lines.push(line_index);
                     in_code_block = !in_code_block;
                     i += 1;
                     continue;
@@ -1310,6 +1314,7 @@ impl App {
                 // If inside code block, add as CodeLine
                 if in_code_block {
                     self.content_items.push(ContentItem::CodeLine(line.to_string()));
+                    self.content_item_source_lines.push(line_index);
                     i += 1;
                     continue;
                 }
@@ -1321,6 +1326,7 @@ impl App {
                             let path = &line[start + 2..start + end];
                             if !path.is_empty() {
                                 self.content_items.push(ContentItem::Image(path.to_string()));
+                                self.content_item_source_lines.push(line_index);
                                 i += 1;
                                 continue;
                             }
@@ -1333,6 +1339,7 @@ impl App {
                     let checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
                     let text = trimmed[6..].to_string();
                     self.content_items.push(ContentItem::TaskItem { text, checked, line_index });
+                    self.content_item_source_lines.push(line_index);
                     i += 1;
                     continue;
                 }
@@ -1386,14 +1393,17 @@ impl App {
                             content_lines,
                             id: details_start_line,
                         });
+                        self.content_item_source_lines.push(details_start_line);
                         continue;
                     } else {
                         self.content_items.push(ContentItem::TextLine(line.to_string()));
+                        self.content_item_source_lines.push(line_index);
                         continue;
                     }
                 }
 
                 if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') {
+                    let table_start_line = line_index;
                     let mut table_rows: Vec<(Vec<String>, bool)> = Vec::new();
 
                     while i < lines.len() {
@@ -1439,11 +1449,13 @@ impl App {
                             is_header,
                             column_widths: column_widths.clone(),
                         });
+                        self.content_item_source_lines.push(table_start_line + row_idx);
                     }
                     continue;
                 }
 
                 self.content_items.push(ContentItem::TextLine(line.to_string()));
+                self.content_item_source_lines.push(line_index);
                 i += 1;
             }
         }
@@ -2343,11 +2355,30 @@ impl App {
         self.notes.get(self.selected_note)
     }
 
+    /// Find the content item index for a given source line.
+    /// Returns the index of the content item that starts at or before the given line.
+    fn content_cursor_for_source_line(&self, source_line: usize) -> usize {
+        let mut best_idx = 0;
+        for (idx, &line) in self.content_item_source_lines.iter().enumerate() {
+            if line <= source_line {
+                best_idx = idx;
+            } else {
+                break;
+            }
+        }
+        best_idx
+    }
+
     pub fn enter_edit_mode(&mut self) {
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
             let line_count = lines.len();
-            let target_row = self.content_cursor.min(line_count.saturating_sub(1));
+
+            let target_row = self.content_item_source_lines
+                .get(self.content_cursor)
+                .copied()
+                .unwrap_or(0)
+                .min(line_count.saturating_sub(1));
 
             let preview_scroll_top = self.content_scroll_offset.saturating_sub(1);
             let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
@@ -2471,9 +2502,10 @@ impl App {
         self.update_content_items();
         self.update_outline();
 
-        self.content_cursor = cursor_row.min(self.content_items.len().saturating_sub(1));
+        // Map editor row to content_cursor using source line mapping
+        self.content_cursor = self.content_cursor_for_source_line(cursor_row);
         let preview_scroll = self.content_cursor.saturating_sub(cursor_offset_from_top);
-        self.content_scroll_offset = preview_scroll + 1; 
+        self.content_scroll_offset = preview_scroll + 1;
     }
 
     pub fn cancel_edit(&mut self) {
@@ -2483,7 +2515,7 @@ impl App {
         let cursor_offset_from_top = cursor_row.saturating_sub(editor_scroll);
         self.mode = Mode::Normal;
 
-        self.content_cursor = cursor_row.min(self.content_items.len().saturating_sub(1));
+        self.content_cursor = self.content_cursor_for_source_line(cursor_row);
         let preview_scroll = self.content_cursor.saturating_sub(cursor_offset_from_top);
         self.content_scroll_offset = preview_scroll + 1;
     }
