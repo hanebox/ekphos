@@ -721,14 +721,62 @@ impl Editor {
                 }
             }
             CursorMove::Up => {
-                if pos.row > 0 {
+                if self.line_wrap_enabled && self.view_width > 0 {
+                    let content_width = self.view_width.saturating_sub(self.right_padding as usize);
+                    if content_width > 0 {
+                        let visual_line_in_row = pos.col / content_width;
+                        let col_in_visual_line = pos.col % content_width;
+                        let preferred_visual_col = self.cursor.preferred_col
+                            .map(|p| p % content_width)
+                            .unwrap_or(col_in_visual_line);
+
+                        if visual_line_in_row > 0 {
+                            let new_col = (visual_line_in_row - 1) * content_width + preferred_visual_col;
+                            let line_len = self.buffer.line_len(pos.row);
+                            self.cursor.set_pos(Position::new(pos.row, new_col.min(line_len)), false);
+                        } else if pos.row > 0 {
+                            let prev_len = self.buffer.line_len(pos.row - 1);
+                            let prev_visual_lines = if prev_len == 0 { 1 } else { (prev_len + content_width - 1) / content_width };
+                            let last_visual_line = prev_visual_lines - 1;
+                            let new_col = last_visual_line * content_width + preferred_visual_col;
+                            self.cursor.set_pos(Position::new(pos.row - 1, new_col.min(prev_len)), false);
+                        }
+                    } else if pos.row > 0 {
+                        let preferred = self.cursor.preferred_col.unwrap_or(pos.col);
+                        let prev_len = self.buffer.line_len(pos.row - 1);
+                        self.cursor.set_pos(Position::new(pos.row - 1, preferred.min(prev_len)), false);
+                    }
+                } else if pos.row > 0 {
                     let preferred = self.cursor.preferred_col.unwrap_or(pos.col);
                     let prev_len = self.buffer.line_len(pos.row - 1);
                     self.cursor.set_pos(Position::new(pos.row - 1, preferred.min(prev_len)), false);
                 }
             }
             CursorMove::Down => {
-                if pos.row + 1 < line_count {
+                if self.line_wrap_enabled && self.view_width > 0 {
+                    let content_width = self.view_width.saturating_sub(self.right_padding as usize);
+                    if content_width > 0 {
+                        let line_len = self.buffer.line_len(pos.row);
+                        let total_visual_lines = if line_len == 0 { 1 } else { (line_len + content_width - 1) / content_width };
+                        let visual_line_in_row = pos.col / content_width;
+                        let col_in_visual_line = pos.col % content_width;
+                        let preferred_visual_col = self.cursor.preferred_col
+                            .map(|p| p % content_width)
+                            .unwrap_or(col_in_visual_line);
+
+                        if visual_line_in_row + 1 < total_visual_lines {
+                            let new_col = (visual_line_in_row + 1) * content_width + preferred_visual_col;
+                            self.cursor.set_pos(Position::new(pos.row, new_col.min(line_len)), false);
+                        } else if pos.row + 1 < line_count {
+                            let next_len = self.buffer.line_len(pos.row + 1);
+                            self.cursor.set_pos(Position::new(pos.row + 1, preferred_visual_col.min(next_len)), false);
+                        }
+                    } else if pos.row + 1 < line_count {
+                        let preferred = self.cursor.preferred_col.unwrap_or(pos.col);
+                        let next_len = self.buffer.line_len(pos.row + 1);
+                        self.cursor.set_pos(Position::new(pos.row + 1, preferred.min(next_len)), false);
+                    }
+                } else if pos.row + 1 < line_count {
                     let preferred = self.cursor.preferred_col.unwrap_or(pos.col);
                     let next_len = self.buffer.line_len(pos.row + 1);
                     self.cursor.set_pos(Position::new(pos.row + 1, preferred.min(next_len)), false);
@@ -1362,12 +1410,30 @@ impl Editor {
 
             // Render line with wrapping
             let mut col = 0;
+            let mut is_wrapped_continuation = false;
             while col < chars.len() {
                 if screen_y >= area.y + area.height {
                     return;
                 }
 
                 let mut x = content_start_x;
+
+                if is_wrapped_continuation && col < chars.len() && chars[col] == ' ' {
+                    let is_cursor_on_space = is_cursor_line && col == cursor_pos.col;
+                    if !is_cursor_on_space {
+                        col += 1;
+                        if col >= chars.len() {
+                            if is_cursor_line && cursor_pos.col >= chars.len() {
+                                if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                                    cell.set_char(' ');
+                                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                                }
+                            }
+                            screen_y += 1;
+                            break;
+                        }
+                    }
+                }
 
                 while col < chars.len() && x < content_end_x {
                     let ch = chars[col];
@@ -1414,6 +1480,7 @@ impl Editor {
                     }
                 }
 
+                is_wrapped_continuation = true;
                 screen_y += 1;
             }
         }
