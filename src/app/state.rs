@@ -46,9 +46,11 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - `Space`: Toggle task checkbox, open link, or navigate wikilink
 - `]/[`: Next/previous link (when multiple links on same line)
 - `/`: Search notes (in Sidebar)
+- `Ctrl+f`: Find in buffer (search current note)
 - `?`: Show help dialog
 - `R`: Reload files from disk
 - `Ctrl+Shift+R`: Reload config and theme
+- `z`: Toggle zen mode (hide sidebars)
 
 ## Notes and Folders
 
@@ -423,6 +425,59 @@ pub enum WikiAutocompleteState {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BufferSearchMatch {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BufferSearchState {
+    pub active: bool,
+    pub query: String,
+    pub matches: Vec<BufferSearchMatch>,
+    pub current_match_index: usize,
+    pub case_sensitive: bool,
+}
+
+impl BufferSearchState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn current_match(&self) -> Option<&BufferSearchMatch> {
+        if self.matches.is_empty() {
+            None
+        } else {
+            self.matches.get(self.current_match_index)
+        }
+    }
+
+    pub fn next_match(&mut self) {
+        if !self.matches.is_empty() {
+            self.current_match_index = (self.current_match_index + 1) % self.matches.len();
+        }
+    }
+
+    pub fn prev_match(&mut self) {
+        if !self.matches.is_empty() {
+            if self.current_match_index == 0 {
+                self.current_match_index = self.matches.len() - 1;
+            } else {
+                self.current_match_index -= 1;
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.matches.clear();
+        self.current_match_index = 0;
+    }
+}
+
 /// A suggestion item for wiki link autocomplete
 #[derive(Debug, Clone, PartialEq)]
 pub struct WikiSuggestion {
@@ -566,6 +621,7 @@ pub struct App {
     pub pending_wiki_target: Option<String>,
     pub needs_full_clear: bool,
     pub pending_g: bool,
+    pub buffer_search: BufferSearchState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -702,6 +758,7 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            buffer_search: BufferSearchState::new(),
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -843,6 +900,7 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            buffer_search: BufferSearchState::new(),
         };
 
         if notes_dir_exists {
@@ -857,20 +915,29 @@ impl App {
 
     /// Select a note by its file path
     pub fn select_note_by_path(&mut self, target_path: &PathBuf) {
-        for (idx, item) in self.sidebar_items.iter().enumerate() {
+        // Find the matching note first to avoid borrow conflicts
+        let found = self.sidebar_items.iter().enumerate().find_map(|(idx, item)| {
             if let SidebarItemKind::Note { note_index } = &item.kind {
                 if let Some(note) = self.notes.get(*note_index) {
                     if let Some(ref path) = note.file_path {
                         if path == target_path {
-                            self.selected_sidebar_index = idx;
-                            self.selected_note = *note_index;
-                            self.update_content_items();
-                            self.update_outline();
-                            return;
+                            return Some((idx, *note_index));
                         }
                     }
                 }
             }
+            None
+        });
+
+        if let Some((sidebar_idx, note_idx)) = found {
+            // Clear search when switching notes
+            if self.selected_note != note_idx {
+                self.end_buffer_search();
+            }
+            self.selected_sidebar_index = sidebar_idx;
+            self.selected_note = note_idx;
+            self.update_content_items();
+            self.update_outline();
         }
     }
 
@@ -1138,11 +1205,22 @@ impl App {
     }
 
     pub fn sync_selected_note_from_sidebar(&mut self) {
-        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
-            if let SidebarItemKind::Note { note_index } = &item.kind {
-                self.selected_note = *note_index;
-                self.current_image = None;
+        let note_index = self.sidebar_items
+            .get(self.selected_sidebar_index)
+            .and_then(|item| {
+                if let SidebarItemKind::Note { note_index } = &item.kind {
+                    Some(*note_index)
+                } else {
+                    None
+                }
+            });
+
+        if let Some(new_note_idx) = note_index {
+            if self.selected_note != new_note_idx {
+                self.end_buffer_search();
             }
+            self.selected_note = new_note_idx;
+            self.current_image = None;
         }
     }
 
@@ -2229,6 +2307,8 @@ impl App {
             for (idx, item) in self.sidebar_items.iter().enumerate() {
                 if let SidebarItemKind::Note { note_index } = &item.kind {
                     if *note_index == note_idx {
+                        // Clear search when navigating to wiki link
+                        self.end_buffer_search();
                         self.selected_sidebar_index = idx;
                         self.selected_note = note_idx;
                         self.content_cursor = 0;
@@ -2536,6 +2616,116 @@ impl App {
         self.search_matched_notes.clear();
     }
 
+    pub fn start_buffer_search(&mut self) {
+        self.buffer_search.active = true;
+        self.buffer_search.query.clear();
+        self.buffer_search.matches.clear();
+        self.buffer_search.current_match_index = 0;
+    }
+
+    pub fn end_buffer_search(&mut self) {
+        self.buffer_search.clear();
+    }
+
+    pub fn perform_buffer_search(&mut self) {
+        self.buffer_search.matches.clear();
+        self.buffer_search.current_match_index = 0;
+
+        if self.buffer_search.query.is_empty() {
+            return;
+        }
+
+        let query = if self.buffer_search.case_sensitive {
+            self.buffer_search.query.clone()
+        } else {
+            self.buffer_search.query.to_lowercase()
+        };
+
+        let lines: Vec<String> = if self.mode == Mode::Edit {
+            self.editor.lines().iter().map(|s| s.to_string()).collect()
+        } else if let Some(note) = self.notes.get(self.selected_note) {
+            note.content.lines().map(|s| s.to_string()).collect()
+        } else {
+            return;
+        };
+
+        for (row, line) in lines.iter().enumerate() {
+            let search_line = if self.buffer_search.case_sensitive {
+                line.clone()
+            } else {
+                line.to_lowercase()
+            };
+
+            let chars: Vec<char> = search_line.chars().collect();
+            let query_chars: Vec<char> = query.chars().collect();
+            let query_len = query_chars.len();
+
+            if query_len == 0 {
+                continue;
+            }
+
+            let mut col = 0;
+            while col + query_len <= chars.len() {
+                let matches = chars[col..col + query_len]
+                    .iter()
+                    .zip(query_chars.iter())
+                    .all(|(a, b)| a == b);
+
+                if matches {
+                    self.buffer_search.matches.push(BufferSearchMatch {
+                        row,
+                        start_col: col,
+                        end_col: col + query_len,
+                    });
+                    col += 1; 
+                } else {
+                    col += 1;
+                }
+            }
+        }
+    }
+
+    pub fn scroll_to_current_match(&mut self) {
+        if let Some(m) = self.buffer_search.current_match() {
+            let target_row = m.row;
+
+            if self.mode == Mode::Edit {
+                let start_col = m.start_col;
+                self.editor.set_cursor(target_row, start_col);
+                let half_height = self.editor_view_height / 2;
+                if target_row > half_height {
+                    self.editor_scroll_top = target_row - half_height;
+                } else {
+                    self.editor_scroll_top = 0;
+                }
+            } else {
+                for (idx, &source_line) in self.content_item_source_lines.iter().enumerate() {
+                    if source_line >= target_row {
+                        self.content_cursor = idx;
+                        let content_height = self.content_area.height.saturating_sub(2) as usize;
+                        let half_height = content_height / 2;
+                        if idx > half_height {
+                            self.content_scroll_offset = idx - half_height;
+                        } else {
+                            self.content_scroll_offset = 0;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn buffer_search_next(&mut self) {
+        self.buffer_search.next_match();
+        self.scroll_to_current_match();
+    }
+
+    pub fn buffer_search_prev(&mut self) {
+        self.buffer_search.prev_match();
+        self.scroll_to_current_match();
+    }
+
     pub fn get_visible_sidebar_indices(&self) -> Vec<usize> {
         if self.search_active && !self.search_query.is_empty() {
             self.filtered_indices.clone()
@@ -2732,6 +2922,9 @@ impl App {
     }
 
     pub fn save_edit(&mut self) {
+        // Clear search state when exiting edit mode
+        self.end_buffer_search();
+
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
 
@@ -2755,6 +2948,8 @@ impl App {
     }
 
     pub fn cancel_edit(&mut self) {
+        self.end_buffer_search();
+
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
 

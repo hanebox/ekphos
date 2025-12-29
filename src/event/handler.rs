@@ -615,9 +615,14 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
         return Ok(false);
     }
 
-    // Handle search input
+    // Handle sidebar search input
     if app.search_active {
         handle_search_input(app, key);
+        return Ok(false);
+    }
+
+    if app.buffer_search.active {
+        handle_buffer_search_input(app, key);
         return Ok(false);
     }
 
@@ -1095,6 +1100,95 @@ fn handle_search_input(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+fn handle_buffer_search_input(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.end_buffer_search();
+            if app.mode == Mode::Edit {
+                app.editor.clear_search_highlights();
+            }
+        }
+        KeyCode::Enter => {
+            if !app.buffer_search.matches.is_empty() {
+                app.buffer_search_next();
+                update_editor_search_highlights(app);
+            }
+        }
+        KeyCode::Backspace => {
+            app.buffer_search.query.pop();
+            app.perform_buffer_search();
+            if !app.buffer_search.matches.is_empty() {
+                app.scroll_to_current_match();
+            }
+            update_editor_search_highlights(app);
+        }
+        KeyCode::Char(c) if key.modifiers == KeyModifiers::SHIFT => {
+            app.buffer_search.query.push(c);
+            app.perform_buffer_search();
+            if !app.buffer_search.matches.is_empty() {
+                app.scroll_to_current_match();
+            }
+            update_editor_search_highlights(app);
+        }
+        KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+            if !app.buffer_search.matches.is_empty() {
+                app.buffer_search_next();
+                update_editor_search_highlights(app);
+            }
+        }
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+            if !app.buffer_search.matches.is_empty() {
+                app.buffer_search_prev();
+                update_editor_search_highlights(app);
+            }
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            app.buffer_search.case_sensitive = !app.buffer_search.case_sensitive;
+            app.perform_buffer_search();
+            if !app.buffer_search.matches.is_empty() {
+                app.scroll_to_current_match();
+            }
+            update_editor_search_highlights(app);
+        }
+        KeyCode::Char(c) => {
+            app.buffer_search.query.push(c);
+            app.perform_buffer_search();
+            if !app.buffer_search.matches.is_empty() {
+                app.scroll_to_current_match();
+            }
+            update_editor_search_highlights(app);
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if !app.buffer_search.matches.is_empty() {
+                app.buffer_search_next();
+                update_editor_search_highlights(app);
+            }
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            if !app.buffer_search.matches.is_empty() {
+                app.buffer_search_prev();
+                update_editor_search_highlights(app);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn update_editor_search_highlights(app: &mut App) {
+    if app.mode == Mode::Edit {
+        let matches: Vec<(usize, usize, usize)> = app
+            .buffer_search
+            .matches
+            .iter()
+            .map(|m| (m.row, m.start_col, m.end_col))
+            .collect();
+        let current_idx = app.buffer_search.current_match_index;
+        let match_color = app.theme.search.match_highlight;
+        let current_color = app.theme.search.match_current;
+        app.editor.set_search_highlights(&matches, current_idx, match_color, current_color);
+    }
+}
+
 /// Returns true if the app should quit
 fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     let was_pending_g = app.pending_g;
@@ -1267,6 +1361,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.toggle_sidebar_collapsed();
         }
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
+            app.start_buffer_search();
+        }
+        KeyCode::Char('z') => {
             app.toggle_zen_mode();
         }
         KeyCode::Char('g') => {
@@ -1514,6 +1611,12 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.cancel_selection();
             app.editor.redo();
         }
+        KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
+            // Open buffer search
+            app.pending_operator = None;
+            app.editor.cancel_selection();
+            app.start_buffer_search();
+        }
         KeyCode::Esc => {
             app.pending_operator = None;
             app.editor.cancel_selection();
@@ -1544,6 +1647,9 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+        }
+        KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
+            app.start_buffer_search();
         }
         KeyCode::Char('[') => {
             app.editor.input(key);
@@ -1628,6 +1734,12 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.cancel_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+        }
+        KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
+            // Open buffer search (cancel selection first)
+            app.editor.cancel_selection();
+            app.vim_mode = VimMode::Normal;
+            app.start_buffer_search();
         }
         _ => {}
     }

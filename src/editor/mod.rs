@@ -42,6 +42,8 @@ pub enum HighlightType {
     Blockquote,
     ListMarker,
     HorizontalRule,
+    SearchMatch,
+    SearchMatchCurrent,
     Custom(u8),
 }
 
@@ -682,6 +684,41 @@ impl Editor {
             h.row == row && col >= h.start_col && col < h.end_col &&
             (h.highlight_type == HighlightType::InlineCode || h.highlight_type == HighlightType::Link)
         })
+    }
+
+    pub fn clear_search_highlights(&mut self) {
+        self.highlights.retain(|h| {
+            h.highlight_type != HighlightType::SearchMatch &&
+            h.highlight_type != HighlightType::SearchMatchCurrent
+        });
+    }
+
+    pub fn set_search_highlights(
+        &mut self,
+        matches: &[(usize, usize, usize)],
+        current_idx: usize,
+        match_color: Color,
+        current_color: Color,
+    ) {
+        self.clear_search_highlights();
+
+        for (idx, (row, start_col, end_col)) in matches.iter().enumerate() {
+            let is_current = idx == current_idx;
+            let (color, highlight_type) = if is_current {
+                (current_color, HighlightType::SearchMatchCurrent)
+            } else {
+                (match_color, HighlightType::SearchMatch)
+            };
+
+            self.highlights.push(HighlightRange {
+                row: *row,
+                start_col: *start_col,
+                end_col: *end_col,
+                style: Style::default().bg(color).fg(Color::Black),
+                highlight_type,
+                priority: 200, 
+            });
+        }
     }
 
     // Cursor

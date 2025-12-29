@@ -829,6 +829,10 @@ pub fn render_help_dialog(f: &mut Frame, app: &App) {
         ]),
         Line::from(vec![
             Span::styled(" Ctrl+f    ", key_style),
+            Span::styled("Find in buffer", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" z         ", key_style),
             Span::styled("Toggle zen mode", desc_style),
         ]),
         Line::from(vec![

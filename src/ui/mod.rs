@@ -3,6 +3,7 @@ mod context_menu;
 mod dialogs;
 mod editor;
 mod outline;
+mod search_dialog;
 mod sidebar;
 mod status_bar;
 mod wiki_autocomplete;
@@ -113,5 +114,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     if app.mode == Mode::Edit && !matches!(app.wiki_autocomplete, WikiAutocompleteState::None) {
         wiki_autocomplete::render_wiki_autocomplete(f, app);
+    }
+
+    if app.buffer_search.active {
+        let content_area = chunks[1];
+        search_dialog::render_search_dialog(f, app, content_area);
     }
 }

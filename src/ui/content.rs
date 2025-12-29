@@ -248,6 +248,57 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+
+    if app.buffer_search.active && !app.buffer_search.matches.is_empty() {
+        apply_content_search_highlights(f, app, &visible_indices, &chunks);
+    }
+}
+
+fn apply_content_search_highlights(
+    f: &mut Frame,
+    app: &App,
+    visible_indices: &[usize],
+    chunks: &[Rect],
+) {
+    let theme = &app.theme;
+    let current_match_idx = app.buffer_search.current_match_index;
+
+    for (chunk_idx, &item_idx) in visible_indices.iter().enumerate() {
+        if chunk_idx >= chunks.len() {
+            break;
+        }
+
+        let source_line = app.content_item_source_lines.get(item_idx).copied().unwrap_or(usize::MAX);
+        if source_line == usize::MAX {
+            continue;
+        }
+
+        for (match_idx, m) in app.buffer_search.matches.iter().enumerate() {
+            if m.row == source_line {
+                let area = chunks[chunk_idx];
+                let is_current = match_idx == current_match_idx;
+                let highlight_color = if is_current {
+                    theme.search.match_current
+                } else {
+                    theme.search.match_highlight
+                };
+
+                let prefix_len = 2; // "▶ " or "  "
+                let start_x = area.x + prefix_len as u16 + m.start_col as u16;
+                let match_len = m.end_col - m.start_col;
+
+                for offset in 0..match_len {
+                    let x = start_x + offset as u16;
+                    if x < area.x + area.width {
+                        if let Some(cell) = f.buffer_mut().cell_mut((x, area.y)) {
+                            cell.set_bg(highlight_color);
+                            cell.set_fg(ratatui::style::Color::Black);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn parse_inline_formatting<'a, F>(

@@ -208,6 +208,8 @@ pub struct UiColorsFile {
     pub content: ContentColors,
     #[serde(default)]
     pub outline: OutlineColors,
+    #[serde(default)]
+    pub search: SearchColors,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +294,22 @@ pub struct OutlineColors {
     pub heading4: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchColors {
+    #[serde(default = "defaults::background_secondary")]
+    pub background: String,
+    #[serde(default = "defaults::primary")]
+    pub border: String,
+    #[serde(default = "defaults::foreground")]
+    pub input: String,
+    #[serde(default = "defaults::warning")]
+    pub match_highlight: String,
+    #[serde(default = "defaults::search_match_current")]
+    pub match_current: String,
+    #[serde(default = "defaults::muted")]
+    pub match_count: String,
+}
+
 // Default color values module
 mod defaults {
     pub fn background() -> String { "#1a1a24".to_string() }
@@ -308,6 +326,7 @@ mod defaults {
     pub fn border_focused() -> String { "#7aa2f7".to_string() }
     pub fn selection() -> String { "#283457".to_string() }
     pub fn cursor() -> String { "#c0caf5".to_string() }
+    pub fn search_match_current() -> String { "#ff9e64".to_string() }
 }
 
 impl Default for BaseColors {
@@ -404,6 +423,19 @@ impl Default for OutlineColors {
     }
 }
 
+impl Default for SearchColors {
+    fn default() -> Self {
+        Self {
+            background: defaults::background_secondary(),
+            border: defaults::primary(),
+            input: defaults::foreground(),
+            match_highlight: defaults::warning(),
+            match_current: defaults::search_match_current(),
+            match_count: defaults::muted(),
+        }
+    }
+}
+
 impl ThemeFile {
     pub fn load_from_file(path: &PathBuf) -> Option<Self> {
         let content = fs::read_to_string(path).ok()?;
@@ -482,6 +514,7 @@ pub struct Theme {
     pub sidebar: SidebarTheme,
     pub content: ContentTheme,
     pub outline: OutlineTheme,
+    pub search: SearchTheme,
 }
 
 #[derive(Debug, Clone)]
@@ -533,6 +566,16 @@ pub struct OutlineTheme {
     pub heading2: Color,
     pub heading3: Color,
     pub heading4: Color,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchTheme {
+    pub background: Color,
+    pub border: Color,
+    pub input: Color,
+    pub match_highlight: Color,
+    pub match_current: Color,
+    pub match_count: Color,
 }
 
 impl Theme {
@@ -596,6 +639,14 @@ impl Theme {
                 heading2: parse_hex_color(&tf.ui.outline.heading2),
                 heading3: parse_hex_color(&tf.ui.outline.heading3),
                 heading4: parse_hex_color(&tf.ui.outline.heading4),
+            },
+            search: SearchTheme {
+                background: parse_hex_color(&tf.ui.search.background),
+                border: parse_hex_color(&tf.ui.search.border),
+                input: parse_hex_color(&tf.ui.search.input),
+                match_highlight: parse_hex_color(&tf.ui.search.match_highlight),
+                match_current: parse_hex_color(&tf.ui.search.match_current),
+                match_count: parse_hex_color(&tf.ui.search.match_count),
             },
         }
     }
