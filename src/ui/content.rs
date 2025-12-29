@@ -254,6 +254,195 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Calculate how many characters are removed by inline formatting before a given position
+/// This accounts for **bold**, *italic*, `code`, [[wiki links]], and [markdown](links)
+fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
+    let mut shrinkage = 0usize;
+    let mut pos = 0;
+    let chars: Vec<char> = text.chars().collect();
+
+    while pos < up_to_pos && pos < chars.len() {
+        if pos + 1 < chars.len() && chars[pos] == '*' && chars[pos + 1] == '*' {
+            if let Some(end) = find_double_marker(&chars, pos + 2, '*') {
+                if end < up_to_pos {
+                    shrinkage += 4; 
+                } else if pos + 2 < up_to_pos {
+                    shrinkage += 2;
+                }
+                pos = end + 2;
+                continue;
+            }
+        }
+        if pos + 1 < chars.len() && chars[pos] == '_' && chars[pos + 1] == '_' {
+            if let Some(end) = find_double_marker(&chars, pos + 2, '_') {
+                if end < up_to_pos {
+                    shrinkage += 4;
+                } else if pos + 2 < up_to_pos {
+                    shrinkage += 2;
+                }
+                pos = end + 2;
+                continue;
+            }
+        }
+        if chars[pos] == '*' && (pos + 1 >= chars.len() || chars[pos + 1] != '*') {
+            if let Some(end) = find_single_marker(&chars, pos + 1, '*') {
+                if end < up_to_pos {
+                    shrinkage += 2;
+                } else if pos + 1 < up_to_pos {
+                    shrinkage += 1;
+                }
+                pos = end + 1;
+                continue;
+            }
+        }
+        if chars[pos] == '_' && (pos + 1 >= chars.len() || chars[pos + 1] != '_') {
+            if let Some(end) = find_single_marker(&chars, pos + 1, '_') {
+                if end < up_to_pos {
+                    shrinkage += 2;
+                } else if pos + 1 < up_to_pos {
+                    shrinkage += 1;
+                }
+                pos = end + 1;
+                continue;
+            }
+        }
+        if chars[pos] == '`' {
+            if let Some(end) = find_single_marker(&chars, pos + 1, '`') {
+                if end < up_to_pos {
+                    shrinkage += 2;
+                } else if pos + 1 < up_to_pos {
+                    shrinkage += 1;
+                }
+                pos = end + 1;
+                continue;
+            }
+        }
+        if pos + 1 < chars.len() && chars[pos] == '[' && chars[pos + 1] == '[' {
+            if let Some(end) = find_wiki_link_end(&chars, pos + 2) {
+                if end + 1 < up_to_pos {
+                    shrinkage += 4;
+                } else if pos + 2 < up_to_pos {
+                    shrinkage += 2; 
+                }
+                pos = end + 2;
+                continue;
+            }
+        }
+        if chars[pos] == '[' {
+            if let Some((bracket_end, paren_end)) = find_markdown_link(&chars, pos) {
+                let url_len = paren_end - bracket_end - 2; 
+                if paren_end < up_to_pos {
+                    shrinkage += 1 + url_len + 2; 
+                } else if bracket_end < up_to_pos {
+                    shrinkage += 1; 
+                }
+                pos = paren_end + 1;
+                continue;
+            }
+        }
+        pos += 1;
+    }
+
+    shrinkage
+}
+
+fn find_double_marker(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == marker && chars[i + 1] == marker {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_single_marker(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    for i in start..chars.len() {
+        if chars[i] == marker {
+            if marker == '*' || marker == '_' {
+                if i + 1 < chars.len() && chars[i + 1] == marker {
+                    continue;
+                }
+            }
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn find_wiki_link_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == ']' && chars[i + 1] == ']' {
+            return Some(i);
+        }
+        if chars[i] == '[' || chars[i] == '\n' {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_markdown_link(chars: &[char], start: usize) -> Option<(usize, usize)> {
+    let mut i = start + 1;
+    while i + 1 < chars.len() {
+        if chars[i] == ']' && chars[i + 1] == '(' {
+            let bracket_end = i;
+            let mut j = i + 2;
+            while j < chars.len() {
+                if chars[j] == ')' {
+                    return Some((bracket_end, j));
+                }
+                if chars[j] == '\n' {
+                    return None;
+                }
+                j += 1;
+            }
+            return None;
+        }
+        if chars[i] == '\n' {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Calculate the adjusted column for a table cell
+/// Raw format: "| cell1 | cell2 |"
+/// Rendered:   "▶ │ cell1 │ cell2 │" with cells padded to column widths
+fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[usize]) -> usize {
+    let mut rendered_pos = 3;
+    let mut raw_pos = 0;
+
+    for (cell_idx, cell) in cells.iter().enumerate() {
+        let col_width = column_widths.get(cell_idx).copied().unwrap_or(3);
+        if raw_pos == 0 {
+            raw_pos = 1; 
+        }
+
+        let raw_cell_start = raw_pos;
+
+        let cell_len = cell.chars().count();
+        let raw_cell_end = raw_cell_start + cell_len + 3; // " content |"
+
+        if raw_col >= raw_cell_start && raw_col < raw_cell_end {
+            let offset_in_raw_cell = raw_col.saturating_sub(raw_cell_start + 1); // +1 for leading space
+            let content_padding = (col_width.saturating_sub(cell_len)) / 2;
+            let rendered_content_start = rendered_pos + 1 + content_padding; // +1 for leading space
+
+            return rendered_content_start + offset_in_raw_cell.min(cell_len);
+        }
+
+        raw_pos = raw_cell_end;
+        rendered_pos += col_width + 2 + 1;
+    }
+
+    3 + raw_col
+}
+
 fn apply_content_search_highlights(
     f: &mut Frame,
     app: &App,
@@ -283,8 +472,68 @@ fn apply_content_search_highlights(
                     theme.search.match_highlight
                 };
 
-                let prefix_len = 2; // "▶ " or "  "
-                let start_x = area.x + prefix_len as u16 + m.start_col as u16;
+                // Calculate the rendered position based on content type
+                // Different content types transform the raw text differently
+                let adjusted_col = match &app.content_items.get(item_idx) {
+                    Some(ContentItem::TableRow { cells, column_widths, is_separator, .. }) => {
+                        if *is_separator {
+                            continue; 
+                        }
+                        calc_table_adjusted_col(m.start_col, cells, column_widths)
+                    }
+                    Some(ContentItem::TextLine(line)) => {
+                        let line = normalize_whitespace(line);
+                        let (rendered_prefix_len, raw_prefix_len, content_text) =
+                            if line.starts_with("###### ") {
+                                (2, 7, line[7..].to_string())
+                            } else if line.starts_with("##### ") {
+                                (2, 6, line[6..].to_string())
+                            } else if line.starts_with("#### ") {
+                                (4, 5, line[5..].to_string())
+                            } else if line.starts_with("### ") {
+                                (4, 4, line[4..].to_string())
+                            } else if line.starts_with("## ") {
+                                (4, 3, line[3..].to_string())
+                            } else if line.starts_with("# ") {
+                                (4, 2, line[2..].to_string())
+                            } else if line.starts_with("- ") {
+                                (4, 2, line[2..].to_string())
+                            } else if line.starts_with("* ") {
+                                (4, 2, line[2..].to_string())
+                            } else if line.starts_with("> ") {
+                                (4, 2, line[2..].to_string())
+                            } else {
+                                (2, 0, line.to_string())
+                            };
+
+                        if m.start_col < raw_prefix_len {
+                            continue;
+                        }
+                        let content_start_col = m.start_col - raw_prefix_len;
+                        let formatting_shrinkage = if !content_text.is_empty() {
+                            calc_formatting_shrinkage(&content_text, content_start_col)
+                        } else {
+                            0
+                        };
+                        rendered_prefix_len + content_start_col - formatting_shrinkage
+                    }
+                    Some(ContentItem::CodeLine(_)) => {
+                        4 + m.start_col
+                    }
+                    Some(ContentItem::TaskItem { text, .. }) => {
+                        if m.start_col < 6 {
+                            continue;
+                        }
+                        let content_start_col = m.start_col - 6;
+                        let formatting_shrinkage = calc_formatting_shrinkage(text, content_start_col);
+                        6 + content_start_col - formatting_shrinkage
+                    }
+                    _ => {
+                        2 + m.start_col 
+                    }
+                };
+
+                let start_x = area.x + adjusted_col as u16;
                 let match_len = m.end_col - m.start_col;
 
                 for offset in 0..match_len {
