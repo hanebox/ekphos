@@ -266,7 +266,7 @@ where
     let content_theme = &theme.content;
 
     while let Some((i, c)) = chars.next() {
-        // Check for **bold**
+        // Check for **bold** or *italic*
         if c == '*' {
             if let Some(&(_, '*')) = chars.peek() {
                 // Found **, look for closing **
@@ -295,6 +295,91 @@ where
                     current_start = end + 2;
                 } else {
                     // No closing **, treat as regular text
+                    current_start = i;
+                }
+                continue;
+            } else {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                let italic_start = i + 1;
+                let mut italic_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '*' {
+                        if chars.peek().map(|&(_, c)| c != '*').unwrap_or(true) {
+                            italic_end = Some(j);
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = italic_end {
+                    spans.push(Span::styled(
+                        &text[italic_start..end],
+                        Style::default().fg(content_theme.text).add_modifier(Modifier::ITALIC),
+                    ));
+                    current_start = end + 1;
+                } else {
+                    current_start = i;
+                }
+                continue;
+            }
+        }
+
+        // Check for __bold__ or _italic_
+        if c == '_' {
+            if let Some(&(_, '_')) = chars.peek() {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                chars.next(); 
+                let bold_start = i + 2;
+                let mut bold_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '_' {
+                        if let Some(&(_, '_')) = chars.peek() {
+                            bold_end = Some(j);
+                            chars.next(); 
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = bold_end {
+                    spans.push(Span::styled(
+                        &text[bold_start..end],
+                        Style::default().fg(content_theme.text).add_modifier(Modifier::BOLD),
+                    ));
+                    current_start = end + 2;
+                } else {
+                    current_start = i;
+                }
+                continue;
+            } else {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                let italic_start = i + 1;
+                let mut italic_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '_' {
+                        if chars.peek().map(|&(_, c)| c != '_').unwrap_or(true) {
+                            italic_end = Some(j);
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = italic_end {
+                    spans.push(Span::styled(
+                        &text[italic_start..end],
+                        Style::default().fg(content_theme.text).add_modifier(Modifier::ITALIC),
+                    ));
+                    current_start = end + 1;
+                } else {
                     current_start = i;
                 }
                 continue;
