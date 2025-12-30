@@ -135,6 +135,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
         }
     }
 
+    if app.dialog == DialogState::GraphView {
+        handle_graph_view_mouse(app, mouse);
+        return;
+    }
+
     // Handle Edit mode mouse events
     if app.mode == Mode::Edit {
         handle_edit_mode_mouse(app, mouse);
@@ -608,6 +613,10 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
             handle_create_wiki_note_dialog(app, key);
             return Ok(false);
         }
+        DialogState::GraphView => {
+            handle_graph_view_dialog(app, key);
+            return Ok(false);
+        }
         DialogState::None => {}
     }
 
@@ -1030,6 +1039,257 @@ fn handle_help_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
+    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+        if let Some(node_idx) = app.graph_view.selected_node {
+            if node_idx < app.graph_view.nodes.len() {
+                let move_amount = 2.0;
+                match key.code {
+                    KeyCode::Char('h') => {
+                        app.graph_view.nodes[node_idx].x -= move_amount;
+                        return;
+                    }
+                    KeyCode::Char('j') => {
+                        app.graph_view.nodes[node_idx].y += move_amount;
+                        return;
+                    }
+                    KeyCode::Char('k') => {
+                        app.graph_view.nodes[node_idx].y -= move_amount;
+                        return;
+                    }
+                    KeyCode::Char('l') => {
+                        app.graph_view.nodes[node_idx].x += move_amount;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.dialog = DialogState::None;
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            navigate_graph_node(app, GraphDirection::Left);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            navigate_graph_node(app, GraphDirection::Down);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            navigate_graph_node(app, GraphDirection::Up);
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            navigate_graph_node(app, GraphDirection::Right);
+        }
+        KeyCode::Enter => {
+            if let Some(node_idx) = app.graph_view.selected_node {
+                if let Some(node) = app.graph_view.nodes.get(node_idx) {
+                    let note_idx = node.note_index;
+                    for (idx, item) in app.sidebar_items.iter().enumerate() {
+                        if let SidebarItemKind::Note { note_index } = &item.kind {
+                            if *note_index == note_idx {
+                                app.selected_sidebar_index = idx;
+                                app.selected_note = note_idx;
+                                app.content_cursor = 0;
+                                app.content_scroll_offset = 0;
+                                app.update_content_items();
+                                app.update_outline();
+                                app.dialog = DialogState::None;
+                                app.focus = Focus::Content;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Char('H') => {
+            app.graph_view.viewport_x -= 10.0;
+        }
+        KeyCode::Char('J') => {
+            app.graph_view.viewport_y += 5.0;
+        }
+        KeyCode::Char('K') => {
+            app.graph_view.viewport_y -= 5.0;
+        }
+        KeyCode::Char('L') => {
+            app.graph_view.viewport_x += 10.0;
+        }
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+        }
+        KeyCode::Char('-') => {
+            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+        }
+        KeyCode::Char('0') => {
+            app.graph_view.zoom = 1.0;
+            app.graph_view.viewport_x = 0.0;
+            app.graph_view.viewport_y = 0.0;
+            app.graph_view.dirty = true;
+        }
+        KeyCode::Char('g') => {
+            if !app.graph_view.nodes.is_empty() {
+                app.graph_view.selected_node = Some(0);
+                center_on_selected_node(app);
+            }
+        }
+        KeyCode::Char('G') => {
+            if !app.graph_view.nodes.is_empty() {
+                app.graph_view.selected_node = Some(app.graph_view.nodes.len() - 1);
+                center_on_selected_node(app);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GraphDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+fn navigate_graph_node(app: &mut App, direction: GraphDirection) {
+    if app.graph_view.nodes.is_empty() {
+        return;
+    }
+
+    let current = app.graph_view.selected_node.unwrap_or(0);
+    if current >= app.graph_view.nodes.len() {
+        app.graph_view.selected_node = Some(0);
+        return;
+    }
+
+    let current_node = &app.graph_view.nodes[current];
+    let current_x = current_node.x;
+    let current_y = current_node.y;
+
+    let mut best_idx = None;
+    let mut best_dist = f32::MAX;
+
+    for (idx, node) in app.graph_view.nodes.iter().enumerate() {
+        if idx == current {
+            continue;
+        }
+
+        let dx = node.x - current_x;
+        let dy = node.y - current_y;
+
+        let in_direction = match direction {
+            GraphDirection::Left => dx < -5.0,
+            GraphDirection::Right => dx > 5.0,
+            GraphDirection::Up => dy < -2.0,
+            GraphDirection::Down => dy > 2.0,
+        };
+
+        if in_direction {
+            let dist = dx * dx + dy * dy;
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(idx);
+            }
+        }
+    }
+
+    if let Some(idx) = best_idx {
+        app.graph_view.selected_node = Some(idx);
+        center_on_selected_node(app);
+    }
+}
+
+fn center_on_selected_node(app: &mut App) {
+    if let Some(selected) = app.graph_view.selected_node {
+        if let Some(node) = app.graph_view.nodes.get(selected) {
+            let target_x = node.x - 50.0;
+            let target_y = node.y - 15.0;
+            app.graph_view.viewport_x = target_x;
+            app.graph_view.viewport_y = target_y;
+        }
+    }
+}
+
+fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    let mouse_x = mouse.column;
+    let mouse_y = mouse.row;
+
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(idx) = find_node_at_position(app, mouse_x, mouse_y) {
+                app.graph_view.selected_node = Some(idx);
+                app.graph_view.dragging_node = Some(idx);
+                app.graph_view.drag_start = Some((mouse_x, mouse_y));
+                app.graph_view.is_panning = false;
+            } else {
+                app.graph_view.dragging_node = None;
+                app.graph_view.is_panning = true;
+                app.graph_view.drag_start = Some((mouse_x, mouse_y));
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.graph_view.is_panning = false;
+            app.graph_view.dragging_node = None;
+            app.graph_view.drag_start = None;
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some((start_x, start_y)) = app.graph_view.drag_start {
+                let dx = mouse_x as f32 - start_x as f32;
+                let dy = mouse_y as f32 - start_y as f32;
+
+                if let Some(node_idx) = app.graph_view.dragging_node {
+                    // Dragging a node - move the node position
+                    if node_idx < app.graph_view.nodes.len() {
+                        app.graph_view.nodes[node_idx].x += dx / app.graph_view.zoom;
+                        app.graph_view.nodes[node_idx].y += dy / app.graph_view.zoom;
+                    }
+                } else if app.graph_view.is_panning {
+                    // Panning the viewport
+                    app.graph_view.viewport_x -= dx / app.graph_view.zoom;
+                    app.graph_view.viewport_y -= dy / app.graph_view.zoom;
+                }
+
+                app.graph_view.drag_start = Some((mouse_x, mouse_y));
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+        }
+        MouseEventKind::ScrollDown => {
+            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+        }
+        _ => {}
+    }
+}
+
+fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize> {
+    const NODE_HEIGHT: u16 = 3;
+
+    let vx = app.graph_view.viewport_x;
+    let vy = app.graph_view.viewport_y;
+    let zoom = app.graph_view.zoom;
+
+    let inner_x = 1u16;
+    let inner_y = 1u16;
+
+    for (idx, node) in app.graph_view.nodes.iter().enumerate() {
+        let screen_x = ((node.x - vx) * zoom + inner_x as f32) as i32;
+        let screen_y = ((node.y - vy) * zoom + inner_y as f32) as i32;
+        let node_width = node.width as i32;
+
+        if mouse_x as i32 >= screen_x
+            && (mouse_x as i32) < (screen_x + node_width)
+            && mouse_y as i32 >= screen_y
+            && (mouse_y as i32) < (screen_y + NODE_HEIGHT as i32)
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
 fn handle_empty_directory_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Enter | KeyCode::Esc => {
@@ -1386,6 +1646,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
             app.start_buffer_search();
+        }
+        KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL => {
+            app.build_graph();
+            app.dialog = DialogState::GraphView;
         }
         KeyCode::Char('z') => {
             app.toggle_zen_mode();

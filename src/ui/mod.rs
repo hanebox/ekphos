@@ -2,6 +2,7 @@ mod content;
 mod context_menu;
 mod dialogs;
 mod editor;
+mod graph_view;
 mod outline;
 mod search_dialog;
 mod sidebar;
@@ -99,6 +100,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         DialogState::DirectoryNotFound => render_directory_not_found_dialog(f, app),
         DialogState::UnsavedChanges => render_unsaved_changes_dialog(f, app),
         DialogState::CreateWikiNote => render_create_wiki_note_dialog(f, app),
+        DialogState::GraphView => graph_view::render_graph_view(f, app),
         DialogState::None => {
             // Render welcome dialog on top if active
             if app.show_welcome {

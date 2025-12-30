@@ -338,6 +338,56 @@ pub enum DialogState {
     DirectoryNotFound,
     UnsavedChanges,
     CreateWikiNote,
+    GraphView,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphViewState {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub selected_node: Option<usize>,
+    pub viewport_x: f32,
+    pub viewport_y: f32,
+    pub zoom: f32,
+    pub dirty: bool,
+    pub drag_start: Option<(u16, u16)>,
+    pub is_panning: bool,
+    pub dragging_node: Option<usize>,
+}
+
+impl Default for GraphViewState {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            selected_node: None,
+            viewport_x: 0.0,
+            viewport_y: 0.0,
+            zoom: 1.0,
+            dirty: true,
+            drag_start: None,
+            is_panning: false,
+            dragging_node: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphNode {
+    pub note_index: usize,
+    pub title: String,
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub width: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphEdge {
+    pub from: usize,
+    pub to: usize,
+    pub bidirectional: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -625,6 +675,8 @@ pub struct App {
     pub pending_g: bool,
     pub buffer_search: BufferSearchState,
     pub help_scroll: usize,
+    // Graph view state
+    pub graph_view: GraphViewState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -764,6 +816,7 @@ impl App {
             pending_g: false,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
+            graph_view: GraphViewState::default(),
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -908,6 +961,7 @@ impl App {
             pending_g: false,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
+            graph_view: GraphViewState::default(),
         };
 
         if notes_dir_exists {
@@ -2329,6 +2383,84 @@ impl App {
             }
         }
         false
+    }
+
+    pub fn build_graph(&mut self) {
+        let mut nodes: Vec<GraphNode> = Vec::new();
+        let mut edges: Vec<GraphEdge> = Vec::new();
+        let mut note_to_node: HashMap<usize, usize> = HashMap::new();
+        for (note_idx, note) in self.notes.iter().enumerate() {
+            let node_idx = nodes.len();
+            note_to_node.insert(note_idx, node_idx);
+
+            let title = if note.title.chars().count() > 40 {
+                note.title.chars().take(37).collect::<String>() + "..."
+            } else {
+                note.title.clone()
+            };
+
+            let title_len = title.chars().count() as u16;
+            let width = (title_len + 4).max(8); // Minimum width of 8
+
+            nodes.push(GraphNode {
+                note_index: note_idx,
+                title,
+                x: 0.0,
+                y: 0.0,
+                vx: 0.0,
+                vy: 0.0,
+                width,
+            });
+        }
+
+        for (note_idx, note) in self.notes.iter().enumerate() {
+            let wiki_targets = self.extract_wiki_targets_from_content(&note.content);
+
+            for target in wiki_targets {
+                if let Some(target_note_idx) = self.resolve_wiki_link(&target) {
+                    if let (Some(&from_node), Some(&to_node)) =
+                        (note_to_node.get(&note_idx), note_to_node.get(&target_note_idx))
+                    {
+                        let existing = edges.iter_mut().find(|e| e.from == to_node && e.to == from_node);
+
+                        if let Some(edge) = existing {
+                            edge.bidirectional = true;
+                        } else {
+                            let already_exists = edges.iter().any(|e| e.from == from_node && e.to == to_node);
+                            if !already_exists {
+                                edges.push(GraphEdge {
+                                    from: from_node,
+                                    to: to_node,
+                                    bidirectional: false,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.graph_view.nodes = nodes;
+        self.graph_view.edges = edges;
+        self.graph_view.dirty = true;
+
+        if let Some(&node_idx) = note_to_node.get(&self.selected_note) {
+            self.graph_view.selected_node = Some(node_idx);
+        } else {
+            self.graph_view.selected_node = if !self.graph_view.nodes.is_empty() { Some(0) } else { None };
+        }
+    }
+
+    fn extract_wiki_targets_from_content(&self, content: &str) -> Vec<String> {
+        let mut targets = Vec::new();
+        for line in content.lines() {
+            for wiki_link in self.extract_wiki_links_from_text(line) {
+                if !targets.contains(&wiki_link.target) {
+                    targets.push(wiki_link.target);
+                }
+            }
+        }
+        targets
     }
 
     pub fn build_wiki_suggestions(&self, query: &str) -> Vec<WikiSuggestion> {

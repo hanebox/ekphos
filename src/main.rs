@@ -3,6 +3,7 @@ mod clipboard;
 mod config;
 mod editor;
 mod event;
+mod graph;
 mod highlight;
 mod ui;
 mod vim;
