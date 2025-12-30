@@ -11,6 +11,8 @@ pub enum VimMode {
     VisualLine,
     VisualBlock,
     Command,
+    Search { forward: bool },
+    SearchLocked { forward: bool },
     OperatorPending { operator: Operator, count: Option<usize> },
 }
 
@@ -41,6 +43,10 @@ impl VimMode {
         matches!(self, VimMode::Command)
     }
 
+    pub fn is_search(&self) -> bool {
+        matches!(self, VimMode::Search { .. })
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             VimMode::Normal => "NORMAL",
@@ -50,6 +56,8 @@ impl VimMode {
             VimMode::VisualLine => "V-LINE",
             VimMode::VisualBlock => "V-BLOCK",
             VimMode::Command => "COMMAND",
+            VimMode::Search { .. } => "SEARCH",
+            VimMode::SearchLocked { .. } => "SEARCH LOCKED",
             VimMode::OperatorPending { .. } => "NORMAL",
         }
     }

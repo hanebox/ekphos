@@ -184,6 +184,7 @@ pub struct Editor {
     wiki_link_ranges: Vec<WikiLinkRange>,
     wiki_link_valid_style: Style,
     wiki_link_invalid_style: Style,
+    visual_line_selection: Option<(usize, usize)>,
 }
 
 impl Default for Editor {
@@ -215,6 +216,7 @@ impl Editor {
             wiki_link_ranges: Vec::new(),
             wiki_link_valid_style: Style::default().fg(Color::Cyan),
             wiki_link_invalid_style: Style::default().fg(Color::Red),
+            visual_line_selection: None,
         }
     }
 
@@ -259,6 +261,14 @@ impl Editor {
 
     pub fn set_selection_style(&mut self, style: Style) {
         self.selection_style = style;
+    }
+
+    pub fn set_visual_line_selection(&mut self, anchor_row: usize, current_row: usize) {
+        self.visual_line_selection = Some((anchor_row, current_row));
+    }
+
+    pub fn clear_visual_line_selection(&mut self) {
+        self.visual_line_selection = None;
     }
 
     pub fn set_wiki_link_styles(&mut self, valid_style: Style, invalid_style: Style) {
@@ -1715,7 +1725,17 @@ impl Editor {
         }
 
         let cursor_pos = self.cursor.pos();
-        let selection = self.cursor.selection_range();
+        let selection = if let Some((anchor_row, current_row)) = self.visual_line_selection {
+            let (start_row, end_row) = if anchor_row <= current_row {
+                (anchor_row, current_row)
+            } else {
+                (current_row, anchor_row)
+            };
+            let end_line_len = self.buffer.line(end_row).map(|l| l.chars().count()).unwrap_or(0);
+            Some((Position { row: start_row, col: 0 }, Position { row: end_row, col: end_line_len + 1 }))
+        } else {
+            self.cursor.selection_range()
+        };
         let line_count = self.buffer.line_count();
 
         // Use row-based scrolling (consistent with update_scroll)
@@ -1833,7 +1853,17 @@ impl Editor {
         let content_end_x = area.x + area.width.saturating_sub(self.right_padding);
 
         let cursor_pos = self.cursor.pos();
-        let selection = self.cursor.selection_range();
+        let selection = if let Some((anchor_row, current_row)) = self.visual_line_selection {
+            let (start_row, end_row) = if anchor_row <= current_row {
+                (anchor_row, current_row)
+            } else {
+                (current_row, anchor_row)
+            };
+            let end_line_len = self.buffer.line(end_row).map(|l| l.chars().count()).unwrap_or(0);
+            Some((Position { row: start_row, col: 0 }, Position { row: end_row, col: end_line_len + 1 }))
+        } else {
+            self.cursor.selection_range()
+        };
         let h_scroll = self.h_scroll_offset;
 
         let mut y = area.y;

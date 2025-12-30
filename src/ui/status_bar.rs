@@ -56,7 +56,21 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::Edit => {
             // Get detailed vim mode info
             let vim = &app.vim;
-            let mode_name = vim.mode.display_name().to_lowercase();
+            let mode_name = match &vim.mode {
+                VimModeNew::Search { .. } => "search".to_string(),
+                VimModeNew::SearchLocked { .. } => "search locked".to_string(),
+                VimModeNew::Command => "command".to_string(),
+                VimModeNew::OperatorPending { .. } => "normal".to_string(),
+                _ => {
+                    match app.vim_mode {
+                        crate::app::VimMode::Normal => "normal".to_string(),
+                        crate::app::VimMode::Insert => "insert".to_string(),
+                        crate::app::VimMode::Visual => "visual".to_string(),
+                        crate::app::VimMode::VisualLine => "v-line".to_string(),
+                        crate::app::VimMode::VisualBlock => "v-block".to_string(),
+                    }
+                }
+            };
 
             // Build pending info string
             let mut pending_parts = Vec::new();
@@ -134,9 +148,22 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
             let pending = pending_parts.join("");
 
-            // Command mode input
+            // Command mode, search mode input, or status message
             let cmd_input = if matches!(vim.mode, VimModeNew::Command) {
-                Some(format!(":{}", vim.command_buffer))
+                Some((format!(":{}", vim.command_buffer), false))
+            } else if let VimModeNew::Search { forward } = vim.mode {
+                let prefix = if forward { "/" } else { "?" };
+                Some((format!("{}{}", prefix, vim.search_buffer), false))
+            } else if let VimModeNew::SearchLocked { forward } = vim.mode {
+                let prefix = if forward { "/" } else { "?" };
+                let match_info = if app.buffer_search.matches.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}/{}]", app.buffer_search.current_match_index + 1, app.buffer_search.matches.len())
+                };
+                Some((format!("{}{}{}", prefix, vim.search_buffer, match_info), false))
+            } else if let Some(ref msg) = vim.status_message {
+                Some((msg.clone(), true))
             } else {
                 None
             };
@@ -185,11 +212,12 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(statusbar.separator),
     );
 
-    // Command input or file path
-    let path_or_command = if let Some(cmd) = command_input {
+    // Command input, status message, or file path
+    let path_or_command = if let Some((cmd, is_warning)) = command_input {
+        let color = if is_warning { theme.warning } else { theme.primary };
         Span::styled(
             format!(" {}", cmd),
-            Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
