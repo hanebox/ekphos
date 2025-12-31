@@ -135,7 +135,7 @@ The editor provides real-time markdown highlighting while you type:
 
 Connect your notes using wikilinks! Just type `[[Note Name]]` to link to another note.
 
-- Link to the demo note: [[Demo Note]]
+- Link to the demo note: [[02-Demo Note]]
 - Valid links appear in cyan, invalid links in red
 - Press `Space` on a wikilink to navigate to that note
 - In edit mode, type `[[` to get autocomplete suggestions
@@ -1555,8 +1555,8 @@ impl App {
         let notes_path = self.config.notes_path();
         let _ = fs::create_dir_all(&notes_path);
 
-        let _ = fs::write(notes_path.join("Demo Note.md"), DEMO_NOTE_CONTENT);
-        let _ = fs::write(notes_path.join("Getting Started.md"), GETTING_STARTED_CONTENT);
+        let _ = fs::write(notes_path.join("01-Getting Started.md"), GETTING_STARTED_CONTENT);
+        let _ = fs::write(notes_path.join("02-Demo Note.md"), DEMO_NOTE_CONTENT);
         self.dialog = DialogState::None;
         self.load_notes_from_dir();
 

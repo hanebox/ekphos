@@ -1069,9 +1069,10 @@ fn render_content_line<F>(
         ])
     } else if line == "---" || line == "***" || line == "___" {
         // Horizontal rule
+        let hr_width = available_width.saturating_sub(2);
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("─".repeat(40), Style::default().fg(theme.border)),
+            Span::styled("─".repeat(hr_width), Style::default().fg(theme.border)),
         ])
     } else if line.starts_with("* ") {
         // Bullet list (asterisk variant)
