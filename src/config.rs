@@ -210,6 +210,8 @@ pub struct UiColorsFile {
     pub outline: OutlineColors,
     #[serde(default)]
     pub search: SearchColors,
+    #[serde(default)]
+    pub editor: EditorColors,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +310,34 @@ pub struct SearchColors {
     pub match_current: String,
     #[serde(default = "defaults::muted")]
     pub match_count: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorColors {
+    #[serde(default = "defaults::primary")]
+    pub heading1: String,
+    #[serde(default = "defaults::success")]
+    pub heading2: String,
+    #[serde(default = "defaults::warning")]
+    pub heading3: String,
+    #[serde(default = "defaults::secondary")]
+    pub heading4: String,
+    #[serde(default = "defaults::info")]
+    pub heading5: String,
+    #[serde(default = "defaults::muted")]
+    pub heading6: String,
+    #[serde(default = "defaults::success")]
+    pub code: String,
+    #[serde(default = "defaults::info")]
+    pub link: String,
+    #[serde(default = "defaults::muted")]
+    pub blockquote: String,
+    #[serde(default = "defaults::secondary")]
+    pub list_marker: String,
+    #[serde(default = "defaults::warning")]
+    pub bold: String,
+    #[serde(default = "defaults::info")]
+    pub italic: String,
 }
 
 // Default color values module
@@ -436,6 +466,25 @@ impl Default for SearchColors {
     }
 }
 
+impl Default for EditorColors {
+    fn default() -> Self {
+        Self {
+            heading1: defaults::primary(),
+            heading2: defaults::success(),
+            heading3: defaults::warning(),
+            heading4: defaults::secondary(),
+            heading5: defaults::info(),
+            heading6: defaults::muted(),
+            code: defaults::success(),
+            link: defaults::info(),
+            blockquote: defaults::muted(),
+            list_marker: defaults::secondary(),
+            bold: defaults::warning(),
+            italic: defaults::info(),
+        }
+    }
+}
+
 impl ThemeFile {
     pub fn load_from_file(path: &PathBuf) -> Option<Self> {
         let content = fs::read_to_string(path).ok()?;
@@ -516,6 +565,7 @@ pub struct Theme {
     pub content: ContentTheme,
     pub outline: OutlineTheme,
     pub search: SearchTheme,
+    pub editor: EditorTheme,
 }
 
 #[derive(Debug, Clone)]
@@ -577,6 +627,22 @@ pub struct SearchTheme {
     pub match_highlight: Color,
     pub match_current: Color,
     pub match_count: Color,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditorTheme {
+    pub heading1: Color,
+    pub heading2: Color,
+    pub heading3: Color,
+    pub heading4: Color,
+    pub heading5: Color,
+    pub heading6: Color,
+    pub code: Color,
+    pub link: Color,
+    pub blockquote: Color,
+    pub list_marker: Color,
+    pub bold: Color,
+    pub italic: Color,
 }
 
 impl Theme {
@@ -648,6 +714,20 @@ impl Theme {
                 match_highlight: parse_hex_color(&tf.ui.search.match_highlight),
                 match_current: parse_hex_color(&tf.ui.search.match_current),
                 match_count: parse_hex_color(&tf.ui.search.match_count),
+            },
+            editor: EditorTheme {
+                heading1: parse_hex_color(&tf.ui.editor.heading1),
+                heading2: parse_hex_color(&tf.ui.editor.heading2),
+                heading3: parse_hex_color(&tf.ui.editor.heading3),
+                heading4: parse_hex_color(&tf.ui.editor.heading4),
+                heading5: parse_hex_color(&tf.ui.editor.heading5),
+                heading6: parse_hex_color(&tf.ui.editor.heading6),
+                code: parse_hex_color(&tf.ui.editor.code),
+                link: parse_hex_color(&tf.ui.editor.link),
+                blockquote: parse_hex_color(&tf.ui.editor.blockquote),
+                list_marker: parse_hex_color(&tf.ui.editor.list_marker),
+                bold: parse_hex_color(&tf.ui.editor.bold),
+                italic: parse_hex_color(&tf.ui.editor.italic),
             },
         }
     }

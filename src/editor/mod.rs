@@ -185,6 +185,14 @@ pub struct Editor {
     wiki_link_valid_style: Style,
     wiki_link_invalid_style: Style,
     visual_line_selection: Option<(usize, usize)>,
+    // Markdown highlighting colors
+    heading_colors: [Color; 6],
+    code_color: Color,
+    link_color: Color,
+    blockquote_color: Color,
+    list_marker_color: Color,
+    bold_color: Option<Color>,
+    italic_color: Option<Color>,
 }
 
 impl Default for Editor {
@@ -217,6 +225,13 @@ impl Editor {
             wiki_link_valid_style: Style::default().fg(Color::Cyan),
             wiki_link_invalid_style: Style::default().fg(Color::Red),
             visual_line_selection: None,
+            heading_colors: [Color::Blue, Color::Green, Color::Yellow, Color::Magenta, Color::Cyan, Color::Gray],
+            code_color: Color::Green,
+            link_color: Color::Cyan,
+            blockquote_color: Color::Cyan,
+            list_marker_color: Color::Yellow,
+            bold_color: None,
+            italic_color: None,
         }
     }
 
@@ -274,6 +289,25 @@ impl Editor {
     pub fn set_wiki_link_styles(&mut self, valid_style: Style, invalid_style: Style) {
         self.wiki_link_valid_style = valid_style;
         self.wiki_link_invalid_style = invalid_style;
+    }
+
+    pub fn set_markdown_colors(
+        &mut self,
+        heading_colors: [Color; 6],
+        code_color: Color,
+        link_color: Color,
+        blockquote_color: Color,
+        list_marker_color: Color,
+        bold_color: Option<Color>,
+        italic_color: Option<Color>,
+    ) {
+        self.heading_colors = heading_colors;
+        self.code_color = code_color;
+        self.link_color = link_color;
+        self.blockquote_color = blockquote_color;
+        self.list_marker_color = list_marker_color;
+        self.bold_color = bold_color;
+        self.italic_color = italic_color;
     }
 
     pub fn update_wiki_links<F>(&mut self, validator: F)
@@ -437,7 +471,7 @@ impl Editor {
                     row,
                     start,
                     line.chars().count(),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(self.code_color),
                     HighlightType::CodeBlock,
                 ));
                 continue;
@@ -448,7 +482,7 @@ impl Editor {
                     row,
                     0,
                     line.chars().count(),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(self.code_color),
                     HighlightType::CodeBlock,
                 ));
                 continue;
@@ -468,14 +502,7 @@ impl Editor {
 
         if let Some(header_end) = self.detect_header(line) {
             let level = line.chars().take_while(|&c| c == '#').count();
-            let color = match level {
-                1 => Color::Blue,
-                2 => Color::Green,
-                3 => Color::Yellow,
-                4 => Color::Magenta,
-                5 => Color::Cyan,
-                _ => Color::Gray,
-            };
+            let color = self.heading_colors[level.saturating_sub(1).min(5)];
             self.highlights.push(HighlightRange::new(
                 row,
                 0,
@@ -483,7 +510,7 @@ impl Editor {
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
                 HighlightType::Header,
             ));
-            return; 
+            return;
         }
 
         if line.trim_start().starts_with('>') {
@@ -492,7 +519,7 @@ impl Editor {
                 row,
                 start,
                 start + 1,
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(self.blockquote_color),
                 HighlightType::Blockquote,
             ));
         }
@@ -528,7 +555,7 @@ impl Editor {
                 row,
                 indent_chars,
                 indent_chars + 1,
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(self.list_marker_color),
                 HighlightType::ListMarker,
             ));
 
@@ -539,7 +566,7 @@ impl Editor {
                         row,
                         indent_chars + 2,
                         indent_chars + 5,
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(self.link_color),
                         HighlightType::ListMarker,
                     ));
                 }
@@ -552,7 +579,7 @@ impl Editor {
                     row,
                     indent_chars,
                     indent_chars + dot_pos + 1,
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(self.list_marker_color),
                     HighlightType::ListMarker,
                 ));
             }
@@ -571,9 +598,9 @@ impl Editor {
                         row,
                         i,
                         end_pos + 1,
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(self.code_color),
                         HighlightType::InlineCode,
-                    ).with_priority(2)); 
+                    ).with_priority(2));
                     i = end_pos + 1;
                     continue;
                 }
@@ -597,7 +624,7 @@ impl Editor {
                                 row,
                                 i,
                                 paren_end_pos + 1,
-                                Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                                Style::default().fg(self.link_color).add_modifier(Modifier::UNDERLINED),
                                 HighlightType::Link,
                             ).with_priority(1));
                             i = paren_end_pos + 1;
@@ -621,11 +648,15 @@ impl Editor {
                 while j < chars.len().saturating_sub(1) {
                     if chars[j] == marker && chars[j + 1] == marker {
                         if !self.is_position_highlighted(row, i) {
+                            let mut style = Style::default().add_modifier(Modifier::BOLD);
+                            if let Some(color) = self.bold_color {
+                                style = style.fg(color);
+                            }
                             self.highlights.push(HighlightRange::new(
                                 row,
                                 i,
                                 j + 2,
-                                Style::default().add_modifier(Modifier::BOLD),
+                                style,
                                 HighlightType::Bold,
                             ));
                         }
@@ -667,11 +698,15 @@ impl Editor {
                             continue;
                         }
                         if !self.is_position_highlighted(row, i) {
+                            let mut style = Style::default().add_modifier(Modifier::ITALIC);
+                            if let Some(color) = self.italic_color {
+                                style = style.fg(color);
+                            }
                             self.highlights.push(HighlightRange::new(
                                 row,
                                 i,
                                 j + 1,
-                                Style::default().add_modifier(Modifier::ITALIC),
+                                style,
                                 HighlightType::Italic,
                             ));
                         }

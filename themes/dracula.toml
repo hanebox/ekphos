@@ -77,3 +77,18 @@ input = "#f8f8f2"
 match_highlight = "#f1fa8c"
 match_current = "#ffb86c"
 match_count = "#6272a4"
+
+# Editor highlighting component
+[ui.editor]
+heading1 = "#bd93f9"
+heading2 = "#50fa7b"
+heading3 = "#ffb86c"
+heading4 = "#ff79c6"
+heading5 = "#8be9fd"
+heading6 = "#6272a4"
+code = "#50fa7b"
+link = "#8be9fd"
+blockquote = "#6272a4"
+list_marker = "#ff79c6"
+bold = "#ffb86c"
+italic = "#8be9fd"

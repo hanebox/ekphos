@@ -2998,6 +2998,24 @@ impl App {
                 ratatui::style::Style::default().fg(self.theme.error),
             );
 
+            // Set markdown highlighting colors from theme
+            self.editor.set_markdown_colors(
+                [
+                    self.theme.editor.heading1,
+                    self.theme.editor.heading2,
+                    self.theme.editor.heading3,
+                    self.theme.editor.heading4,
+                    self.theme.editor.heading5,
+                    self.theme.editor.heading6,
+                ],
+                self.theme.editor.code,
+                self.theme.editor.link,
+                self.theme.editor.blockquote,
+                self.theme.editor.list_marker,
+                Some(self.theme.editor.bold),
+                Some(self.theme.editor.italic),
+            );
+
             // Update all editor syntax highlighting
             self.update_editor_highlights();
 

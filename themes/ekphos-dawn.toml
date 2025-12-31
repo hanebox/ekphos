@@ -68,3 +68,27 @@ heading1 = "#7aa2f7"
 heading2 = "#9ece6a"
 heading3 = "#e0af68"
 heading4 = "#bb9af7"
+
+# Search component
+[ui.search]
+background = "#24243a"
+border = "#7aa2f7"
+input = "#c0caf5"
+match_highlight = "#e0af68"
+match_current = "#ff9e64"
+match_count = "#565f89"
+
+# Editor highlighting component
+[ui.editor]
+heading1 = "#7aa2f7"
+heading2 = "#9ece6a"
+heading3 = "#e0af68"
+heading4 = "#bb9af7"
+heading5 = "#7dcfff"
+heading6 = "#565f89"
+code = "#9ece6a"
+link = "#7dcfff"
+blockquote = "#565f89"
+list_marker = "#bb9af7"
+bold = "#e0af68"
+italic = "#7dcfff"
