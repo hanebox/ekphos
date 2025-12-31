@@ -36,248 +36,71 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - Press `Ctrl+b` to collapse/expand the sidebar
 - Press `Ctrl+o` to collapse/expand the outline
 
-## Navigation
+## Quick Start
 
-- `j/k` or Arrow keys: Navigate up/down
-- `gg`: Go to first item
-- `G`: Go to last item
-- `J/K` (Shift): Toggle floating cursor mode (view stays fixed)
-- `Tab` / `Shift+Tab`: Switch focus between panels
-- `Enter`: Jump to heading (in Outline) or open image (in Content)
-- `Space`: Toggle task checkbox, open link, or navigate wikilink
-- `]/[`: Next/previous link (when multiple links on same line)
-- `/`: Search notes (in Sidebar)
-- `Ctrl+f`: Find in buffer (search current note)
-- `?`: Show help dialog
-- `R`: Reload files from disk
-- `Ctrl+Shift+R`: Reload config and theme
-- `z`: Toggle zen mode (hide sidebars)
-
-## Notes and Folders
-
-- `n`: Create new note (context-aware: creates in current folder)
-- `N`: Create new folder (context-aware: creates as subfolder)
-- `r`: Rename note or folder
-- `d`: Delete note or folder
+- `j/k`: Navigate up/down
 - `e`: Enter edit mode
+- `n`: Create new note
+- `/`: Search notes
+- `?`: Show help dialog
+- `g`: Open graph view
+- `z`: Toggle zen mode
 
-### Folder Tree
+Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
 
-The sidebar displays a hierarchical folder tree:
+## Wikilinks
 
-- Folders are shown with `>` (collapsed) or `v` (expanded) icons
-- Press `Enter` on a folder to toggle expand/collapse
-- Folders and notes are sorted alphabetically
-
-## Edit Mode (Vim Keybindings)
-
-### Modes
-
-- `i`: Insert before cursor
-- `a`: Insert after cursor
-- `A`: Insert at end of line
-- `I`: Insert at start of line
-- `o`: New line below
-- `O`: New line above
-- `v`: Visual mode (select text)
-- `Esc`: Exit edit mode (discards unsaved changes)
-
-### Movement
-
-- `h/j/k/l`: Move cursor
-- `w/b`: Word forward/back
-- `0/$`: Line start/end
-- `gg/G`: Top/bottom of file
-
-### Editing
-
-- `x`: Delete character
-- `dd`: Delete line
-- `dw`: Delete word forward
-- `db`: Delete word backward
-- `y`: Yank (copy) selection
-- `p`: Paste
-- `u`: Undo
-- `Ctrl+r`: Redo
-- `Ctrl+s`: Save and exit edit mode
-
-### Visual Mode
-
-Press `v` to enter visual mode for text selection:
-
-- `h/j/k/l`: Extend selection
-- `w/b`: Extend by word
-- `y`: Yank selection
-- `d/x`: Delete selection
-- `Esc`: Cancel
-
-### Mouse Selection
-
-Use the mouse for quick text selection:
-
-- **Click**: Position cursor
-- **Drag**: Select text (enters visual mode)
-- **Right-click**: Context menu (Copy / Cut / Paste)
-
-### Editor Syntax Highlighting
-
-The editor provides real-time markdown highlighting while you type:
-
-- Headings with color-coded levels
-- **Bold** and *italic* formatting
-- `Inline code` in green
-- [[Wiki links]] in cyan (valid) or red (invalid)
-- List markers and task checkboxes
-
-## Markdown Support
-
-### Wikilinks
-
-Connect your notes using wikilinks! Just type `[[Note Name]]` to link to another note.
+Connect your notes using wikilinks! Type `[[Note Name]]` to link to another note.
 
 - Link to the demo note: [[02-Demo Note]]
-- Valid links appear in cyan, invalid links in red
 - Press `Space` on a wikilink to navigate to that note
-- In edit mode, type `[[` to get autocomplete suggestions
+- Type `[[` in edit mode for autocomplete suggestions
+- Link to non-existent notes to create them!
 
-**Creating notes from wikilinks:**
+## Graph View
 
-If you link to a note that doesn't exist (like [[New Ideas]]), pressing `Space` will offer to create it!
+Press `g` to open the interactive graph view and visualize connections between your notes.
 
-### Headings
+- See how your notes link together
+- Click on nodes to navigate
+- Use mouse to pan and zoom
 
-# Heading 1
-
-## Heading 2
-
-### Heading 3
-
-#### Heading 4
-
-##### Heading 5
-
-###### Heading 6
-
-### Lists
-
-- Bullet item one
-- Bullet item two
-- Bullet item three
-
-### Task Lists
+## Task Lists
 
 Track your tasks with checkboxes! Press `Space` to toggle:
 
 - [ ] Unchecked task
 - [x] Completed task
-- [ ] Another pending task
-- [x] This one is done too
 
-### Tables
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Headings | Done | H1-H6 |
-| Lists | Done | Bullets |
-| Tables | Done | Formatted |
-
-### Collapsible Details
-
-Use `<details>` for collapsible sections. Press `Space` to toggle:
-
-<details>
-<summary>Click to expand this section</summary>
-
-This content is hidden by default.
-
-You can include any text here, and it will be revealed when the details section is expanded.
-
-Use this for FAQs, spoilers, or optional information.
-</details>
-
-### Blockquotes
-
-> This is a blockquote.
-> It can span multiple lines.
-
-### Code Blocks
+## Code Blocks
 
 Code blocks support **syntax highlighting** for many languages:
 
 ```rust
 fn main() {
-    let message = "Hello, Ekphos!";
-    println!("{}", message);
+    println!("Hello, Ekphos!");
 }
 ```
 
-```python
-def greet(name: str) -> str:
-    return f"Hello, {name}!"
-```
+## Images
 
-### Horizontal Rules
+Embed images with `![alt](path/to/image.png)`. Press `Enter` to open in system viewer.
 
----
+Inline preview works in compatible terminals (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
 
-### Images
+## Collapsible Details
 
-Images can be embedded using standard markdown syntax:
+Use `<details>` for collapsible sections. Press `Space` to toggle:
 
-```
-![alt text](path/to/image.png)
-![remote](https://example.com/image.png)
-```
+<details>
+<summary>Click to expand</summary>
 
-Both local files and remote URLs are supported.
-
-Click on an image or press `Enter`/`o` to open it in your system viewer.
-
-For inline preview, use a compatible terminal (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
-
-### Links
-
-Links are rendered with special styling. Click or press `Space` to open:
-
-- Visit the [Ekphos Website](https://ekphos.xyz) for more information
-- Multiple links on one line: [Google](https://google.com) and [DuckDuckGo](https://duckduckgo.com)
-
-Use `]` and `[` to navigate between links on the same line.
-
-## CLI Options
-
-Run from terminal:
-
-- `ekphos --help`: Show help
-- `ekphos --version`: Show version
-- `ekphos --config`: Show config file path
-- `ekphos --dir`: Show notes directory path
-- `ekphos --reset`: Reset config and themes to defaults
-
-## Configuration
-
-Config file: `~/.config/ekphos/config.toml`
-
-```toml
-notes_dir = "~/Documents/ekphos"
-theme = "ekphos-dawn"
-syntax_theme = "base16-ocean.dark"
-show_empty_dir = true
-
-[editor]
-line_wrap = true
-tab_width = 4
-```
-
-## Themes
-
-Default theme: `ekphos-dawn`
-
-Custom themes can be added to `~/.config/ekphos/themes/` as `.toml` files.
-
-Theme format uses semantic sections: `[base]`, `[accent]`, `[semantic]`, `[ui]`
+Hidden content goes here. Great for FAQs or optional information.
+</details>
 
 ---
+
+Read the docs at [docs.ekphos.xyz](https://docs.ekphos.xyz) for full documentation, vim keybindings, themes, and configuration.
 
 Press `q` to quit. Happy note-taking!"#;
 

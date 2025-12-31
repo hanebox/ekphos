@@ -42,7 +42,7 @@ pub fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
 
     // Calculate centered dialog area
     let dialog_width = 60.min(area.width.saturating_sub(4));
-    let dialog_height = 22.min(area.height.saturating_sub(4));
+    let dialog_height = 24.min(area.height.saturating_sub(4));
 
     let dialog_area = Rect {
         x: (area.width.saturating_sub(dialog_width)) / 2,
@@ -87,6 +87,11 @@ pub fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
             Span::styled("q   ", Style::default().fg(theme.warning)),
             Span::styled("Quit          ", Style::default().fg(dialog_theme.text)),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Read the docs at docs.ekphos.xyz",
+            Style::default().fg(dialog_theme.text),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Press Enter or Space to continue",
