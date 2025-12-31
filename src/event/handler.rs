@@ -1483,7 +1483,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Tab if !app.zen_mode => app.toggle_focus(false),
         KeyCode::BackTab if !app.zen_mode => app.toggle_focus(true),
         KeyCode::Char('e') => app.enter_edit_mode(),
-        KeyCode::Char('n') => {
+        KeyCode::Char('n') if !app.zen_mode => {
             app.input_buffer.clear();
             app.dialog_error = None;
             let context_folder = app.get_current_context_folder();
@@ -1494,7 +1494,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateNote;
         }
-        KeyCode::Char('N') => {
+        KeyCode::Char('N') if !app.zen_mode => {
             app.input_buffer.clear();
             app.dialog_error = None;
             let context_folder = app.get_current_context_folder();
@@ -1505,7 +1505,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateFolder;
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !app.zen_mode => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { .. } => {
@@ -1517,7 +1517,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('r') if !app.zen_mode => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { note_index } => {

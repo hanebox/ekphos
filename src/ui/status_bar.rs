@@ -10,15 +10,20 @@ use crate::app::{App, Focus, Mode};
 use crate::vim::VimMode as VimModeNew;
 
 pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    const ZEN_MAX_WIDTH: u16 = 95;
+
     let theme = &app.theme;
 
-    // Calculate stats
-    let (word_count, reading_time) = if let Some(note) = app.current_note() {
-        let words: usize = note.content.split_whitespace().count();
-        let minutes = (words as f64 / 200.0).ceil() as usize;
-        (words, minutes)
+    // Calculate stats - count only actual words, not markdown syntax
+    let word_count = if let Some(note) = app.current_note() {
+        note.content
+            .split_whitespace()
+            .filter(|word| {
+                word.chars().any(|c| c.is_alphanumeric())
+            })
+            .count()
     } else {
-        (0, 0)
+        0
     };
 
     // Calculate percentage
@@ -28,20 +33,26 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ((app.content_cursor + 1) * 100) / app.content_items.len()
     };
 
-    let note_path = app
-        .current_note()
-        .and_then(|n| n.file_path.as_ref())
-        .map(|p| {
-            let path_str = p.to_string_lossy().to_string();
-            if let Some(home) = dirs::home_dir() {
-                let home_str = home.to_string_lossy().to_string();
-                if path_str.starts_with(&home_str) {
-                    return path_str.replacen(&home_str, "~", 1);
+    let note_path = if app.zen_mode {
+        // In zen mode, just show the note title
+        app.current_note()
+            .map(|n| n.title.clone())
+            .unwrap_or_else(|| "—".to_string())
+    } else {
+        app.current_note()
+            .and_then(|n| n.file_path.as_ref())
+            .map(|p| {
+                let path_str = p.to_string_lossy().to_string();
+                if let Some(home) = dirs::home_dir() {
+                    let home_str = home.to_string_lossy().to_string();
+                    if path_str.starts_with(&home_str) {
+                        return path_str.replacen(&home_str, "~", 1);
+                    }
                 }
-            }
-            path_str
-        })
-        .unwrap_or_else(|| "—".to_string());
+                path_str
+            })
+            .unwrap_or_else(|| "—".to_string())
+    };
 
     // Get mode indicator and command info for edit mode
     let (mode_text, pending_info, command_input) = match app.mode {
@@ -251,7 +262,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let stats = Span::styled(
-        format!("{}w · {}m", word_count, reading_time),
+        format!("{} words", word_count),
         Style::default().fg(statusbar.mode),
     );
 
@@ -261,7 +272,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let help = Span::styled(
-        "  ? for help",
+        "  ? help ",
         Style::default().fg(statusbar.mode),
     );
 
@@ -275,15 +286,33 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     right_content.extend(zen_indicator);
     right_content.extend(vec![stats, position, help]);
 
-    let left_width: usize = left_content.iter().map(|s| s.content.len()).sum();
-    let right_width: usize = right_content.iter().map(|s| s.content.len()).sum();
-    let available_width = area.width as usize;
-    let padding = available_width.saturating_sub(left_width + right_width + 1);
+    let content_width = if app.zen_mode {
+        (area.width as usize).min(ZEN_MAX_WIDTH as usize)
+    } else {
+        area.width as usize
+    };
 
-    let mut spans = left_content;
-    spans.push(Span::styled(" ".repeat(padding), Style::default().bg(statusbar.background)));
+    let left_width: usize = left_content.iter().map(|s| s.content.chars().count()).sum();
+    let right_width: usize = right_content.iter().map(|s| s.content.chars().count()).sum();
+    let middle_padding = content_width.saturating_sub(left_width + right_width);
+    let mut spans = Vec::new();
+
+    if app.zen_mode {
+        let left_margin = (area.width as usize).saturating_sub(content_width) / 2;
+        if left_margin > 0 {
+            spans.push(Span::styled(" ".repeat(left_margin), Style::default().bg(statusbar.background)));
+        }
+    }
+
+    spans.extend(left_content);
+    spans.push(Span::styled(" ".repeat(middle_padding), Style::default().bg(statusbar.background)));
     spans.extend(right_content);
-    spans.push(Span::styled(" ", Style::default().bg(statusbar.background)));
+
+    let current_width = spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let right_margin = (area.width as usize).saturating_sub(current_width);
+    if right_margin > 0 {
+        spans.push(Span::styled(" ".repeat(right_margin), Style::default().bg(statusbar.background)));
+    }
 
     let status_line = Line::from(spans);
     let status_bar = Paragraph::new(status_line)

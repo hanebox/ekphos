@@ -30,13 +30,27 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|n| format!(" {}{} ", n.title, floating_indicator))
         .unwrap_or_else(|| format!(" Content{} ", floating_indicator));
 
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(border_style);
+    const ZEN_MAX_WIDTH: u16 = 95;
 
-    let inner_area = block.inner(area);
-    f.render_widget(block, area);
+    let inner_area = if app.zen_mode {
+        let content_width = area.width.min(ZEN_MAX_WIDTH);
+        let x_offset = (area.width.saturating_sub(content_width)) / 2;
+        Rect {
+            x: area.x + x_offset,
+            y: area.y + 1,
+            width: content_width,
+            height: area.height.saturating_sub(1),
+        }
+    } else {
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        inner
+    };
 
     if app.content_items.is_empty() {
         return;

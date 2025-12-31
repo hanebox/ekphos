@@ -3097,12 +3097,16 @@ impl App {
                 _ => "Ctrl+S: Save, Esc: Exit",
             }
         };
-        self.editor.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(color))
-                .title(format!(" {}{} | {} ", mode_str, pending_str, hint)),
-        );
+        if self.zen_mode {
+            self.editor.set_block(Block::default());
+        } else {
+            self.editor.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(color))
+                    .title(format!(" {}{} | {} ", mode_str, pending_str, hint)),
+            );
+        }
         self.editor.set_selection_style(
             Style::default()
                 .fg(self.theme.foreground)
