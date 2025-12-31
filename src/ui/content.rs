@@ -65,9 +65,34 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             return 1;
         }
 
-        let total_len = text.chars().count() + prefix_len;
-        let height = ((total_len as f64 / available_width as f64).ceil() as u16).max(1);
-        height.min(max_item_height)
+        let content_width = available_width.saturating_sub(prefix_len);
+        if content_width == 0 {
+            return 1;
+        }
+
+        let mut lines = 1u16;
+        let mut current_line_width = 0usize;
+
+        for word in text.split_whitespace() {
+            let word_width = unicode_width::UnicodeWidthStr::width(word);
+
+            if current_line_width == 0 {
+                if word_width > content_width {
+                    lines += ((word_width - 1) / content_width) as u16;
+                }
+                current_line_width = word_width;
+            } else if current_line_width + 1 + word_width <= content_width {
+                current_line_width += 1 + word_width;
+            } else {
+                lines += 1;
+                if word_width > content_width {
+                    lines += ((word_width - 1) / content_width) as u16;
+                }
+                current_line_width = word_width.min(content_width);
+            }
+        }
+
+        lines.min(max_item_height)
     };
 
     let details_states = &app.details_open_states;
@@ -830,6 +855,13 @@ fn display_width(s: &str) -> usize {
     s.width()
 }
 
+/// Represents a word segment with its style for word-based wrapping
+struct StyledWord {
+    text: String,
+    style: Style,
+    width: usize,
+}
+
 fn wrap_line_for_cursor<'a>(
     first_line_spans: Vec<Span<'a>>,
     available_width: usize,
@@ -867,6 +899,58 @@ fn wrap_line_for_cursor<'a>(
         return vec![Line::from(spans)];
     }
 
+    // Extract words from spans while preserving styles
+    let mut styled_words: Vec<StyledWord> = Vec::new();
+    for span in content_spans {
+        let span_style = span.style;
+        let span_text = span.content.to_string();
+
+        // Split by whitespace while tracking positions
+        let mut last_end = 0;
+        let mut chars_iter = span_text.char_indices().peekable();
+
+        while let Some((i, c)) = chars_iter.next() {
+            if c.is_whitespace() {
+                // Add word before this whitespace if any
+                if i > last_end {
+                    let word = &span_text[last_end..i];
+                    styled_words.push(StyledWord {
+                        text: word.to_string(),
+                        style: span_style,
+                        width: display_width(word),
+                    });
+                }
+                // Add whitespace as its own "word" to preserve spacing
+                let ws_start = i;
+                let mut ws_end = i + c.len_utf8();
+                // Consume consecutive whitespace
+                while let Some(&(next_i, next_c)) = chars_iter.peek() {
+                    if next_c.is_whitespace() {
+                        ws_end = next_i + next_c.len_utf8();
+                        chars_iter.next();
+                    } else {
+                        break;
+                    }
+                }
+                styled_words.push(StyledWord {
+                    text: span_text[ws_start..ws_end].to_string(),
+                    style: span_style,
+                    width: display_width(&span_text[ws_start..ws_end]),
+                });
+                last_end = ws_end;
+            }
+        }
+        // Add remaining word after last whitespace
+        if last_end < span_text.len() {
+            let word = &span_text[last_end..];
+            styled_words.push(StyledWord {
+                text: word.to_string(),
+                style: span_style,
+                width: display_width(word),
+            });
+        }
+    }
+
     let continuation_indent = " ".repeat(prefix_width);
     let continuation_available = available_width.saturating_sub(prefix_width);
     let mut lines: Vec<Line<'a>> = Vec::new();
@@ -874,55 +958,95 @@ fn wrap_line_for_cursor<'a>(
     let mut current_line_width = 0usize;
     let mut is_first_line = true;
 
-    for span in content_spans {
-        let span_style = span.style;
-        let span_text = span.content.to_string();
-        let mut remaining_text = span_text.as_str();
+    for styled_word in styled_words {
+        let max_width = if is_first_line { first_line_available } else { continuation_available };
+        let is_whitespace = styled_word.text.chars().all(|c| c.is_whitespace());
 
-        while !remaining_text.is_empty() {
-            let max_width = if is_first_line { first_line_available } else { continuation_available };
-            let available_in_line = max_width.saturating_sub(current_line_width);
+        // Skip leading whitespace on continuation lines
+        if current_line_width == 0 && is_whitespace && !is_first_line {
+            continue;
+        }
 
-            if available_in_line == 0 {
-                if is_first_line {
-                    let mut line_spans = prefix_spans.clone();
-                    line_spans.extend(current_line_spans.drain(..));
-                    lines.push(Line::from(line_spans));
-                    is_first_line = false;
-                } else {
-                    let mut line_spans = vec![Span::styled(continuation_indent.clone(), Style::default())];
-                    line_spans.extend(current_line_spans.drain(..));
-                    lines.push(Line::from(line_spans));
+        // Check if word fits on current line
+        if current_line_width + styled_word.width <= max_width {
+            current_line_spans.push(Span::styled(styled_word.text, styled_word.style));
+            current_line_width += styled_word.width;
+        } else if styled_word.width > max_width && !is_whitespace {
+            // Word is too long for any line - need to break it character by character
+            let mut remaining = styled_word.text.as_str();
+            let style = styled_word.style;
+
+            while !remaining.is_empty() {
+                let line_max = if is_first_line { first_line_available } else { continuation_available };
+                let available_in_line = line_max.saturating_sub(current_line_width);
+
+                if available_in_line == 0 {
+                    // Flush current line
+                    if is_first_line {
+                        let mut line_spans = prefix_spans.clone();
+                        line_spans.extend(current_line_spans.drain(..));
+                        lines.push(Line::from(line_spans));
+                        is_first_line = false;
+                    } else {
+                        let mut line_spans = vec![Span::styled(continuation_indent.clone(), Style::default())];
+                        line_spans.extend(current_line_spans.drain(..));
+                        lines.push(Line::from(line_spans));
+                    }
+                    current_line_width = 0;
+                    continue;
                 }
-                current_line_width = 0;
-                continue;
-            }
 
-            let mut fit_chars = 0;
-            let mut fit_width = 0;
-            for ch in remaining_text.chars() {
-                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-                if fit_width + ch_width > available_in_line {
+                // Find how many characters fit
+                let mut fit_chars = 0;
+                let mut fit_width = 0;
+                for ch in remaining.chars() {
+                    let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                    if fit_width + ch_width > available_in_line {
+                        break;
+                    }
+                    fit_chars += ch.len_utf8();
+                    fit_width += ch_width;
+                }
+
+                if fit_chars == 0 {
+                    let ch = remaining.chars().next().unwrap();
+                    fit_chars = ch.len_utf8();
+                    fit_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                }
+
+                let (fitting, rest) = remaining.split_at(fit_chars);
+                current_line_spans.push(Span::styled(fitting.to_string(), style));
+                current_line_width += fit_width;
+                remaining = rest;
+
+                // If there's more, flush line
+                if !remaining.is_empty() {
+                    if is_first_line {
+                        let mut line_spans = prefix_spans.clone();
+                        line_spans.extend(current_line_spans.drain(..));
+                        lines.push(Line::from(line_spans));
+                        is_first_line = false;
+                    } else {
+                        let mut line_spans = vec![Span::styled(continuation_indent.clone(), Style::default())];
+                        line_spans.extend(current_line_spans.drain(..));
+                        lines.push(Line::from(line_spans));
+                    }
+                    current_line_width = 0;
+                }
+            }
+        } else if !is_whitespace {
+            // Word doesn't fit on current line - start a new line
+            // First, flush current line (but skip trailing whitespace)
+            // Remove trailing whitespace spans from current line
+            while let Some(last_span) = current_line_spans.last() {
+                if last_span.content.chars().all(|c| c.is_whitespace()) {
+                    current_line_spans.pop();
+                } else {
                     break;
                 }
-                fit_chars += ch.len_utf8();
-                fit_width += ch_width;
             }
 
-            if fit_chars == 0 && current_line_width == 0 {
-                let ch = remaining_text.chars().next().unwrap();
-                fit_chars = ch.len_utf8();
-                fit_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-            }
-
-            if fit_chars > 0 {
-                let (fitting, rest) = remaining_text.split_at(fit_chars);
-                current_line_spans.push(Span::styled(fitting.to_string(), span_style));
-                current_line_width += fit_width;
-                remaining_text = rest;
-            }
-
-            if !remaining_text.is_empty() {
+            if !current_line_spans.is_empty() || is_first_line {
                 if is_first_line {
                     let mut line_spans = prefix_spans.clone();
                     line_spans.extend(current_line_spans.drain(..));
@@ -933,8 +1057,19 @@ fn wrap_line_for_cursor<'a>(
                     line_spans.extend(current_line_spans.drain(..));
                     lines.push(Line::from(line_spans));
                 }
-                current_line_width = 0;
             }
+
+            current_line_spans.clear();
+            current_line_spans.push(Span::styled(styled_word.text, styled_word.style));
+            current_line_width = styled_word.width;
+        }
+    }
+
+    while let Some(last_span) = current_line_spans.last() {
+        if last_span.content.chars().all(|c| c.is_whitespace()) {
+            current_line_spans.pop();
+        } else {
+            break;
         }
     }
 
