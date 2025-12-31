@@ -1,6 +1,6 @@
 [package]
 name = "ekphos"
-version = "0.8.0"
+version = "0.10.0"
 edition = "2021"
 authors = ["Ekphos Contributors"]
 description = "A lightweight, fast, terminal-based markdown research tool inspired by Obsidian"
