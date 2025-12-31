@@ -3262,11 +3262,24 @@ impl App {
     /// Convert mouse screen coordinates to editor row/col.
     /// Returns None if mouse is outside the editor area.
     pub fn screen_to_editor_coords(&self, mouse_x: u16, mouse_y: u16) -> Option<(usize, usize)> {
-        // Check if mouse is within editor bounds (account for border)
-        let inner_x = self.editor_area.x + 1;
-        let inner_y = self.editor_area.y + 1;
-        let inner_width = self.editor_area.width.saturating_sub(2);
-        let inner_height = self.editor_area.height.saturating_sub(2);
+        let (inner_x, inner_y, inner_width, inner_height) = if self.zen_mode {
+            const ZEN_MAX_WIDTH: u16 = 95;
+            let content_width = self.editor_area.width.min(ZEN_MAX_WIDTH);
+            let x_offset = (self.editor_area.width.saturating_sub(content_width)) / 2;
+            (
+                self.editor_area.x + x_offset,
+                self.editor_area.y + 2, 
+                content_width,
+                self.editor_area.height.saturating_sub(2),
+            )
+        } else {
+            (
+                self.editor_area.x + 1,
+                self.editor_area.y + 1,
+                self.editor_area.width.saturating_sub(2),
+                self.editor_area.height.saturating_sub(2),
+            )
+        };
 
         if mouse_x < inner_x || mouse_x >= inner_x + inner_width ||
            mouse_y < inner_y || mouse_y >= inner_y + inner_height {
@@ -3286,8 +3299,17 @@ impl App {
     pub fn get_auto_scroll_direction(&self, mouse_y: u16) -> i8 {
         const SCROLL_THRESHOLD: u16 = 2;
 
-        let inner_y = self.editor_area.y + 1;
-        let inner_height = self.editor_area.height.saturating_sub(2);
+        let (inner_y, inner_height) = if self.zen_mode {
+            (
+                self.editor_area.y + 2, 
+                self.editor_area.height.saturating_sub(2),
+            )
+        } else {
+            (
+                self.editor_area.y + 1,
+                self.editor_area.height.saturating_sub(2),
+            )
+        };
 
         if mouse_y < inner_y + SCROLL_THRESHOLD && self.editor_scroll_top > 0 {
             -1 // Scroll up
