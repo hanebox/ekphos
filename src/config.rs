@@ -449,6 +449,7 @@ impl ThemeFile {
     fn get_bundled_theme(name: &str) -> Option<Self> {
         let content = match name {
             "ekphos-dawn" => include_str!("../themes/ekphos-dawn.toml"),
+            "dracula" => include_str!("../themes/dracula.toml"),
             _ => return None,
         };
         Self::load_from_str(content)

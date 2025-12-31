@@ -1,0 +1,79 @@
+# Dracula Theme
+# https://draculatheme.com
+
+[base]
+background = "#282a36"
+background_secondary = "#44475a"
+foreground = "#f8f8f2"
+muted = "#6272a4"
+
+[accent]
+primary = "#bd93f9"
+secondary = "#ff79c6"
+
+[semantic]
+error = "#ff5555"
+warning = "#ffb86c"
+success = "#50fa7b"
+info = "#8be9fd"
+
+[ui]
+border = "#6272a4"
+border_focused = "#bd93f9"
+selection = "#44475a"
+cursor = "#f8f8f2"
+
+# Status bar component
+[ui.statusbar]
+background = "#282a36"
+foreground = "#f8f8f2"
+brand = "#bd93f9"
+mode = "#6272a4"
+separator = "#44475a"
+
+# Dialog/popup component
+[ui.dialog]
+background = "#282a36"
+border = "#bd93f9"
+title = "#bd93f9"
+text = "#f8f8f2"
+
+# Sidebar component
+[ui.sidebar]
+background = "#282a36"
+item = "#f8f8f2"
+item_selected = "#ffb86c"
+folder = "#8be9fd"
+folder_expanded = "#8be9fd"
+
+# Content view component
+[ui.content]
+background = "#282a36"
+text = "#f8f8f2"
+heading1 = "#bd93f9"
+heading2 = "#50fa7b"
+heading3 = "#ffb86c"
+heading4 = "#ff79c6"
+link = "#8be9fd"
+link_invalid = "#ff5555"
+code = "#50fa7b"
+code_background = "#44475a"
+blockquote = "#6272a4"
+list_marker = "#ff79c6"
+
+# Outline component
+[ui.outline]
+background = "#282a36"
+heading1 = "#bd93f9"
+heading2 = "#50fa7b"
+heading3 = "#ffb86c"
+heading4 = "#ff79c6"
+
+# Search component
+[ui.search]
+background = "#44475a"
+border = "#bd93f9"
+input = "#f8f8f2"
+match_highlight = "#f1fa8c"
+match_current = "#ffb86c"
+match_count = "#6272a4"
