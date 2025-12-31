@@ -286,6 +286,77 @@ impl Editor {
         self.visual_line_selection = None;
     }
 
+    pub fn visual_line_selected_text(&self) -> Option<String> {
+        let (anchor_row, current_row) = self.visual_line_selection?;
+        let (start_row, end_row) = if anchor_row <= current_row {
+            (anchor_row, current_row)
+        } else {
+            (current_row, anchor_row)
+        };
+
+        let mut result = String::new();
+        for row in start_row..=end_row {
+            if let Some(line) = self.buffer.line(row) {
+                result.push_str(line);
+                result.push('\n');
+            }
+        }
+        Some(result)
+    }
+
+    pub fn copy_visual_lines(&mut self) {
+        if let Some(text) = self.visual_line_selected_text() {
+            self.clipboard = Some(text.clone());
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&text);
+            }
+        }
+    }
+
+    pub fn cut_visual_lines(&mut self) {
+        if let Some((anchor_row, current_row)) = self.visual_line_selection {
+            let (start_row, end_row) = if anchor_row <= current_row {
+                (anchor_row, current_row)
+            } else {
+                (current_row, anchor_row)
+            };
+
+            // Get the text first for clipboard
+            if let Some(text) = self.visual_line_selected_text() {
+                self.clipboard = Some(text.clone());
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text(&text);
+                }
+            }
+
+            let cursor_before = self.cursor.pos();
+
+            // Delete lines from end to start to preserve row indices
+            for row in (start_row..=end_row).rev() {
+                self.buffer.delete_line(row);
+            }
+
+            // Invalidate wrap cache
+            self.wrap_cache.invalidate_from(start_row);
+
+            // Move cursor to start of deleted region
+            let new_row = start_row.min(self.buffer.line_count().saturating_sub(1));
+            self.cursor.move_to(new_row, 0);
+            self.cursor.cancel_selection();
+
+            let deleted_text = self.clipboard.clone().unwrap_or_default();
+            self.history.record(
+                EditOperation::Delete {
+                    start: Position { row: start_row, col: 0 },
+                    end: Position { row: end_row + 1, col: 0 },
+                    deleted_text,
+                },
+                cursor_before,
+                Position { row: new_row, col: 0 },
+            );
+        }
+    }
+
     pub fn set_wiki_link_styles(&mut self, valid_style: Style, invalid_style: Style) {
         self.wiki_link_valid_style = valid_style;
         self.wiki_link_invalid_style = invalid_style;
@@ -1237,6 +1308,47 @@ impl Editor {
             self.cursor.move_to(start.row, start.col);
             self.cursor.cancel_selection();
         }
+    }
+
+    /// Delete the current line entirely (for dd command)
+    pub fn delete_current_line(&mut self) {
+        let pos = self.cursor.pos();
+        let row = pos.row;
+        let line_count = self.buffer.line_count();
+
+        // Get the line content for clipboard (with newline)
+        let line_text = self.buffer.line(row).unwrap_or("").to_string();
+        let deleted_text = format!("{}\n", line_text);
+
+        // Copy to clipboard
+        self.clipboard = Some(deleted_text.clone());
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(&deleted_text);
+        }
+
+        // Delete the line
+        self.buffer.delete_line(row);
+        self.wrap_cache.invalidate_from(row);
+
+        self.history.record(
+            EditOperation::Delete {
+                start: Position { row, col: 0 },
+                end: Position { row: row + 1, col: 0 },
+                deleted_text,
+            },
+            pos,
+            Position { row: row.min(self.buffer.line_count().saturating_sub(1)), col: 0 },
+        );
+
+        let new_row = if line_count == 1 {
+            0
+        } else if row >= self.buffer.line_count() {
+            self.buffer.line_count().saturating_sub(1)
+        } else {
+            row
+        };
+        self.cursor.move_to(new_row, 0);
+        self.cursor.cancel_selection();
     }
 
     pub fn paste(&mut self) {

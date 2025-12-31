@@ -2166,11 +2166,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.pending_operator = None;
                 let count = app.vim.get_count();
                 for _ in 0..count {
-                    app.editor.move_cursor(CursorMove::Head);
-                    app.editor.start_selection();
-                    app.editor.move_cursor(CursorMove::End);
-                    app.editor.cut();
-                    app.editor.delete_newline();
+                    app.editor.delete_current_line();
                 }
                 app.vim.last_change = Some(crate::vim::LastChange::DeleteLine(count));
                 app.vim.reset_pending();
@@ -2426,11 +2422,7 @@ fn repeat_last_change(app: &mut App, change: crate::vim::LastChange) {
     match change {
         LastChange::DeleteLine(count) => {
             for _ in 0..count {
-                app.editor.move_cursor(CursorMove::Head);
-                app.editor.start_selection();
-                app.editor.move_cursor(CursorMove::End);
-                app.editor.cut();
-                app.editor.delete_newline();
+                app.editor.delete_current_line();
             }
         }
         LastChange::DeleteCharForward(count) => {
@@ -2636,8 +2628,16 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.visual_line_current = None;
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            // In V-LINE mode, cursor moves freely - full line selection is handled by rendering
-            app.editor.move_cursor(CursorMove::Back);
+            if app.vim_mode == VimMode::VisualLine {
+                let (current_row, _) = app.editor.cursor();
+                app.editor.move_cursor(CursorMove::Back);
+                let (new_row, _) = app.editor.cursor();
+                if new_row != current_row {
+                    reselect_lines_at(app, new_row);
+                }
+            } else {
+                app.editor.move_cursor(CursorMove::Back);
+            }
         }
         KeyCode::Char('j') | KeyCode::Down => {
             if app.vim_mode == VimMode::VisualLine {
@@ -2665,7 +2665,16 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
-            app.editor.move_cursor(CursorMove::Forward);
+            if app.vim_mode == VimMode::VisualLine {
+                let (current_row, _) = app.editor.cursor();
+                app.editor.move_cursor(CursorMove::Forward);
+                let (new_row, _) = app.editor.cursor();
+                if new_row != current_row {
+                    reselect_lines_at(app, new_row);
+                }
+            } else {
+                app.editor.move_cursor(CursorMove::Forward);
+            }
         }
         KeyCode::Char('w') => {
             if app.vim_mode == VimMode::VisualLine {
@@ -2721,8 +2730,13 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             }
         }
         KeyCode::Char('y') => {
-            app.editor.copy();
+            if app.vim_mode == VimMode::VisualLine {
+                app.editor.copy_visual_lines();
+            } else {
+                app.editor.copy();
+            }
             app.editor.cancel_selection();
+            app.editor.clear_visual_line_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
@@ -2730,7 +2744,13 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.visual_line_current = None;
         }
         KeyCode::Char('d') | KeyCode::Char('x') => {
-            app.editor.cut();
+            if app.vim_mode == VimMode::VisualLine {
+                app.editor.cut_visual_lines();
+            } else {
+                app.editor.cut();
+            }
+            app.editor.cancel_selection();
+            app.editor.clear_visual_line_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
@@ -2739,6 +2759,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
             app.editor.cancel_selection();
+            app.editor.clear_visual_line_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
@@ -2749,6 +2770,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
             // Open buffer search (cancel selection first)
             app.editor.cancel_selection();
+            app.editor.clear_visual_line_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
