@@ -1602,6 +1602,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.search_query.clear();
             }
         }
+        KeyCode::Char('s') => {
+            if app.focus == Focus::Sidebar {
+                app.cycle_sort_mode();
+            }
+        }
         KeyCode::Char(' ') => {
             if app.focus == Focus::Content {
                 if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {

@@ -113,7 +113,7 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .filter(|item| matches!(item.kind, SidebarItemKind::Note { .. }))
             .count();
-        format!(" Notes ({}) ", note_count)
+        format!(" Notes ({}) [{}] ", note_count, app.sort_mode.label())
     };
 
     let sidebar = List::new(items)

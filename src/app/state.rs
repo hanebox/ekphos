@@ -137,6 +137,8 @@ pub struct Note {
     pub title: String,
     pub content: String,
     pub file_path: Option<PathBuf>,
+    pub modified_time: Option<std::time::SystemTime>,
+    pub created_time: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +164,41 @@ pub enum DialogState {
     UnsavedChanges,
     CreateWikiNote,
     GraphView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SortMode {
+    #[default]
+    NameAsc,       
+    NameDesc,       
+    ModifiedOldest, 
+    ModifiedNewest, 
+    CreatedOldest,  
+    CreatedNewest,  
+}
+
+impl SortMode {
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::NameAsc => SortMode::NameDesc,
+            SortMode::NameDesc => SortMode::ModifiedOldest,
+            SortMode::ModifiedOldest => SortMode::ModifiedNewest,
+            SortMode::ModifiedNewest => SortMode::CreatedOldest,
+            SortMode::CreatedOldest => SortMode::CreatedNewest,
+            SortMode::CreatedNewest => SortMode::NameAsc,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::NameAsc => "A→Z",
+            SortMode::NameDesc => "Z→A",
+            SortMode::ModifiedOldest => "Mod↑",
+            SortMode::ModifiedNewest => "Mod↓",
+            SortMode::CreatedOldest => "Cre↑",
+            SortMode::CreatedNewest => "Cre↓",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -513,6 +550,8 @@ pub struct App {
     pub help_scroll: usize,
     // Graph view state
     pub graph_view: GraphViewState,
+    // Sidebar sorting
+    pub sort_mode: SortMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -655,6 +694,7 @@ impl App {
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            sort_mode: SortMode::default(),
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -802,6 +842,7 @@ impl App {
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            sort_mode: SortMode::default(),
         };
 
         if notes_dir_exists {
@@ -940,8 +981,8 @@ impl App {
 
         self.file_tree = self.build_tree(&notes_path, 0);
 
-        // Don't sort - preserve filesystem order so users can control with numbered prefixes
-        // e.g., "01-Getting Started.md" appears before "02-Advanced.md"
+        // Sort the tree according to current sort mode
+        self.sort_tree();
 
         self.rebuild_sidebar_items();
 
@@ -993,11 +1034,17 @@ impl App {
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
 
+                        let (modified_time, created_time) = fs::metadata(&path)
+                            .map(|m| (m.modified().ok(), m.created().ok()))
+                            .unwrap_or((None, None));
+
                         let note_index = self.notes.len();
                         self.notes.push(Note {
                             title,
                             content,
                             file_path: Some(path),
+                            modified_time,
+                            created_time,
                         });
 
                         items.push(FileTreeItem::Note {
@@ -1020,19 +1067,61 @@ impl App {
     }
 
     fn sort_tree(&mut self) {
-        Self::sort_tree_items(&mut self.file_tree, &self.notes);
+        let sort_mode = self.sort_mode;
+        Self::sort_tree_items(&mut self.file_tree, &self.notes, sort_mode);
     }
 
-    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note]) {
+    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note], sort_mode: SortMode) {
         items.sort_by(|a, b| {
-            let name_a = Self::get_tree_item_name(a, notes);
-            let name_b = Self::get_tree_item_name(b, notes);
-            name_a.to_lowercase().cmp(&name_b.to_lowercase())
+            // Always put folders first
+            let is_folder_a = matches!(a, FileTreeItem::Folder { .. });
+            let is_folder_b = matches!(b, FileTreeItem::Folder { .. });
+
+            match (is_folder_a, is_folder_b) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => Self::compare_items(a, b, notes, sort_mode),
+            }
         });
 
         for item in items.iter_mut() {
             if let FileTreeItem::Folder { children, .. } = item {
-                Self::sort_tree_items(children, notes);
+                Self::sort_tree_items(children, notes, sort_mode);
+            }
+        }
+    }
+
+    fn compare_items(a: &FileTreeItem, b: &FileTreeItem, notes: &[Note], sort_mode: SortMode) -> std::cmp::Ordering {
+        match sort_mode {
+            SortMode::NameAsc => {
+                let name_a = Self::get_tree_item_name(a, notes);
+                let name_b = Self::get_tree_item_name(b, notes);
+                name_a.to_lowercase().cmp(&name_b.to_lowercase())
+            }
+            SortMode::NameDesc => {
+                let name_a = Self::get_tree_item_name(a, notes);
+                let name_b = Self::get_tree_item_name(b, notes);
+                name_b.to_lowercase().cmp(&name_a.to_lowercase())
+            }
+            SortMode::ModifiedOldest => {
+                let time_a = Self::get_tree_item_modified(a, notes);
+                let time_b = Self::get_tree_item_modified(b, notes);
+                time_a.cmp(&time_b)
+            }
+            SortMode::ModifiedNewest => {
+                let time_a = Self::get_tree_item_modified(a, notes);
+                let time_b = Self::get_tree_item_modified(b, notes);
+                time_b.cmp(&time_a)
+            }
+            SortMode::CreatedOldest => {
+                let time_a = Self::get_tree_item_created(a, notes);
+                let time_b = Self::get_tree_item_created(b, notes);
+                time_a.cmp(&time_b)
+            }
+            SortMode::CreatedNewest => {
+                let time_a = Self::get_tree_item_created(a, notes);
+                let time_b = Self::get_tree_item_created(b, notes);
+                time_b.cmp(&time_a)
             }
         }
     }
@@ -1042,6 +1131,30 @@ impl App {
             FileTreeItem::Folder { name, .. } => name,
             FileTreeItem::Note { note_index, .. } => &notes[*note_index].title,
         }
+    }
+
+    fn get_tree_item_modified(item: &FileTreeItem, notes: &[Note]) -> Option<std::time::SystemTime> {
+        match item {
+            FileTreeItem::Folder { path, .. } => {
+                fs::metadata(path).ok().and_then(|m| m.modified().ok())
+            }
+            FileTreeItem::Note { note_index, .. } => notes[*note_index].modified_time,
+        }
+    }
+
+    fn get_tree_item_created(item: &FileTreeItem, notes: &[Note]) -> Option<std::time::SystemTime> {
+        match item {
+            FileTreeItem::Folder { path, .. } => {
+                fs::metadata(path).ok().and_then(|m| m.created().ok())
+            }
+            FileTreeItem::Note { note_index, .. } => notes[*note_index].created_time,
+        }
+    }
+
+    pub fn cycle_sort_mode(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+        self.sort_tree();
+        self.rebuild_sidebar_items();
     }
 
     pub fn rebuild_sidebar_items(&mut self) {
@@ -1122,6 +1235,18 @@ impl App {
             }
             self.selected_note = new_note_idx;
             self.current_image = None;
+        }
+    }
+
+    /// find and select the current note in the sidebar after re sorting
+    fn select_current_note_in_sidebar(&mut self) {
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if *note_index == self.selected_note {
+                    self.selected_sidebar_index = idx;
+                    return;
+                }
+            }
         }
     }
 
@@ -3018,8 +3143,17 @@ impl App {
             // Save to file
             if let Some(ref path) = note.file_path {
                 let _ = fs::write(path, &note.content);
+                // Update modified time after save
+                note.modified_time = fs::metadata(path).ok().and_then(|m| m.modified().ok());
             }
         }
+
+        // Re-sort and rebuild sidebar to reflect updated modified time
+        self.sort_tree();
+        self.rebuild_sidebar_items();
+        // Re-select the current note in the sidebar after re-sorting
+        self.select_current_note_in_sidebar();
+
         self.mode = Mode::Normal;
         self.update_content_items();
         self.update_outline();
