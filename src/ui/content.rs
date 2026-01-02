@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -1450,42 +1448,45 @@ fn render_table_row(
 fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool, is_hovered: bool) {
     let is_remote = path.starts_with("http://") || path.starts_with("https://");
     let is_pending = is_remote && app.is_image_pending(path);
-    let is_cached = app.image_cache.contains_key(path);
+
+    let resolved_path = app.resolve_image_path(path);
+    let resolved_path_str = resolved_path.as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    let is_cached = app.image_cache.contains_key(&resolved_path_str);
 
     // Check if we need to load a new image
     let need_load = match &app.current_image {
-        Some(state) => state.path != path,
+        Some(state) => state.path != resolved_path_str,
         None => true,
     };
 
     if need_load {
         // Load image from cache, disk, or trigger async fetch for remote
-        let img = if let Some(img) = app.image_cache.get(path) {
+        let img = if let Some(img) = app.image_cache.get(&resolved_path_str) {
             Some(img.clone())
         } else if is_remote {
             if !is_pending {
                 app.start_remote_image_fetch(path);
             }
             None
-        } else {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
-                if let Ok(img) = image::open(&path_buf) {
-                    app.image_cache.insert(path.to_string(), img.clone());
-                    Some(img)
-                } else {
-                    None
-                }
+        } else if let Some(ref resolved) = resolved_path {
+            if let Ok(img) = image::open(resolved) {
+                app.image_cache.insert(resolved_path_str.clone(), img.clone());
+                Some(img)
             } else {
                 None
             }
+        } else {
+            None
         };
 
         if let (Some(img), Some(picker)) = (img, &mut app.picker) {
             let protocol = picker.new_resize_protocol(img);
             app.current_image = Some(ImageState {
                 image: protocol,
-                path: path.to_string(),
+                path: resolved_path_str.clone(),
             });
         }
     }
@@ -1526,7 +1527,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     f.render_widget(block, area);
 
-    if is_pending || (is_remote && !is_cached && app.current_image.as_ref().map(|s| s.path != path).unwrap_or(true)) {
+    if is_pending || (is_remote && !is_cached && app.current_image.as_ref().map(|s| s.path != resolved_path_str).unwrap_or(true)) {
         let loading = Paragraph::new("  Loading remote image...")
             .style(Style::default().fg(theme.secondary).add_modifier(Modifier::ITALIC));
         f.render_widget(loading, inner_area);
@@ -1534,7 +1535,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
     }
 
     if let Some(state) = &mut app.current_image {
-        if state.path == path {
+        if state.path == resolved_path_str {
             let image_widget = StatefulImage::new(None);
             f.render_stateful_widget(image_widget, inner_area, &mut state.image);
         }

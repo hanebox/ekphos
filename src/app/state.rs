@@ -2401,16 +2401,21 @@ impl App {
     pub fn open_current_image(&self) {
         if let Some(path) = self.current_item_is_image() {
             let is_url = path.starts_with("http://") || path.starts_with("https://");
-            let should_open = is_url || PathBuf::from(path).exists();
 
-            if should_open {
-                #[cfg(target_os = "macos")]
-                let _ = Command::new("open").arg(path).spawn();
-                #[cfg(target_os = "linux")]
-                let _ = Command::new("xdg-open").arg(path).spawn();
-                #[cfg(target_os = "windows")]
-                let _ = Command::new("cmd").args(["/c", "start", "", path]).spawn();
-            }
+            let open_path = if is_url {
+                path.to_string()
+            } else if let Some(resolved) = self.resolve_image_path(path) {
+                resolved.to_string_lossy().to_string()
+            } else {
+                return; 
+            };
+
+            #[cfg(target_os = "macos")]
+            let _ = Command::new("open").arg(&open_path).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = Command::new("xdg-open").arg(&open_path).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
         }
     }
 
@@ -2779,6 +2784,45 @@ impl App {
 
     pub fn current_note(&self) -> Option<&Note> {
         self.notes.get(self.selected_note)
+    }
+
+    pub fn resolve_image_path(&self, path: &str) -> Option<PathBuf> {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return Some(PathBuf::from(path));
+        }
+
+        let path_buf = if path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&path[2..])
+            } else {
+                PathBuf::from(path)
+            }
+        } else if path == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else {
+            PathBuf::from(path)
+        };
+
+        if path_buf.is_absolute() && path_buf.exists() {
+            return Some(path_buf);
+        }
+
+        if let Some(note) = self.current_note() {
+            if let Some(ref file_path) = note.file_path {
+                if let Some(note_dir) = file_path.parent() {
+                    let resolved = note_dir.join(&path_buf);
+                    if resolved.exists() {
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+
+        if path_buf.exists() {
+            return Some(path_buf);
+        }
+
+        None
     }
 
     /// Find the content item index for a given source line.

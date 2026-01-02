@@ -241,14 +241,18 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         }
                         else if let Some(path) = app.item_is_image_at(idx) {
                             let is_url = path.starts_with("http://") || path.starts_with("https://");
-                            let should_open = is_url || std::path::PathBuf::from(path).exists();
-                            if should_open {
+                            let open_path = if is_url {
+                                Some(path.to_string())
+                            } else {
+                                app.resolve_image_path(path).map(|p| p.to_string_lossy().to_string())
+                            };
+                            if let Some(open_path) = open_path {
                                 #[cfg(target_os = "macos")]
-                                let _ = std::process::Command::new("open").arg(path).spawn();
+                                let _ = std::process::Command::new("open").arg(&open_path).spawn();
                                 #[cfg(target_os = "linux")]
-                                let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                                let _ = std::process::Command::new("xdg-open").arg(&open_path).spawn();
                                 #[cfg(target_os = "windows")]
-                                let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
+                                let _ = std::process::Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
                             }
                         }
                         else if app.item_is_details_at(idx) {
