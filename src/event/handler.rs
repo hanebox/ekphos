@@ -1206,14 +1206,7 @@ fn navigate_graph_node(app: &mut App, direction: GraphDirection) {
 }
 
 fn center_on_selected_node(app: &mut App) {
-    if let Some(selected) = app.graph_view.selected_node {
-        if let Some(node) = app.graph_view.nodes.get(selected) {
-            let target_x = node.x - 50.0;
-            let target_y = node.y - 15.0;
-            app.graph_view.viewport_x = target_x;
-            app.graph_view.viewport_y = target_y;
-        }
-    }
+    app.graph_view.needs_center = true;
 }
 
 fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {

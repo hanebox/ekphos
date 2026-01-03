@@ -28,6 +28,10 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
 
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    app.graph_view.view_width = inner.width as f32;
+    app.graph_view.view_height = inner.height as f32;
+
     if app.graph_view.dirty && !app.graph_view.nodes.is_empty() {
         apply_force_directed_layout(
             &mut app.graph_view.nodes,
@@ -53,6 +57,19 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         app.graph_view.dirty = false;
     }
 
+    if app.graph_view.needs_center {
+        if let Some(selected_idx) = app.graph_view.selected_node {
+            if selected_idx < app.graph_view.nodes.len() {
+                let node = &app.graph_view.nodes[selected_idx];
+                let node_center_x = node.x + (node.width as f32 / 2.0);
+                let node_center_y = node.y + (NODE_HEIGHT as f32 / 2.0);
+                app.graph_view.viewport_x = node_center_x - (inner.width as f32 / 2.0);
+                app.graph_view.viewport_y = node_center_y - (inner.height as f32 / 2.0);
+            }
+        }
+        app.graph_view.needs_center = false;
+    }
+
     if app.graph_view.nodes.is_empty() {
         let empty_msg = Paragraph::new("No notes to display")
             .style(Style::default().fg(theme.muted))
@@ -73,7 +90,24 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
     let zoom = app.graph_view.zoom;
     let buf = f.buffer_mut();
 
-    // Draw edges first (below nodes) using orthogonal lines
+    let connected_nodes: std::collections::HashSet<usize> = if let Some(selected) = app.graph_view.selected_node {
+        let mut connected = std::collections::HashSet::new();
+        connected.insert(selected);
+        for edge in &app.graph_view.edges {
+            if edge.from == selected {
+                connected.insert(edge.to);
+            } else if edge.to == selected {
+                connected.insert(edge.from);
+            }
+        }
+        connected
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let has_selection = app.graph_view.selected_node.is_some();
+
+    // Draw edges first (below nodes) using straight lines from node centers
     for edge in &app.graph_view.edges {
         if edge.from >= app.graph_view.nodes.len() || edge.to >= app.graph_view.nodes.len() {
             continue;
@@ -82,16 +116,10 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         let from_node = &app.graph_view.nodes[edge.from];
         let to_node = &app.graph_view.nodes[edge.to];
 
-        let from_node_x = ((from_node.x - vx) * zoom + inner.x as f32) as i32;
-        let from_node_y = ((from_node.y - vy) * zoom + inner.y as f32) as i32;
-        let to_node_x = ((to_node.x - vx) * zoom + inner.x as f32) as i32;
-        let to_node_y = ((to_node.y - vy) * zoom + inner.y as f32) as i32;
-
-        let (from_x, from_y, to_x, to_y) = calculate_connection_points(
-            from_node_x, from_node_y, from_node.width as i32,
-            to_node_x, to_node_y, to_node.width as i32,
-            NODE_HEIGHT as i32,
-        );
+        let from_center_x = ((from_node.x + from_node.width as f32 / 2.0 - vx) * zoom + inner.x as f32) as i32;
+        let from_center_y = ((from_node.y + NODE_HEIGHT as f32 / 2.0 - vy) * zoom + inner.y as f32) as i32;
+        let to_center_x = ((to_node.x + to_node.width as f32 / 2.0 - vx) * zoom + inner.x as f32) as i32;
+        let to_center_y = ((to_node.y + NODE_HEIGHT as f32 / 2.0 - vy) * zoom + inner.y as f32) as i32;
 
         let is_selected_edge = app.graph_view.selected_node
             .map(|sel| edge.from == sel || edge.to == sel)
@@ -103,7 +131,7 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
             theme.muted
         };
 
-        draw_orthogonal_edge(buf, from_x, from_y, to_x, to_y, edge_color, inner);
+        draw_line(buf, from_center_x, from_center_y, to_center_x, to_center_y, edge_color, inner);
     }
 
     for (idx, node) in app.graph_view.nodes.iter().enumerate() {
@@ -120,38 +148,59 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         }
 
         let is_selected = app.graph_view.selected_node == Some(idx);
-        render_node(buf, node, screen_x, screen_y, is_selected, theme, inner);
+        let is_dimmed = has_selection && !connected_nodes.contains(&idx);
+        render_node(buf, node, screen_x, screen_y, is_selected, is_dimmed, theme, inner);
     }
 
     render_help_bar(f, app, area);
 }
 
-/// Calculate optimal connection points between two nodes
-/// All connections use the CENTER of each side:
-/// - Top/Bottom: center-x of the node
-/// - Left/Right: center-y of the node (middle row)
-fn calculate_connection_points(
-    from_x: i32, from_y: i32, from_w: i32,
-    to_x: i32, to_y: i32, to_w: i32,
-    node_h: i32,
-) -> (i32, i32, i32, i32) {
-    let from_center_x = from_x + from_w / 2;
-    let to_center_x = to_x + to_w / 2;
-    let from_center_y = from_y + node_h / 2;
-    let to_center_y = to_y + node_h / 2;
+/// Draw a straight line between two points using Bresenham's algorithm
+fn draw_line(
+    buf: &mut Buffer,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: ratatui::style::Color,
+    clip: Rect,
+) {
+    let dx = (x1 - x0).abs();
+    let dy = (y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx - dy;
+    let mut x = x0;
+    let mut y = y0;
+    let line_char = '·';
 
-    let dy = to_y - from_y;
+    loop {
+        if x >= clip.x as i32
+            && x < (clip.x + clip.width) as i32
+            && y >= clip.y as i32
+            && y < (clip.y + clip.height) as i32
+        {
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                let current = cell.symbol();
+                if current == " " || current == "·" {
+                    cell.set_char(line_char);
+                    cell.set_fg(color);
+                }
+            }
+        }
 
-    if dy > 0 {
-        (from_center_x, from_y + node_h - 1, to_center_x, to_y)
-    } else if dy < 0 {
-        (from_center_x, from_y, to_center_x, to_y + node_h - 1)
-    } else {
-        let dx = to_x - from_x;
-        if dx > 0 {
-            (from_x + from_w - 1, from_center_y, to_x, to_center_y)
-        } else {
-            (from_x, from_center_y, to_x + to_w - 1, to_center_y)
+        if x == x1 && y == y1 {
+            break;
+        }
+
+        let e2 = 2 * err;
+        if e2 > -dy {
+            err -= dy;
+            x += sx;
+        }
+        if e2 < dx {
+            err += dx;
+            y += sy;
         }
     }
 }
@@ -162,6 +211,7 @@ fn render_node(
     screen_x: i32,
     screen_y: i32,
     is_selected: bool,
+    is_dimmed: bool,
     theme: &crate::config::Theme,
     clip: Rect,
 ) {
@@ -176,22 +226,12 @@ fn render_node(
         return;
     }
 
-    let border_color = if is_selected {
-        theme.primary
+    let (border_color, bg_color, text_color) = if is_selected {
+        (theme.primary, theme.selection, theme.foreground)
+    } else if is_dimmed {
+        (theme.muted, theme.dialog.background, theme.muted)
     } else {
-        theme.border
-    };
-
-    let bg_color = if is_selected {
-        theme.selection
-    } else {
-        theme.dialog.background
-    };
-
-    let text_color = if is_selected {
-        theme.foreground
-    } else {
-        theme.dialog.text
+        (theme.border, theme.dialog.background, theme.dialog.text)
     };
 
     for row in y..bottom {
@@ -247,197 +287,6 @@ fn render_node(
                 }
             }
         }
-    }
-}
-
-fn draw_orthogonal_edge(
-    buf: &mut Buffer,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: ratatui::style::Color,
-    clip: Rect,
-) {
-    if (x0 - x1).abs() <= 1 && (y0 - y1).abs() <= 1 {
-        return;
-    }
-
-    let (adj_y0, adj_y1) = if y0 < y1 {
-        (y0 + 1, y1 - 1) 
-    } else if y0 > y1 {
-        (y0 - 1, y1 + 1) 
-    } else {
-        (y0, y1) 
-    };
-
-    if x0 == x1 {
-        if adj_y0 <= adj_y1 {
-            for y in adj_y0..=adj_y1 {
-                set_line_char(buf, x0, y, '│', color, clip);
-            }
-        } else {
-            for y in adj_y1..=adj_y0 {
-                set_line_char(buf, x0, y, '│', color, clip);
-            }
-        }
-        return;
-    }
-
-    if y0 == y1 {
-        let wrap_y = y0 + 2; 
-        let going_right = x1 > x0;
-
-        let adj_x0 = if going_right { x0 + 1 } else { x0 - 1 };
-        let adj_x1 = if going_right { x1 - 1 } else { x1 + 1 };
-        for y in y0..wrap_y {
-            set_line_char(buf, adj_x0, y, '│', color, clip);
-            set_line_char(buf, adj_x1, y, '│', color, clip);
-        }
-
-        let (h_min, h_max) = if adj_x0 < adj_x1 { (adj_x0 + 1, adj_x1 - 1) } else { (adj_x1 + 1, adj_x0 - 1) };
-        for x in h_min..=h_max {
-            set_line_char(buf, x, wrap_y, '─', color, clip);
-        }
-
-        set_line_char(buf, adj_x0, wrap_y, if going_right { '└' } else { '┘' }, color, clip);
-        set_line_char(buf, adj_x1, wrap_y, if going_right { '┘' } else { '└' }, color, clip);
-        return;
-    }
-
-    let mid_y = (y0 + y1) / 2;
-    let going_right = x1 > x0;
-    let going_down = y1 > y0;
-
-    if going_down {
-        for y in adj_y0..mid_y {
-            set_line_char(buf, x0, y, '│', color, clip);
-        }
-    } else {
-        for y in (mid_y + 1)..=adj_y0 {
-            set_line_char(buf, x0, y, '│', color, clip);
-        }
-    }
-
-    let (h_min, h_max) = if x0 < x1 { (x0 + 1, x1 - 1) } else { (x1 + 1, x0 - 1) };
-    for x in h_min..=h_max {
-        set_line_char(buf, x, mid_y, '─', color, clip);
-    }
-
-    if going_down {
-        for y in (mid_y + 1)..=adj_y1 {
-            set_line_char(buf, x1, y, '│', color, clip);
-        }
-    } else {
-        for y in adj_y1..mid_y {
-            set_line_char(buf, x1, y, '│', color, clip);
-        }
-    }
-
-    let corner1 = if going_down {
-        if going_right { '└' } else { '┘' }
-    } else {
-        if going_right { '┌' } else { '┐' }
-    };
-    set_line_char(buf, x0, mid_y, corner1, color, clip);
-
-    let corner2 = if going_down {
-        if going_right { '┐' } else { '┌' }
-    } else {
-        if going_right { '┘' } else { '└' }
-    };
-    set_line_char(buf, x1, mid_y, corner2, color, clip);
-}
-
-fn draw_vertical_line(
-    buf: &mut Buffer,
-    x: i32,
-    y_start: i32,
-    y_end: i32,
-    color: ratatui::style::Color,
-    clip: Rect,
-) {
-    let (y_min, y_max) = if y_start <= y_end { (y_start, y_end) } else { (y_end, y_start) };
-
-    for y in y_min..=y_max {
-        set_line_char(buf, x, y, '│', color, clip);
-    }
-}
-
-fn set_line_char(
-    buf: &mut Buffer,
-    x: i32,
-    y: i32,
-    ch: char,
-    color: ratatui::style::Color,
-    clip: Rect,
-) {
-    if x >= clip.x as i32
-        && x < (clip.x + clip.width) as i32
-        && y >= clip.y as i32
-        && y < (clip.y + clip.height) as i32
-    {
-        if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
-            let current = cell.symbol();
-            if current == " " {
-                cell.set_char(ch);
-                cell.set_fg(color);
-            } else if is_line_char(current) {
-                let merged = merge_line_chars(current.chars().next().unwrap_or(' '), ch);
-                cell.set_char(merged);
-                cell.set_fg(color);
-            }
-        }
-    }
-}
-
-fn is_line_char(s: &str) -> bool {
-    matches!(s, "─" | "│" | "┌" | "┐" | "└" | "┘" | "├" | "┤" | "┬" | "┴" | "┼" | "·")
-}
-
-fn merge_line_chars(existing: char, new: char) -> char {
-    let (e_up, e_down, e_left, e_right) = char_directions(existing);
-    let (n_up, n_down, n_left, n_right) = char_directions(new);
-
-    let up = e_up || n_up;
-    let down = e_down || n_down;
-    let left = e_left || n_left;
-    let right = e_right || n_right;
-
-    match (up, down, left, right) {
-        (true, true, true, true) => '┼',
-        (true, true, true, false) => '┤',
-        (true, true, false, true) => '├',
-        (true, false, true, true) => '┴',
-        (false, true, true, true) => '┬',
-        (true, true, false, false) => '│',
-        (false, false, true, true) => '─',
-        (true, false, true, false) => '┘',
-        (true, false, false, true) => '└',
-        (false, true, true, false) => '┐',
-        (false, true, false, true) => '┌',
-        (true, false, false, false) => '│',
-        (false, true, false, false) => '│',
-        (false, false, true, false) => '─',
-        (false, false, false, true) => '─',
-        _ => new,
-    }
-}
-
-fn char_directions(ch: char) -> (bool, bool, bool, bool) {
-    match ch {
-        '│' => (true, true, false, false),
-        '─' => (false, false, true, true),
-        '┌' => (false, true, false, true),
-        '┐' => (false, true, true, false),
-        '└' => (true, false, false, true),
-        '┘' => (true, false, true, false),
-        '├' => (true, true, false, true),
-        '┤' => (true, true, true, false),
-        '┬' => (false, true, true, true),
-        '┴' => (true, false, true, true),
-        '┼' => (true, true, true, true),
-        _ => (false, false, false, false),
     }
 }
 

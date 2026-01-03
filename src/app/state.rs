@@ -213,6 +213,9 @@ pub struct GraphViewState {
     pub drag_start: Option<(u16, u16)>,
     pub is_panning: bool,
     pub dragging_node: Option<usize>,
+    pub view_width: f32,
+    pub view_height: f32,
+    pub needs_center: bool,
 }
 
 impl Default for GraphViewState {
@@ -228,6 +231,9 @@ impl Default for GraphViewState {
             drag_start: None,
             is_panning: false,
             dragging_node: None,
+            view_width: 100.0,
+            view_height: 50.0,
+            needs_center: false,
         }
     }
 }
