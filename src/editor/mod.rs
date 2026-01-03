@@ -423,13 +423,25 @@ impl Editor {
                     let after_brackets = &line[abs_start + 2..];
 
                     if let Some(end_pos) = after_brackets.find("]]") {
-                        let target = &after_brackets[..end_pos];
+                        let raw_content = &after_brackets[..end_pos];
 
-                        if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                        if !raw_content.is_empty() && !raw_content.contains('[') && !raw_content.contains(']') {
+                            // Parse: [[target#heading|display]] - extract target for validation
+                            let content = if let Some(pipe_pos) = raw_content.find('|') {
+                                &raw_content[..pipe_pos]
+                            } else {
+                                raw_content
+                            };
+                            let target = if let Some(hash_pos) = content.find('#') {
+                                &content[..hash_pos]
+                            } else {
+                                content
+                            };
+
                             let is_valid = validator(target);
 
                             let start_col = line[..abs_start].chars().count();
-                            let end_col = start_col + 2 + target.chars().count() + 2; // [[target]]
+                            let end_col = start_col + 2 + raw_content.chars().count() + 2; // [[content]]
 
                             self.wiki_link_ranges.push(WikiLinkRange {
                                 row,

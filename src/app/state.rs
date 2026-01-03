@@ -419,7 +419,9 @@ pub struct WikiSuggestion {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct WikiLinkInfo {
-    pub target: String,
+    pub target: String,           // The file path (without heading)
+    pub heading: Option<String>,  // Optional #heading part
+    pub display_text: Option<String>, // Optional |alias part
     pub start_col: usize,
     pub end_col: usize,
     pub is_valid: bool,
@@ -2458,14 +2460,34 @@ impl App {
                 let after_brackets = &text[abs_start + 2..];
 
                 if let Some(end_pos) = after_brackets.find("]]") {
-                    let target = &after_brackets[..end_pos];
-                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                    let raw_content = &after_brackets[..end_pos];
+                    if !raw_content.is_empty() && !raw_content.contains('[') && !raw_content.contains(']') {
+                        // Parse: [[target#heading|display]]
+                        // First split by | to get display text (alias)
+                        let (content, display_text) = if let Some(pipe_pos) = raw_content.find('|') {
+                            (&raw_content[..pipe_pos], Some(raw_content[pipe_pos + 1..].to_string()))
+                        } else {
+                            (raw_content, None)
+                        };
+
+                        // Then split by # to get heading
+                        let (target, heading) = if let Some(hash_pos) = content.find('#') {
+                            (&content[..hash_pos], Some(content[hash_pos + 1..].to_string()))
+                        } else {
+                            (content, None)
+                        };
+
                         let rendered_start = Self::calc_wiki_rendered_pos(text, abs_start);
-                        let rendered_end = rendered_start + target.chars().count();
+                        // Display text determines rendered length if present
+                        let display_len = display_text.as_ref().map_or(raw_content.chars().count(), |d| d.chars().count());
+                        let rendered_end = rendered_start + display_len;
+                        // Validate against target file (without heading)
                         let is_valid = self.wiki_link_exists(target);
 
                         links.push(WikiLinkInfo {
                             target: target.to_string(),
+                            heading,
+                            display_text,
                             start_col: rendered_start,
                             end_col: rendered_end,
                             is_valid,
