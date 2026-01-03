@@ -1068,25 +1068,28 @@ impl App {
 
     fn sort_tree(&mut self) {
         let sort_mode = self.sort_mode;
-        Self::sort_tree_items(&mut self.file_tree, &self.notes, sort_mode);
+        let folders_first = self.config.folders_first;
+        Self::sort_tree_items(&mut self.file_tree, &self.notes, sort_mode, folders_first);
     }
 
-    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note], sort_mode: SortMode) {
+    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note], sort_mode: SortMode, folders_first: bool) {
         items.sort_by(|a, b| {
-            // Always put folders first
-            let is_folder_a = matches!(a, FileTreeItem::Folder { .. });
-            let is_folder_b = matches!(b, FileTreeItem::Folder { .. });
+            if folders_first {
+                let is_folder_a = matches!(a, FileTreeItem::Folder { .. });
+                let is_folder_b = matches!(b, FileTreeItem::Folder { .. });
 
-            match (is_folder_a, is_folder_b) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => Self::compare_items(a, b, notes, sort_mode),
+                match (is_folder_a, is_folder_b) {
+                    (true, false) => return std::cmp::Ordering::Less,
+                    (false, true) => return std::cmp::Ordering::Greater,
+                    _ => {}
+                }
             }
+            Self::compare_items(a, b, notes, sort_mode)
         });
 
         for item in items.iter_mut() {
             if let FileTreeItem::Folder { children, .. } = item {
-                Self::sort_tree_items(children, notes, sort_mode);
+                Self::sort_tree_items(children, notes, sort_mode, folders_first);
             }
         }
     }

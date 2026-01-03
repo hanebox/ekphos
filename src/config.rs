@@ -21,6 +21,8 @@ pub struct Config {
     pub sidebar_collapsed: bool,
     #[serde(default = "default_outline_collapsed")]
     pub outline_collapsed: bool,
+    #[serde(default = "default_folders_first")]
+    pub folders_first: bool,
     #[serde(default)]
     pub editor: EditorConfig,
 }
@@ -60,6 +62,7 @@ fn default_theme_name() -> String { "ekphos-dawn".to_string() }
 fn default_syntax_theme() -> String { "base16-ocean.dark".to_string() }
 fn default_sidebar_collapsed() -> bool { false }
 fn default_outline_collapsed() -> bool { false }
+fn default_folders_first() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -71,6 +74,7 @@ impl Default for Config {
             syntax_theme: default_syntax_theme(),
             sidebar_collapsed: default_sidebar_collapsed(),
             outline_collapsed: default_outline_collapsed(),
+            folders_first: default_folders_first(),
             editor: EditorConfig::default(),
         }
     }
