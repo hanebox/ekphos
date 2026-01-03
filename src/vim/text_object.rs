@@ -240,10 +240,13 @@ fn find_bracket_bounds(
         depth = 1;
     }
 
+    // Search backward to find if cursor is inside a bracket pair
     if open_pos.is_none() {
+        let mut backward_found = false;
+        let mut search_row = row;
         loop {
-            let line: Vec<char> = lines.get(row)?.chars().collect();
-            let start_col = if row == pos.row { col } else { line.len() };
+            let line: Vec<char> = lines.get(search_row)?.chars().collect();
+            let start_col = if search_row == pos.row { col } else { line.len() };
 
             for c in (0..start_col).rev() {
                 let ch = line.get(c)?;
@@ -251,22 +254,38 @@ fn find_bracket_bounds(
                     depth += 1;
                 } else if *ch == open {
                     if depth == 0 {
-                        open_pos = Some(Position::new(row, c));
+                        open_pos = Some(Position::new(search_row, c));
+                        backward_found = true;
                         break;
                     }
                     depth -= 1;
                 }
             }
 
-            if open_pos.is_some() {
+            if backward_found {
                 break;
             }
 
-            if row == 0 {
-                return None;
+            if search_row == 0 {
+                break;
             }
-            row -= 1;
+            search_row -= 1;
         }
+
+        // If not found backward, seek forward on current line for an open bracket
+        if open_pos.is_none() {
+            for c in col..current_line.len() {
+                if current_line.get(c) == Some(&open) {
+                    open_pos = Some(Position::new(pos.row, c));
+                    depth = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    if open_pos.is_none() {
+        return None;
     }
 
     let open_pos = open_pos?;
