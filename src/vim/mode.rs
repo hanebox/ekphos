@@ -2,6 +2,7 @@
 
 use super::operator::Operator;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum VimMode {
     Normal,
@@ -23,18 +24,22 @@ impl Default for VimMode {
 }
 
 impl VimMode {
+    #[allow(dead_code)]
     pub fn is_visual(&self) -> bool {
         matches!(self, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock)
     }
 
+    #[allow(dead_code)]
     pub fn is_insert(&self) -> bool {
         matches!(self, VimMode::Insert)
     }
 
+    #[allow(dead_code)]
     pub fn is_replace(&self) -> bool {
         matches!(self, VimMode::Replace)
     }
 
+    #[allow(dead_code)]
     pub fn is_normal(&self) -> bool {
         matches!(self, VimMode::Normal)
     }

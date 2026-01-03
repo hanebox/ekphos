@@ -21,7 +21,6 @@ pub mod operator;
 pub mod register;
 pub mod text_object;
 
-pub use command::Command;
 pub use find::{FindState, PendingFind};
 pub use macro_record::MacroState;
 pub use marks::MarkMap;
@@ -54,6 +53,7 @@ pub enum SearchDirection {
 }
 
 /// Represents a repeatable change for the . (dot) command
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LastChange {
     /// Delete line(s): dd with optional count
@@ -84,6 +84,7 @@ pub enum LastChange {
     ChangeWord(usize, String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RecordedCommand {
     pub operator: Option<Operator>,
@@ -113,6 +114,7 @@ impl Default for RecordedCommand {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VimState {
     pub mode: VimMode,
@@ -194,11 +196,13 @@ impl VimState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn enter_replace_mode(&mut self) {
         self.mode = VimMode::Replace;
         self.reset_pending();
     }
 
+    #[allow(dead_code)]
     pub fn enter_visual_block_mode(&mut self) {
         self.mode = VimMode::VisualBlock;
         self.reset_pending();
@@ -212,6 +216,7 @@ impl VimState {
         self.count = Some(self.count.unwrap_or(0) * 10 + digit);
     }
 
+    #[allow(dead_code)]
     pub fn enter_operator_pending(&mut self, op: Operator) {
         let count = self.count.take();
         self.mode = VimMode::OperatorPending { operator: op, count };
@@ -222,17 +227,20 @@ impl VimState {
         });
     }
 
+    #[allow(dead_code)]
     pub fn enter_insert_mode(&mut self, start_pos: Position) {
         self.mode = VimMode::Insert;
         self.insert_start_pos = Some(start_pos);
         self.reset_pending();
     }
 
+    #[allow(dead_code)]
     pub fn exit_insert_mode(&mut self) {
         self.mode = VimMode::Normal;
         self.insert_start_pos = None;
     }
 
+    #[allow(dead_code)]
     pub fn enter_visual_mode(&mut self, line_wise: bool) {
         self.mode = if line_wise { VimMode::VisualLine } else { VimMode::Visual };
         self.reset_pending();
@@ -244,16 +252,19 @@ impl VimState {
         self.reset_pending();
     }
 
+    #[allow(dead_code)]
     pub fn exit_command_mode(&mut self) {
         self.mode = VimMode::Normal;
         self.command_buffer.clear();
     }
 
+    #[allow(dead_code)]
     pub fn record_command(&mut self, cmd: RecordedCommand) {
         self.last_command = Some(cmd);
         self.recording_command = None;
     }
 
+    #[allow(dead_code)]
     pub fn status_display(&self) -> String {
         let mut parts = Vec::new();
 

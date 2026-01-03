@@ -277,7 +277,6 @@ fn find_bracket_bounds(
             for c in col..current_line.len() {
                 if current_line.get(c) == Some(&open) {
                     open_pos = Some(Position::new(pos.row, c));
-                    depth = 1;
                     break;
                 }
             }

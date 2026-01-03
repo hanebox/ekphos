@@ -490,6 +490,7 @@ pub enum SidebarItemKind {
 pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
+    #[allow(dead_code)]
     pub list_state: ListState,
     pub focus: Focus,
     pub mode: Mode,
@@ -563,6 +564,7 @@ pub struct App {
     pub sort_mode: SortMode,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeleteType {
     Word,
@@ -3026,6 +3028,7 @@ impl App {
         self.start_buffer_search_with_direction(SearchDirection::Forward);
     }
 
+    #[allow(dead_code)]
     pub fn start_buffer_search_backward(&mut self) {
         self.start_buffer_search_with_direction(SearchDirection::Backward);
     }
