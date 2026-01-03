@@ -1609,19 +1609,34 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char(' ') => {
             if app.focus == Focus::Content {
+                // task items: toggle if checkbox selected, otherwise follow link
                 if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
-                    app.toggle_current_task();
+                    if app.is_task_checkbox_selected() {
+                        app.toggle_current_task();
+                    } else if let Some(link) = app.current_selected_link() {
+                        match link {
+                            crate::app::LinkInfo::Markdown { url, .. } => {
+                                app.open_path_or_url(&url);
+                            }
+                            crate::app::LinkInfo::Wiki { target, is_valid, .. } => {
+                                if is_valid {
+                                    app.navigate_to_wiki_link(&target);
+                                } else {
+                                    app.pending_wiki_target = Some(target);
+                                    app.dialog = DialogState::CreateWikiNote;
+                                }
+                            }
+                        }
+                    } else {
+                        // No links in task, just toggle
+                        app.toggle_current_task();
+                    }
                 } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
                     app.toggle_current_details();
                 } else if let Some(link) = app.current_selected_link() {
                     match link {
                         crate::app::LinkInfo::Markdown { url, .. } => {
-                            #[cfg(target_os = "macos")]
-                            let _ = std::process::Command::new("open").arg(&url).spawn();
-                            #[cfg(target_os = "linux")]
-                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-                            #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+                            app.open_path_or_url(&url);
                         }
                         crate::app::LinkInfo::Wiki { target, is_valid, .. } => {
                             if is_valid {

@@ -1900,29 +1900,62 @@ impl App {
         all_links
     }
 
+    fn is_current_task_item(&self) -> bool {
+        matches!(
+            self.content_items.get(self.content_cursor),
+            Some(ContentItem::TaskItem { .. })
+        )
+    }
+    pub fn is_task_checkbox_selected(&self) -> bool {
+        self.is_current_task_item() && self.selected_link_index == 0
+    }
+
     pub fn current_selected_link(&self) -> Option<LinkInfo> {
         let all_links = self.item_all_links_at(self.content_cursor);
         if all_links.is_empty() {
             return None;
         }
-        let idx = self.selected_link_index.min(all_links.len().saturating_sub(1));
+
+        let idx = if self.is_current_task_item() {
+            if self.selected_link_index == 0 {
+                return None; 
+            }
+            (self.selected_link_index - 1).min(all_links.len().saturating_sub(1))
+        } else {
+            self.selected_link_index.min(all_links.len().saturating_sub(1))
+        };
+
         all_links.get(idx).cloned()
     }
 
     pub fn current_line_link_count(&self) -> usize {
-        self.item_all_links_at(self.content_cursor).len()
+        let link_count = self.item_all_links_at(self.content_cursor).len();
+        if self.is_current_task_item() && link_count > 0 {
+            link_count + 1
+        } else {
+            link_count
+        }
     }
+
 
     pub fn next_link(&mut self) {
         let link_count = self.current_line_link_count();
-        if link_count > 1 {
+        if self.is_current_task_item() && link_count > 0 {
+            self.selected_link_index = (self.selected_link_index + 1) % link_count;
+        } else if link_count > 1 {
             self.selected_link_index = (self.selected_link_index + 1) % link_count;
         }
     }
 
     pub fn previous_link(&mut self) {
         let link_count = self.current_line_link_count();
-        if link_count > 1 {
+        if self.is_current_task_item() && link_count > 0 {
+            if self.selected_link_index == 0 {
+                self.selected_link_index = link_count - 1;
+            } else {
+                self.selected_link_index -= 1;
+            }
+        } else if link_count > 1 {
             if self.selected_link_index == 0 {
                 self.selected_link_index = link_count - 1;
             } else {
@@ -1941,7 +1974,7 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
-    /// Extract all links from a specific content item as (text, url, start_col, end_col) tuples
+    /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
     /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
     pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
         let text = match self.content_items.get(index) {
@@ -1955,9 +1988,105 @@ impl App {
 
         while search_start < text.len() {
             let remaining = &text[search_start..];
+
+            // Check for double-bang image !![alt](url) first (text-only, no preview)
+            if let Some(dbl_img_pos) = remaining.find("!![") {
+                let single_img_pos = remaining.find("![");
+                let bracket_pos = remaining.find('[');
+
+                let is_first = single_img_pos.map(|s| dbl_img_pos <= s).unwrap_or(true)
+                    && bracket_pos.map(|b| dbl_img_pos < b).unwrap_or(true);
+
+                if is_first {
+                    let abs_img_pos = search_start + dbl_img_pos;
+                    let from_img = &text[abs_img_pos..];
+
+                    if let Some(bracket_end) = from_img[2..].find("](") {
+                        let after_bracket = &from_img[2 + bracket_end + 2..];
+                        if let Some(paren_end) = after_bracket.find(')') {
+                            let alt_text = &from_img[3..2 + bracket_end];
+                            let url = &after_bracket[..paren_end];
+
+                            if !url.is_empty() {
+                                let display_text = if alt_text.is_empty() {
+                                    url.to_string()
+                                } else {
+                                    alt_text.to_string()
+                                };
+                                let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
+                                let rendered_end = rendered_start + display_text.chars().count();
+
+                                links.push((
+                                    display_text,
+                                    url.to_string(),
+                                    rendered_start,
+                                    rendered_end,
+                                ));
+                            }
+
+                            search_start = abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // check for single-bang image
+            if let Some(img_pos) = remaining.find("![") {
+                // skip if this is actually a double-bang
+                if img_pos > 0 && remaining.as_bytes().get(img_pos.saturating_sub(1)) == Some(&b'!') {
+                    search_start = search_start + img_pos + 2;
+                    continue;
+                }
+
+                let bracket_pos = remaining.find('[');
+
+                if bracket_pos.is_none() || img_pos < bracket_pos.unwrap() {
+                    let abs_img_pos = search_start + img_pos;
+                    let from_img = &text[abs_img_pos..];
+
+                    if let Some(bracket_end) = from_img[1..].find("](") {
+                        let after_bracket = &from_img[1 + bracket_end + 2..];
+                        if let Some(paren_end) = after_bracket.find(')') {
+                            let alt_text = &from_img[2..1 + bracket_end];
+                            let url = &after_bracket[..paren_end];
+
+                            if !url.is_empty() {
+                                let display_text = if alt_text.is_empty() {
+                                    format!("[img: {}]", url)
+                                } else {
+                                    format!("[img: {}]", alt_text)
+                                };
+                                let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
+                                let rendered_end = rendered_start + display_text.chars().count();
+
+                                links.push((
+                                    display_text,
+                                    url.to_string(),
+                                    rendered_start,
+                                    rendered_end,
+                                ));
+                            }
+
+                            search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            //check for regular markdown link
             if let Some(bracket_pos) = remaining.find('[') {
                 let abs_bracket_pos = search_start + bracket_pos;
                 let from_bracket = &text[abs_bracket_pos..];
+
+                // skip if this is part of a wiki link
+                if from_bracket.starts_with("[[") {
+                    if let Some(close_pos) = from_bracket[2..].find("]]") {
+                        search_start = abs_bracket_pos + 2 + close_pos + 2;
+                        continue;
+                    }
+                }
 
                 if let Some(bracket_end) = from_bracket.find("](") {
                     let after_bracket = &from_bracket[bracket_end + 2..];
@@ -1966,11 +2095,16 @@ impl App {
                         let url = &after_bracket[..paren_end];
 
                         if !url.is_empty() {
+                            let display_text = if link_text.is_empty() {
+                                url.to_string()
+                            } else {
+                                link_text.to_string()
+                            };
                             let rendered_start = Self::calc_rendered_pos(text, abs_bracket_pos);
-                            let rendered_end = rendered_start + link_text.chars().count();
+                            let rendered_end = rendered_start + display_text.chars().count();
 
                             links.push((
-                                link_text.to_string(),
+                                display_text,
                                 url.to_string(),
                                 rendered_start,
                                 rendered_end,
@@ -1994,6 +2128,70 @@ impl App {
 
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
+
+            if remaining.starts_with("!![") {
+                if let Some(bracket_end) = remaining[2..].find("](") {
+                    let after_bracket = &remaining[2 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[3..2 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 2 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                url.chars().count()
+                            } else {
+                                alt_text.chars().count()
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("![") {
+                if let Some(bracket_end) = remaining[1..].find("](") {
+                    let after_bracket = &remaining[1 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[2..1 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 1 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                6 + url.chars().count() + 1 
+                            } else {
+                                6 + alt_text.chars().count() + 1 
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("[[") {
+                if let Some(end_pos) = remaining[2..].find("]]") {
+                    let target = &remaining[2..2 + end_pos];
+                    let full_link_len = 2 + end_pos + 2;
+
+                    if i + full_link_len <= target_pos {
+                        rendered_pos += target.chars().count();
+                        i += full_link_len;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             if remaining.starts_with('[') {
                 if let Some(bracket_end) = remaining.find("](") {
                     let after_bracket = &remaining[bracket_end + 2..];
@@ -2002,7 +2200,12 @@ impl App {
                         let full_link_len = bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            rendered_pos += link_text.chars().count();
+                            let display_len = if link_text.is_empty() {
+                                after_bracket[..paren_end].chars().count()
+                            } else {
+                                link_text.chars().count()
+                            };
+                            rendered_pos += display_len;
                             i += full_link_len;
                             continue;
                         } else {
@@ -2282,6 +2485,54 @@ impl App {
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
 
+            if remaining.starts_with("!![") {
+                if let Some(bracket_end) = remaining[2..].find("](") {
+                    let after_bracket = &remaining[2 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[3..2 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 2 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                url.chars().count()
+                            } else {
+                                alt_text.chars().count()
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("![") {
+                if let Some(bracket_end) = remaining[1..].find("](") {
+                    let after_bracket = &remaining[1 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[2..1 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 1 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                6 + url.chars().count() + 1 
+                            } else {
+                                6 + alt_text.chars().count() + 1 
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
             if remaining.starts_with("[[") {
                 if let Some(end_pos) = remaining[2..].find("]]") {
                     let target = &remaining[2..2 + end_pos];
@@ -2302,10 +2553,16 @@ impl App {
                     let after_bracket = &remaining[bracket_end + 2..];
                     if let Some(paren_end) = after_bracket.find(')') {
                         let link_text = &remaining[1..bracket_end];
+                        let url = &after_bracket[..paren_end];
                         let full_link_len = bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            rendered_pos += link_text.chars().count();
+                            let display_len = if link_text.is_empty() {
+                                url.chars().count()
+                            } else {
+                                link_text.chars().count()
+                            };
+                            rendered_pos += display_len;
                             i += full_link_len;
                             continue;
                         } else {
@@ -2525,23 +2782,27 @@ impl App {
 
     pub fn open_current_image(&self) {
         if let Some(path) = self.current_item_is_image() {
-            let is_url = path.starts_with("http://") || path.starts_with("https://");
-
-            let open_path = if is_url {
-                path.to_string()
-            } else if let Some(resolved) = self.resolve_image_path(path) {
-                resolved.to_string_lossy().to_string()
-            } else {
-                return; 
-            };
-
-            #[cfg(target_os = "macos")]
-            let _ = Command::new("open").arg(&open_path).spawn();
-            #[cfg(target_os = "linux")]
-            let _ = Command::new("xdg-open").arg(&open_path).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
+            self.open_path_or_url(path);
         }
+    }
+
+    pub fn open_path_or_url(&self, path: &str) {
+        let is_url = path.starts_with("http://") || path.starts_with("https://");
+
+        let open_path = if is_url {
+            path.to_string()
+        } else if let Some(resolved) = self.resolve_image_path(path) {
+            resolved.to_string_lossy().to_string()
+        } else {
+            path.to_string()
+        };
+
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(&open_path).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(&open_path).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
     }
 
     pub fn next_sidebar_item(&mut self) {
