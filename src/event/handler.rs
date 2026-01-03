@@ -2591,14 +2591,35 @@ fn execute_motion_n(app: &mut App, movement: CursorMove) {
 }
 
 fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
+    use crate::vim::LastChange;
+
     let count = app.vim.get_count();
     if let Some(op) = app.pending_operator.take() {
         app.editor.cancel_selection();
         app.editor.start_selection();
         for _ in 0..count { app.editor.move_cursor(movement); }
         match op {
-            'd' => { app.editor.cut(); }
-            'c' => { app.editor.cut(); app.vim_mode = VimMode::Insert; }
+            'd' => {
+                app.editor.cut();
+                // Record last_change for dot command
+                match movement {
+                    CursorMove::WordForward | CursorMove::BigWordForward => {
+                        app.vim.last_change = Some(LastChange::DeleteWordForward(count));
+                    }
+                    CursorMove::WordBack | CursorMove::BigWordBack => {
+                        app.vim.last_change = Some(LastChange::DeleteWordBackward(count));
+                    }
+                    CursorMove::End => {
+                        app.vim.last_change = Some(LastChange::DeleteToEnd);
+                    }
+                    _ => {}
+                }
+            }
+            'c' => {
+                app.editor.cut();
+                app.vim_mode = VimMode::Insert;
+                // Note: Change operations need insert text to be recorded on exit from insert mode
+            }
             'y' => { app.editor.copy(); app.editor.cancel_selection(); }
             '>' => {
                 if let Some((start, _)) = app.editor.selection_range() {
