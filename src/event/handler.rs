@@ -1913,10 +1913,52 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         app.vim.pending_g = false;
         match key.code {
             KeyCode::Char('g') => {
-                if let Some(count) = app.vim.count.take() {
-                    app.editor.move_cursor(CursorMove::GoToLine(count));
+                // Handle operator + gg (linewise motion to start of file or specific line)
+                if let Some(op) = app.pending_operator.take() {
+                    let target_line = if let Some(count) = app.vim.count.take() {
+                        count.saturating_sub(1)
+                    } else {
+                        0
+                    };
+
+                    let (current_row, _) = app.editor.cursor();
+                    let (start_row, end_row) = if target_line <= current_row {
+                        (target_line, current_row)
+                    } else {
+                        (current_row, target_line)
+                    };
+
+                    app.editor.set_cursor(start_row, 0);
+                    app.editor.start_selection();
+                    app.editor.set_cursor(end_row, 0);
+                    app.editor.move_cursor(CursorMove::End);
+
+                    match op {
+                        'd' => {
+                            app.editor.cut();
+                            if start_row < app.editor.lines().len() {
+                                app.editor.set_cursor(start_row, 0);
+                            }
+                        }
+                        'c' => {
+                            app.editor.cut();
+                            app.vim_mode = VimMode::Insert;
+                        }
+                        'y' => {
+                            app.editor.copy();
+                            app.editor.cancel_selection();
+                            app.editor.set_cursor(current_row, 0);
+                        }
+                        _ => {
+                            app.editor.cancel_selection();
+                        }
+                    }
                 } else {
-                    app.editor.move_cursor(CursorMove::Top);
+                    if let Some(count) = app.vim.count.take() {
+                        app.editor.move_cursor(CursorMove::GoToLine(count));
+                    } else {
+                        app.editor.move_cursor(CursorMove::Top);
+                    }
                 }
             }
             KeyCode::Char('e') => {
@@ -2104,10 +2146,54 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.pending_g = true;
         }
         KeyCode::Char('G') => {
-            if let Some(count) = app.vim.count.take() {
-                app.editor.move_cursor(CursorMove::GoToLine(count));
+            // Handle operator + G (linewise motion to end of file or specific line)
+            if let Some(op) = app.pending_operator.take() {
+                let target_line = if let Some(count) = app.vim.count.take() {
+                    count.saturating_sub(1) // Convert to 0-indexed
+                } else {
+                    app.editor.lines().len().saturating_sub(1)
+                };
+
+                // Select from current line to target line (linewise)
+                let (current_row, _) = app.editor.cursor();
+                let (start_row, end_row) = if target_line >= current_row {
+                    (current_row, target_line)
+                } else {
+                    (target_line, current_row)
+                };
+
+                app.editor.set_cursor(start_row, 0);
+                app.editor.start_selection();
+                app.editor.set_cursor(end_row, 0);
+                app.editor.move_cursor(CursorMove::End);
+
+                match op {
+                    'd' => {
+                        app.editor.cut();
+                        // Delete from start line to end line (inclusive)
+                        if start_row < app.editor.lines().len() {
+                            app.editor.set_cursor(start_row, 0);
+                        }
+                    }
+                    'c' => {
+                        app.editor.cut();
+                        app.vim_mode = VimMode::Insert;
+                    }
+                    'y' => {
+                        app.editor.copy();
+                        app.editor.cancel_selection();
+                        app.editor.set_cursor(current_row, 0);
+                    }
+                    _ => {
+                        app.editor.cancel_selection();
+                    }
+                }
             } else {
-                app.editor.move_cursor(CursorMove::Bottom);
+                if let Some(count) = app.vim.count.take() {
+                    app.editor.move_cursor(CursorMove::GoToLine(count));
+                } else {
+                    app.editor.move_cursor(CursorMove::Bottom);
+                }
             }
             app.vim.reset_pending();
         }
@@ -2548,7 +2634,31 @@ fn execute_find(app: &mut App, find: FindState) {
     let pos = app.editor.cursor();
     if let Some(line) = app.editor.lines().get(pos.0) {
         if let Some(new_col) = find.find_in_line(line, pos.1) {
-            app.editor.set_cursor(pos.0, new_col);
+            // Check for pending operator (d, c, y, etc.)
+            if let Some(op) = app.pending_operator.take() {
+                app.editor.start_selection();
+                app.editor.set_cursor(pos.0, new_col);
+                match op {
+                    'd' => {
+                        app.editor.cut();
+                    }
+                    'c' => {
+                        app.editor.cut();
+                        app.vim_mode = VimMode::Insert;
+                    }
+                    'y' => {
+                        app.editor.copy();
+                        app.editor.cancel_selection();
+                        // Return to start position for yank
+                        app.editor.set_cursor(pos.0, pos.1);
+                    }
+                    _ => {
+                        app.editor.cancel_selection();
+                    }
+                }
+            } else {
+                app.editor.set_cursor(pos.0, new_col);
+            }
         }
     }
 }
