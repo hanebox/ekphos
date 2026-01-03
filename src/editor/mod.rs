@@ -152,7 +152,7 @@ impl ListPrefix {
 
     fn prefix_len(&self, line: &str) -> usize {
         let trimmed = line.trim_start();
-        let indent_len = line.len() - trimmed.len();
+        let indent_len = line.chars().count() - trimmed.chars().count();
 
         match self {
             ListPrefix::Unordered { .. } => indent_len + 2, // "- " or "* " or "+ "

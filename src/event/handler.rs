@@ -857,7 +857,7 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             };
 
             if let Some(suggestion) = suggestion {
-                for _ in 0..query.len() {
+                for _ in 0..query.chars().count() {
                     app.editor.delete_newline();
                 }
                 if suggestion.is_folder {

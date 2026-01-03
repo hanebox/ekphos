@@ -71,7 +71,7 @@ impl HistoryEntry {
         if let (Some(EditOperation::Insert { pos: last_pos, text: last_text }), EditOperation::Insert { pos, text }) =
             (self.operations.last(), op)
         {
-            if text.len() == 1
+            if text.chars().count() == 1
                 && last_text.chars().all(|c| !c.is_whitespace())
                 && text.chars().all(|c| !c.is_whitespace())
             {

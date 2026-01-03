@@ -62,17 +62,16 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
                 let prefix_len = prefix.len();
                 let is_selected = idx == *selected_index;
 
-                // Truncate display name if too long
-                // fix here
+                // Truncate display name if too long (use chars for Unicode safety)
                 let display_name = if suggestion.display_name.chars().count() > max_name_width {
-               // use chars() iterator to safely get words
-                    let truncated: String = suggestion.display_name
+                    let truncated: String = suggestion
+                        .display_name
                         .chars()
-                        .take(max_name_width.saturating_sub(1) as usize)
+                        .take(max_name_width.saturating_sub(1))
                         .collect();
                     format!("{}…", truncated)
                 } else {
-                suggestion.display_name.clone()
+                    suggestion.display_name.clone()
                 };
 
                 let style = if is_selected {
