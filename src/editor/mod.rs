@@ -7,6 +7,9 @@ mod wrap;
 pub use cursor::{CursorMove, Position};
 pub use input::{process_key, InputAction};
 
+// Re-export LineNumberMode for use in other modules
+pub use crate::config::LineNumberMode;
+
 use buffer::TextBuffer;
 use cursor::Cursor;
 use history::{EditOperation, History};
@@ -193,6 +196,10 @@ pub struct Editor {
     list_marker_color: Color,
     bold_color: Option<Color>,
     italic_color: Option<Color>,
+    // Line number display
+    line_number_mode: LineNumberMode,
+    line_number_style: Style,
+    line_number_width: u16,
 }
 
 impl Default for Editor {
@@ -232,6 +239,43 @@ impl Editor {
             list_marker_color: Color::Yellow,
             bold_color: None,
             italic_color: None,
+            line_number_mode: LineNumberMode::None,
+            line_number_style: Style::default().fg(Color::DarkGray),
+            line_number_width: 4, // Default width for line numbers
+        }
+    }
+
+    pub fn set_line_number_mode(&mut self, mode: LineNumberMode) {
+        self.line_number_mode = mode;
+        // Update width based on line count
+        self.update_line_number_width();
+    }
+
+    fn update_line_number_width(&mut self) {
+        if self.line_number_mode == LineNumberMode::None {
+            self.line_number_width = 0;
+        } else {
+            let line_count = self.buffer.line_count();
+            self.line_number_width = (line_count.to_string().len() as u16).max(2) + 1; // +1 for spacing
+        }
+    }
+
+    fn get_line_number_str(&self, row: usize, cursor_row: usize) -> Option<String> {
+        match self.line_number_mode {
+            LineNumberMode::None => None,
+            LineNumberMode::Absolute => Some(format!("{:>width$}", row + 1, width = (self.line_number_width - 1) as usize)),
+            LineNumberMode::Relative => {
+                let rel = if row == cursor_row { row + 1 } else { (row as isize - cursor_row as isize).unsigned_abs() };
+                Some(format!("{:>width$}", rel, width = (self.line_number_width - 1) as usize))
+            }
+            LineNumberMode::Hybrid => {
+                if row == cursor_row {
+                    Some(format!("{:>width$}", row + 1, width = (self.line_number_width - 1) as usize))
+                } else {
+                    let rel = (row as isize - cursor_row as isize).unsigned_abs();
+                    Some(format!("{:>width$}", rel, width = (self.line_number_width - 1) as usize))
+                }
+            }
         }
     }
 
@@ -1885,7 +1929,9 @@ impl Widget for &Editor {
 
 impl Editor {
     fn render_wrapped(&self, area: Rect, buf: &mut RatatuiBuffer) {
-        let content_start_x = area.x + self.left_padding;
+        // Account for line number gutter
+        let gutter_width = if self.line_number_mode != LineNumberMode::None { self.line_number_width } else { 0 };
+        let content_start_x = area.x + self.left_padding + gutter_width;
         let content_end_x = area.x + area.width.saturating_sub(self.right_padding);
         let content_width = content_end_x.saturating_sub(content_start_x) as usize;
         if content_width == 0 {
@@ -1919,6 +1965,21 @@ impl Editor {
             let line = self.buffer.line(row).unwrap_or("");
             let is_cursor_line = row == cursor_pos.row;
             let chars: Vec<char> = line.chars().collect();
+
+            // Render line numbers if enabled (only for first visual line of a row)
+            if let Some(ln_str) = self.get_line_number_str(row, cursor_pos.row) {
+                let ln_style = if is_cursor_line {
+                    self.line_number_style.add_modifier(Modifier::BOLD)
+                } else {
+                    self.line_number_style
+                };
+                for (i, ch) in ln_str.chars().enumerate() {
+                    if let Some(cell) = buf.cell_mut((area.x + self.left_padding + i as u16, screen_y)) {
+                        cell.set_char(ch);
+                        cell.set_style(ln_style);
+                    }
+                }
+            }
 
             if chars.is_empty() {
                 if is_cursor_line {
@@ -2017,7 +2078,9 @@ impl Editor {
     }
 
     fn render_no_wrap(&self, area: Rect, buf: &mut RatatuiBuffer) {
-        let content_start_x = area.x + self.left_padding;
+        // Account for line number gutter
+        let gutter_width = if self.line_number_mode != LineNumberMode::None { self.line_number_width } else { 0 };
+        let content_start_x = area.x + self.left_padding + gutter_width;
         let content_end_x = area.x + area.width.saturating_sub(self.right_padding);
 
         let cursor_pos = self.cursor.pos();
@@ -2046,6 +2109,21 @@ impl Editor {
             let is_cursor_line = row == cursor_pos.row;
             let chars: Vec<char> = line.chars().collect();
             let line_h_scroll = if is_cursor_line { h_scroll } else { 0 };
+
+            // Render line numbers if enabled
+            if let Some(ln_str) = self.get_line_number_str(row, cursor_pos.row) {
+                let ln_style = if is_cursor_line {
+                    self.line_number_style.add_modifier(Modifier::BOLD)
+                } else {
+                    self.line_number_style
+                };
+                for (i, ch) in ln_str.chars().enumerate() {
+                    if let Some(cell) = buf.cell_mut((area.x + self.left_padding + i as u16, y)) {
+                        cell.set_char(ch);
+                        cell.set_style(ln_style);
+                    }
+                }
+            }
 
             let mut x = content_start_x;
             for col in line_h_scroll..chars.len() {

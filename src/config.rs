@@ -27,6 +27,16 @@ pub struct Config {
     pub editor: EditorConfig,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LineNumberMode {
+    #[default]
+    None,
+    Absolute,
+    Relative,
+    Hybrid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorConfig {
     #[serde(default = "default_line_wrap")]
@@ -37,6 +47,8 @@ pub struct EditorConfig {
     pub left_padding: u16,
     #[serde(default = "default_right_padding")]
     pub right_padding: u16,
+    #[serde(default)]
+    pub line_numbers: LineNumberMode,
 }
 
 fn default_line_wrap() -> bool { true }
@@ -51,6 +63,7 @@ impl Default for EditorConfig {
             tab_width: default_tab_width(),
             left_padding: default_left_padding(),
             right_padding: default_right_padding(),
+            line_numbers: LineNumberMode::default(),
         }
     }
 }
