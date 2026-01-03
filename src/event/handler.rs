@@ -1868,7 +1868,14 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                             let count = app.vim.get_count();
                             for _ in 0..count {
                                 for k in &keys {
-                                    handle_vim_normal_mode(app, *k);
+                                    // Dispatch to correct handler based on current mode
+                                    match app.vim_mode {
+                                        VimMode::Insert => handle_vim_insert_mode(app, *k),
+                                        VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
+                                            handle_vim_visual_mode(app, *k)
+                                        }
+                                        _ => handle_vim_normal_mode(app, *k),
+                                    }
                                 }
                             }
                         }
