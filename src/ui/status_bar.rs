@@ -76,6 +76,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     match app.vim_mode {
                         crate::app::VimMode::Normal => "normal".to_string(),
                         crate::app::VimMode::Insert => "insert".to_string(),
+                        crate::app::VimMode::Replace => "replace".to_string(),
                         crate::app::VimMode::Visual => "visual".to_string(),
                         crate::app::VimMode::VisualLine => "v-line".to_string(),
                         crate::app::VimMode::VisualBlock => "v-block".to_string(),

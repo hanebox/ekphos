@@ -284,6 +284,7 @@ pub enum ContentItem {
 pub enum VimMode {
     Normal,
     Insert,
+    Replace,
     Visual,
     VisualLine,
     VisualBlock,
@@ -3336,6 +3337,7 @@ impl App {
             match self.vim_mode {
                 VimMode::Normal => "NORMAL",
                 VimMode::Insert => "INSERT",
+                VimMode::Replace => "REPLACE",
                 VimMode::Visual => "VISUAL",
                 VimMode::VisualLine => "V-LINE",
                 VimMode::VisualBlock => "V-BLOCK",
@@ -3354,6 +3356,7 @@ impl App {
                 (None, VimMode::Normal) if self.pending_operator.is_some() => self.theme.warning,
                 (None, VimMode::Normal) => self.theme.primary,
                 (None, VimMode::Insert) => self.theme.success,
+                (None, VimMode::Replace) => self.theme.warning,
                 (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => {
                     self.theme.secondary
                 }

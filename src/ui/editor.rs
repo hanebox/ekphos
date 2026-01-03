@@ -95,6 +95,7 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
         match app.vim_mode {
             VimMode::Normal => "NORMAL",
             VimMode::Insert => "INSERT",
+            VimMode::Replace => "REPLACE",
             VimMode::Visual => "VISUAL",
             VimMode::VisualLine => "V-LINE",
             VimMode::VisualBlock => "V-BLOCK",
@@ -115,6 +116,7 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
             (None, VimMode::Normal) if app.pending_operator.is_some() => theme.warning,
             (None, VimMode::Normal) => theme.primary,
             (None, VimMode::Insert) => theme.success,
+            (None, VimMode::Replace) => theme.warning,
             (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => {
                 theme.secondary
             }

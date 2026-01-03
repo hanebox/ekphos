@@ -1758,6 +1758,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 match app.vim_mode {
                     VimMode::Normal => handle_vim_normal_mode(app, key),
                     VimMode::Insert => handle_vim_insert_mode(app, key),
+                    VimMode::Replace => handle_vim_replace_mode(app, key),
                     VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
                         handle_vim_visual_mode(app, key)
                     }
@@ -1788,6 +1789,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     match app.vim_mode {
         VimMode::Normal => handle_vim_normal_mode(app, key),
         VimMode::Insert => handle_vim_insert_mode(app, key),
+        VimMode::Replace => handle_vim_replace_mode(app, key),
         VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
             handle_vim_visual_mode(app, key)
         }
@@ -1871,6 +1873,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                                     // Dispatch to correct handler based on current mode
                                     match app.vim_mode {
                                         VimMode::Insert => handle_vim_insert_mode(app, *k),
+                                        VimMode::Replace => handle_vim_replace_mode(app, *k),
                                         VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
                                             handle_vim_visual_mode(app, *k)
                                         }
@@ -2091,9 +2094,9 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.set_visual_line_selection(row, row);
         }
         KeyCode::Char('R') => {
-            // Replace mode
+            // Replace mode - overwrite characters instead of inserting
             app.vim.reset_pending();
-            app.vim_mode = VimMode::Insert; // Use insert mode behavior, overwrite on char
+            app.vim_mode = VimMode::Replace;
             app.editor.cancel_selection();
         }
         KeyCode::Char(':') => {
@@ -2760,6 +2763,55 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.update_editor_highlights();
             }
         }
+    }
+}
+
+fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.vim_mode = VimMode::Normal;
+            app.vim.mode = VimModeNew::Normal;
+            app.vim.reset_pending();
+        }
+        KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            app.save_edit();
+            app.vim_mode = VimMode::Normal;
+            app.vim.mode = VimModeNew::Normal;
+            app.vim.reset_pending();
+        }
+        KeyCode::Backspace => {
+            // In Replace mode, backspace just moves cursor back
+            app.editor.move_cursor(CursorMove::Back);
+        }
+        KeyCode::Left => {
+            app.editor.move_cursor(CursorMove::Back);
+        }
+        KeyCode::Right => {
+            app.editor.move_cursor(CursorMove::Forward);
+        }
+        KeyCode::Up => {
+            app.editor.move_cursor(CursorMove::Up);
+        }
+        KeyCode::Down => {
+            app.editor.move_cursor(CursorMove::Down);
+        }
+        KeyCode::Enter => {
+            // Enter creates a new line in replace mode
+            app.editor.insert_newline();
+            app.update_editor_highlights();
+        }
+        KeyCode::Char(c) => {
+            // Overwrite: delete current char (if not at end of line) then insert new char
+            let (row, col) = app.editor.cursor();
+            if let Some(line) = app.editor.lines().get(row) {
+                if col < line.chars().count() {
+                    app.editor.delete_char();
+                }
+            }
+            app.editor.insert_char(c);
+            app.update_editor_highlights();
+        }
+        _ => {}
     }
 }
 
