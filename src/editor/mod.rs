@@ -1629,18 +1629,27 @@ impl Editor {
         match op {
             EditOperation::Insert { pos, text } => {
                 if text.contains('\n') {
-                    let lines: Vec<&str> = text.lines().collect();
-                    self.buffer.insert_str(pos.row, pos.col, lines[0]);
-                    if lines.len() > 1 {
-                        let split_col = pos.col + lines[0].chars().count();
-                        self.buffer.split_line(pos.row, split_col);
-                        for (i, line) in lines[1..].iter().enumerate() {
-                            if i < lines.len() - 2 {
-                                self.buffer.insert_line(pos.row + 1 + i, line.to_string());
-                            } else {
-                                self.buffer.insert_str(pos.row + 1 + i, 0, line);
-                            }
+                    // Use split instead of lines() to preserve trailing newlines
+                    // e.g., "hello\n".lines() returns ["hello"] but split returns ["hello", ""]
+                    let parts: Vec<&str> = text.split('\n').collect();
+                    if parts.is_empty() {
+                        return;
+                    }
+
+                    // Insert first part at position
+                    self.buffer.insert_str(pos.row, pos.col, parts[0]);
+
+                    // For each subsequent part, split line and insert
+                    let mut current_row = pos.row;
+                    let mut split_col = pos.col + parts[0].chars().count();
+
+                    for part in &parts[1..] {
+                        self.buffer.split_line(current_row, split_col);
+                        current_row += 1;
+                        if !part.is_empty() {
+                            self.buffer.insert_str(current_row, 0, part);
                         }
+                        split_col = part.chars().count();
                     }
                 } else {
                     self.buffer.insert_str(pos.row, pos.col, text);
