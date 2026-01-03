@@ -334,6 +334,14 @@ impl ContextMenuItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+pub enum WikiAutocompleteMode {
+    #[default]
+    Note,    
+    Heading,  
+    Alias,   
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum WikiAutocompleteState {
     #[default]
     None,
@@ -342,6 +350,8 @@ pub enum WikiAutocompleteState {
         query: String,
         suggestions: Vec<WikiSuggestion>,
         selected_index: usize,
+        mode: WikiAutocompleteMode,
+        target_note: Option<String>,
     },
 }
 
@@ -444,6 +454,7 @@ pub enum LinkInfo {
     },
     Wiki {
         target: String,
+        heading: Option<String>,
         start_col: usize,
         end_col: usize,
         is_valid: bool,
@@ -1907,6 +1918,7 @@ impl App {
         for wiki in self.item_wiki_links_at(index) {
             all_links.push(LinkInfo::Wiki {
                 target: wiki.target,
+                heading: wiki.heading,
                 start_col: wiki.start_col,
                 end_col: wiki.end_col,
                 is_valid: wiki.is_valid,
@@ -2416,6 +2428,64 @@ impl App {
         false
     }
 
+    /// Check if cursor is inside an unclosed wikilink and return the current state
+    /// Returns: Option<(note_query, heading_query, alias_query, mode)>
+    /// - note_query: the part before # or |
+    /// - heading_query: the part after # (if present)
+    /// - alias_query: the part after | (if present)
+    /// - mode: WikiAutocompleteMode indicating current position
+    pub fn detect_unclosed_wikilink(&self, row: usize, col: usize) -> Option<(String, Option<String>, Option<String>, WikiAutocompleteMode)> {
+        let lines = self.editor.lines();
+        let line = lines.get(row)?;
+        let chars: Vec<char> = line.chars().collect();
+        let mut open_pos = None;
+        let mut i = col.saturating_sub(1);
+        while i > 0 {
+            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&'[') && chars.get(i) == Some(&'[') {
+                open_pos = Some(i.saturating_sub(1));
+                break;
+            }
+            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&']') && chars.get(i) == Some(&']') {
+                return None;
+            }
+            i = i.saturating_sub(1);
+        }
+        if open_pos.is_none() && i == 0 && col >= 2 {
+            if chars.get(0) == Some(&'[') && chars.get(1) == Some(&'[') {
+                open_pos = Some(0);
+            }
+        }
+
+        let start = open_pos? + 2; 
+
+        for j in start..col.saturating_sub(1) {
+            if chars.get(j) == Some(&']') && chars.get(j + 1) == Some(&']') {
+                return None;
+            }
+        }
+
+        let content: String = chars[start..col].iter().collect();
+
+        if let Some(pipe_pos) = content.find('|') {
+            let before_pipe = &content[..pipe_pos];
+            let alias_query = content[pipe_pos + 1..].to_string();
+
+            if let Some(hash_pos) = before_pipe.find('#') {
+                let note_query = before_pipe[..hash_pos].to_string();
+                let heading_query = before_pipe[hash_pos + 1..].to_string();
+                Some((note_query, Some(heading_query), Some(alias_query), WikiAutocompleteMode::Alias))
+            } else {
+                Some((before_pipe.to_string(), None, Some(alias_query), WikiAutocompleteMode::Alias))
+            }
+        } else if let Some(hash_pos) = content.find('#') {
+            let note_query = content[..hash_pos].to_string();
+            let heading_query = content[hash_pos + 1..].to_string();
+            Some((note_query, Some(heading_query), None, WikiAutocompleteMode::Heading))
+        } else {
+            Some((content, None, None, WikiAutocompleteMode::Note))
+        }
+    }
+
     pub fn get_wiki_path_for_note(&self, note_idx: usize) -> Option<String> {
         let note = self.notes.get(note_idx)?;
         let file_path = note.file_path.as_ref()?;
@@ -2623,6 +2693,10 @@ impl App {
     }
 
     pub fn navigate_to_wiki_link(&mut self, target: &str) -> bool {
+        self.navigate_to_wiki_link_with_heading(target, None)
+    }
+
+    pub fn navigate_to_wiki_link_with_heading(&mut self, target: &str, heading: Option<&str>) -> bool {
         if let Some(note_idx) = self.resolve_wiki_link(target) {
             for (idx, item) in self.sidebar_items.iter().enumerate() {
                 if let SidebarItemKind::Note { note_index } = &item.kind {
@@ -2636,12 +2710,45 @@ impl App {
                         self.selected_link_index = 0;
                         self.update_content_items();
                         self.update_outline();
+
+                        // If heading is specified, navigate to it
+                        if let Some(heading_text) = heading {
+                            self.navigate_to_heading(heading_text);
+                        }
+
                         return true;
                     }
                 }
             }
         }
         false
+    }
+
+    /// Navigate to a heading in the current note's content
+    fn navigate_to_heading(&mut self, heading: &str) {
+        let heading_lower = heading.to_lowercase();
+
+        for (idx, item) in self.content_items.iter().enumerate() {
+            if let ContentItem::TextLine(line) = item {
+                let title = if line.starts_with("### ") {
+                    Some(line.trim_start_matches("### "))
+                } else if line.starts_with("## ") {
+                    Some(line.trim_start_matches("## "))
+                } else if line.starts_with("# ") {
+                    Some(line.trim_start_matches("# "))
+                } else {
+                    None
+                };
+
+                if let Some(title) = title {
+                    if title.to_lowercase() == heading_lower {
+                        self.content_cursor = idx;
+                        self.content_scroll_offset = idx.saturating_sub(2);
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     pub fn build_graph(&mut self) {
@@ -2789,6 +2896,55 @@ impl App {
                     .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase())),
             }
         });
+
+        suggestions
+    }
+
+    /// Build heading suggestions for a note target
+    /// This extracts headings from the note's content and filters by query
+    pub fn build_heading_suggestions(&self, note_target: &str, query: &str) -> Vec<WikiSuggestion> {
+        let mut suggestions = Vec::new();
+
+        for (idx, note) in self.notes.iter().enumerate() {
+            if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
+                if wiki_path.to_lowercase() == note_target.to_lowercase()
+                   || note.title.to_lowercase() == note_target.to_lowercase() {
+                    for line in note.content.lines() {
+                        let heading: Option<(usize, String)> = if line.starts_with("### ") {
+                            Some((3, line.trim_start_matches("### ").to_string()))
+                        } else if line.starts_with("## ") {
+                            Some((2, line.trim_start_matches("## ").to_string()))
+                        } else if line.starts_with("# ") {
+                            Some((1, line.trim_start_matches("# ").to_string()))
+                        } else {
+                            None
+                        };
+
+                        if let Some((level, title)) = heading {
+                            let score = if query.is_empty() {
+                                1000 
+                            } else if let Some(s) = fuzzy_match(&title, query) {
+                                s
+                            } else {
+                                continue; 
+                            };
+
+                            let prefix = "  ".repeat(level.saturating_sub(1));
+                            suggestions.push(WikiSuggestion {
+                                display_name: format!("{}{}", prefix, title),
+                                insert_text: title.clone(), // Just the heading text for insertion
+                                is_folder: false,
+                                path: format!("{}#{}", wiki_path, title),
+                                score,
+                            });
+                        }
+                    }
+                    break; 
+                }
+            }
+        }
+
+        suggestions.sort_by(|a, b| b.score.cmp(&a.score));
 
         suggestions
     }

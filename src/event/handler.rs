@@ -3,7 +3,7 @@ use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteState};
+use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
 use crate::editor::CursorMove;
 use crate::ui;
@@ -233,7 +233,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         }
                         else if let Some(wiki_link) = app.find_clicked_wiki_link(idx, mouse_x, app.content_area.x) {
                             if wiki_link.is_valid {
-                                app.navigate_to_wiki_link(&wiki_link.target);
+                                app.navigate_to_wiki_link_with_heading(&wiki_link.target, wiki_link.heading.as_deref());
                             } else {
                                 app.pending_wiki_target = Some(wiki_link.target);
                                 app.dialog = DialogState::CreateWikiNote;
@@ -833,13 +833,15 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
         return false;
     }
 
-    let (query, suggestions_len) = if let WikiAutocompleteState::Open {
+    let (query, suggestions_len, mode, target_note) = if let WikiAutocompleteState::Open {
         ref query,
         ref suggestions,
+        ref mode,
+        ref target_note,
         ..
     } = app.wiki_autocomplete
     {
-        (query.clone(), suggestions.len())
+        (query.clone(), suggestions.len(), mode.clone(), target_note.clone())
     } else {
         return false;
     };
@@ -850,6 +852,24 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Enter | KeyCode::Tab => {
+            if mode == WikiAutocompleteMode::Alias {
+                let (row, col) = app.editor.cursor();
+                let lines = app.editor.lines();
+                let already_closed = if let Some(line) = lines.get(row) {
+                    let chars: Vec<char> = line.chars().collect();
+                    chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                } else {
+                    false
+                };
+
+                if !already_closed {
+                    app.editor.insert_str("]]");
+                }
+                app.wiki_autocomplete = WikiAutocompleteState::None;
+                app.update_editor_highlights();
+                return true;
+            }
+
             let suggestion = if let WikiAutocompleteState::Open { ref suggestions, selected_index, .. } = app.wiki_autocomplete {
                 suggestions.get(selected_index).cloned()
             } else {
@@ -857,10 +877,36 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             };
 
             if let Some(suggestion) = suggestion {
-                for _ in 0..query.chars().count() {
+                let chars_to_delete = match mode {
+                    WikiAutocompleteMode::Note => query.chars().count(),
+                    WikiAutocompleteMode::Heading => {
+                        query.chars().count()
+                    }
+                    WikiAutocompleteMode::Alias => 0,
+                };
+
+                for _ in 0..chars_to_delete {
                     app.editor.delete_newline();
                 }
-                if suggestion.is_folder {
+
+                if mode == WikiAutocompleteMode::Heading {
+                    app.editor.insert_str(&suggestion.insert_text);
+                    let already_closed = {
+                        let (row, col) = app.editor.cursor();
+                        let lines = app.editor.lines();
+                        if let Some(line) = lines.get(row) {
+                            let chars: Vec<char> = line.chars().collect();
+                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                        } else {
+                            false
+                        }
+                    };
+                    if !already_closed {
+                        app.editor.insert_str("]]");
+                    }
+                    app.wiki_autocomplete = WikiAutocompleteState::None;
+                    app.update_editor_highlights();
+                } else if suggestion.is_folder {
                     app.editor.insert_str(&suggestion.insert_text);
                     let new_query = suggestion.insert_text.clone();
                     let new_suggestions = app.build_wiki_suggestions(&new_query);
@@ -869,10 +915,24 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
                         query: new_query,
                         suggestions: new_suggestions,
                         selected_index: 0,
+                        mode: WikiAutocompleteMode::Note,
+                        target_note: None,
                     };
                 } else {
                     app.editor.insert_str(&suggestion.insert_text);
-                    app.editor.insert_str("]]");
+                    let already_closed = {
+                        let (row, col) = app.editor.cursor();
+                        let lines = app.editor.lines();
+                        if let Some(line) = lines.get(row) {
+                            let chars: Vec<char> = line.chars().collect();
+                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                        } else {
+                            false
+                        }
+                    };
+                    if !already_closed {
+                        app.editor.insert_str("]]");
+                    }
                     app.wiki_autocomplete = WikiAutocompleteState::None;
                     app.update_editor_highlights();
                 }
@@ -880,7 +940,7 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Down => {
-            if suggestions_len > 0 {
+            if mode != WikiAutocompleteMode::Alias && suggestions_len > 0 {
                 if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
                     *selected_index = (*selected_index + 1) % suggestions_len;
                 }
@@ -888,7 +948,7 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Up => {
-            if suggestions_len > 0 {
+            if mode != WikiAutocompleteMode::Alias && suggestions_len > 0 {
                 if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
                     *selected_index = if *selected_index == 0 {
                         suggestions_len - 1
@@ -901,21 +961,86 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
         }
         KeyCode::Backspace => {
             if query.is_empty() {
-                // Close autocomplete and delete the [[
-                app.editor.delete_newline(); // Delete first [
-                app.editor.delete_newline(); // Delete second [
-                app.wiki_autocomplete = WikiAutocompleteState::None;
+                match mode {
+                    WikiAutocompleteMode::Note => {
+                        // Close autocomplete and delete the [[
+                        app.editor.delete_newline(); // Delete first [
+                        app.editor.delete_newline(); // Delete second [
+                        app.wiki_autocomplete = WikiAutocompleteState::None;
+                    }
+                    WikiAutocompleteMode::Heading => {
+                        app.editor.delete_newline();
+                        if let Some(ref target) = target_note {
+                            let new_suggestions = app.build_wiki_suggestions(target);
+                            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                trigger_pos: (0, 0),
+                                query: target.clone(),
+                                suggestions: new_suggestions,
+                                selected_index: 0,
+                                mode: WikiAutocompleteMode::Note,
+                                target_note: None,
+                            };
+                        } else {
+                            app.wiki_autocomplete = WikiAutocompleteState::None;
+                        }
+                    }
+                    WikiAutocompleteMode::Alias => {
+                        app.editor.delete_newline();
+                        if let Some(ref target) = target_note {
+                            if target.contains('#') {
+                                let parts: Vec<&str> = target.splitn(2, '#').collect();
+                                let note_part = parts[0];
+                                let heading_part = parts.get(1).unwrap_or(&"");
+                                let heading_suggestions = app.build_heading_suggestions(note_part, heading_part);
+                                app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                    trigger_pos: (0, 0),
+                                    query: heading_part.to_string(),
+                                    suggestions: heading_suggestions,
+                                    selected_index: 0,
+                                    mode: WikiAutocompleteMode::Heading,
+                                    target_note: Some(note_part.to_string()),
+                                };
+                            } else {
+                                let new_suggestions = app.build_wiki_suggestions(target);
+                                app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                    trigger_pos: (0, 0),
+                                    query: target.clone(),
+                                    suggestions: new_suggestions,
+                                    selected_index: 0,
+                                    mode: WikiAutocompleteMode::Note,
+                                    target_note: None,
+                                };
+                            }
+                        } else {
+                            app.wiki_autocomplete = WikiAutocompleteState::None;
+                        }
+                    }
+                }
             } else {
                 // Delete character from query and editor
                 let mut new_query = query.clone();
                 new_query.pop();
                 app.editor.delete_newline();
-                let new_suggestions = app.build_wiki_suggestions(&new_query);
+
+                let new_suggestions = match mode {
+                    WikiAutocompleteMode::Note => app.build_wiki_suggestions(&new_query),
+                    WikiAutocompleteMode::Heading => {
+                        if let Some(ref target) = target_note {
+                            app.build_heading_suggestions(target, &new_query)
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    WikiAutocompleteMode::Alias => Vec::new(), // No suggestions in alias mode
+                };
+
                 app.wiki_autocomplete = WikiAutocompleteState::Open {
                     trigger_pos: (0, 0),
                     query: new_query,
                     suggestions: new_suggestions,
                     selected_index: 0,
+                    mode: mode.clone(),
+                    target_note: target_note.clone(),
                 };
             }
             return true;
@@ -942,17 +1067,70 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             }
             return true;
         }
+        KeyCode::Char('#') if mode == WikiAutocompleteMode::Note => {
+            let note_target = query.clone();
+
+            app.editor.insert_char('#');
+
+            let heading_suggestions = app.build_heading_suggestions(&note_target, "");
+
+            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                trigger_pos: (0, 0),
+                query: String::new(),
+                suggestions: heading_suggestions,
+                selected_index: 0,
+                mode: WikiAutocompleteMode::Heading,
+                target_note: Some(note_target),
+            };
+            return true;
+        }
+        KeyCode::Char('|') if mode == WikiAutocompleteMode::Note || mode == WikiAutocompleteMode::Heading => {
+            app.editor.insert_char('|');
+            let full_target = if mode == WikiAutocompleteMode::Heading {
+                if let Some(ref target) = target_note {
+                    format!("{}#{}", target, query)
+                } else {
+                    query.clone()
+                }
+            } else {
+                query.clone()
+            };
+
+            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                trigger_pos: (0, 0),
+                query: String::new(),
+                suggestions: Vec::new(), 
+                selected_index: 0,
+                mode: WikiAutocompleteMode::Alias,
+                target_note: Some(full_target),
+            };
+            return true;
+        }
         KeyCode::Char(c) => {
             // Add character to query and editor
             let mut new_query = query.clone();
             new_query.push(c);
             app.editor.insert_char(c);
-            let new_suggestions = app.build_wiki_suggestions(&new_query);
+
+            let new_suggestions = match mode {
+                WikiAutocompleteMode::Note => app.build_wiki_suggestions(&new_query),
+                WikiAutocompleteMode::Heading => {
+                    if let Some(ref target) = target_note {
+                        app.build_heading_suggestions(target, &new_query)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                WikiAutocompleteMode::Alias => Vec::new(), 
+            };
+
             app.wiki_autocomplete = WikiAutocompleteState::Open {
                 trigger_pos: (0, 0),
                 query: new_query,
                 suggestions: new_suggestions,
                 selected_index: 0,
+                mode: mode.clone(),
+                target_note: target_note.clone(),
             };
             return true;
         }
@@ -1611,9 +1789,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                             crate::app::LinkInfo::Markdown { url, .. } => {
                                 app.open_path_or_url(&url);
                             }
-                            crate::app::LinkInfo::Wiki { target, is_valid, .. } => {
+                            crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
                                 if is_valid {
-                                    app.navigate_to_wiki_link(&target);
+                                    app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
                                 } else {
                                     app.pending_wiki_target = Some(target);
                                     app.dialog = DialogState::CreateWikiNote;
@@ -1631,9 +1809,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                         crate::app::LinkInfo::Markdown { url, .. } => {
                             app.open_path_or_url(&url);
                         }
-                        crate::app::LinkInfo::Wiki { target, is_valid, .. } => {
+                        crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
                             if is_valid {
-                                app.navigate_to_wiki_link(&target);
+                                app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
                             } else {
                                 app.pending_wiki_target = Some(target);
                                 app.dialog = DialogState::CreateWikiNote;
@@ -2744,6 +2922,8 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                                 query: String::new(),
                                 suggestions,
                                 selected_index: 0,
+                                mode: WikiAutocompleteMode::Note,
+                                target_note: None,
                             };
                         }
                     }
@@ -2754,6 +2934,42 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.input(key);
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
                 app.update_editor_highlights();
+
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                    let (row, col) = app.editor.cursor();
+                    if !app.is_cursor_in_code(row, col) {
+                        if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
+                            let (query, suggestions, target_note) = match mode {
+                                WikiAutocompleteMode::Note => {
+                                    let suggestions = app.build_wiki_suggestions(&note_query);
+                                    (note_query, suggestions, None)
+                                }
+                                WikiAutocompleteMode::Heading => {
+                                    let heading_q = heading_query.unwrap_or_default();
+                                    let suggestions = app.build_heading_suggestions(&note_query, &heading_q);
+                                    (heading_q, suggestions, Some(note_query))
+                                }
+                                WikiAutocompleteMode::Alias => {
+                                    let full_target = if let Some(ref h) = heading_query {
+                                        format!("{}#{}", note_query, h)
+                                    } else {
+                                        note_query
+                                    };
+                                    (alias_query.unwrap_or_default(), Vec::new(), Some(full_target))
+                                }
+                            };
+
+                            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                trigger_pos: (row, 0),
+                                query,
+                                suggestions,
+                                selected_index: 0,
+                                mode,
+                                target_note,
+                            };
+                        }
+                    }
+                }
             }
         }
     }

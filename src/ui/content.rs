@@ -915,11 +915,23 @@ where
             let remaining = &text[i..];
             if remaining.starts_with("[[") {
                 if let Some(close_pos) = remaining[2..].find("]]") {
-                    let target = &remaining[2..2 + close_pos];
-                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                    let raw_content = &remaining[2..2 + close_pos];
+                    if !raw_content.is_empty() && !raw_content.contains('[') && !raw_content.contains(']') {
                         if i > current_start {
                             spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
                         }
+
+                        let (content, display_text) = if let Some(pipe_pos) = raw_content.find('|') {
+                            (&raw_content[..pipe_pos], Some(&raw_content[pipe_pos + 1..]))
+                        } else {
+                            (raw_content, None)
+                        };
+                        let target = if let Some(hash_pos) = content.find('#') {
+                            &content[..hash_pos]
+                        } else {
+                            content
+                        };
+                        let shown_text = display_text.unwrap_or(raw_content);
 
                         let is_selected = selected_link == Some(link_index);
                         let is_valid = wiki_link_validator
@@ -942,7 +954,7 @@ where
                                 .add_modifier(Modifier::UNDERLINED)
                         };
 
-                        spans.push(Span::styled(target.to_string(), style));
+                        spans.push(Span::styled(shown_text.to_string(), style));
                         link_index += 1;
 
                         let total_link_len = 2 + close_pos + 2; // [[target]]
