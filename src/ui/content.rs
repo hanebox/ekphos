@@ -360,7 +360,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Calculate how many characters are removed by inline formatting before a given position
-/// This accounts for **bold**, *italic*, `code`, [[wiki links]], and [markdown](links)
+/// This accounts for **bold**, *italic*, ~~strikethrough~~, `code`, [[wiki links]], and [markdown](links)
 fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
     let mut shrinkage = 0usize;
     let mut pos = 0;
@@ -408,6 +408,17 @@ fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
                     shrinkage += 1;
                 }
                 pos = end + 1;
+                continue;
+            }
+        }
+        if pos + 1 < chars.len() && chars[pos] == '~' && chars[pos + 1] == '~' {
+            if let Some(end) = find_double_marker(&chars, pos + 2, '~') {
+                if end < up_to_pos {
+                    shrinkage += 4;
+                } else if pos + 2 < up_to_pos {
+                    shrinkage += 2;
+                }
+                pos = end + 2;
                 continue;
             }
         }
@@ -784,6 +795,39 @@ where
                         Style::default().fg(content_theme.text).add_modifier(Modifier::ITALIC),
                     ));
                     current_start = end + 1;
+                } else {
+                    current_start = i;
+                }
+                continue;
+            }
+        }
+
+        // Check for ~~strikethrough~~
+        if c == '~' {
+            if let Some(&(_, '~')) = chars.peek() {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                chars.next(); 
+                let strike_start = i + 2;
+                let mut strike_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '~' {
+                        if let Some(&(_, '~')) = chars.peek() {
+                            strike_end = Some(j);
+                            chars.next(); 
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = strike_end {
+                    spans.push(Span::styled(
+                        &text[strike_start..end],
+                        Style::default().fg(content_theme.text).add_modifier(Modifier::CROSSED_OUT),
+                    ));
+                    current_start = end + 2;
                 } else {
                     current_start = i;
                 }
