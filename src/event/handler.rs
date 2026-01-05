@@ -192,19 +192,24 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
 
                     if clicked_index < app.sidebar_items.len() {
                         app.selected_sidebar_index = clicked_index;
-                        if let Some(item) = app.sidebar_items.get(clicked_index) {
+                        let item_info = app.sidebar_items.get(clicked_index).map(|item| {
                             match &item.kind {
-                                SidebarItemKind::Folder { path, .. } => {
-                                    app.focus = Focus::Sidebar;
-                                    let path = path.clone();
-                                    app.toggle_folder(path);
-                                }
-                                SidebarItemKind::Note { .. } => {
-                                    app.focus = Focus::Content;
-                                    app.sync_selected_note_from_sidebar();
-                                    app.update_content_items();
-                                    app.update_outline();
-                                }
+                                SidebarItemKind::Folder { path, .. } => Some((true, path.clone(), 0)),
+                                SidebarItemKind::Note { note_index } => Some((false, std::path::PathBuf::new(), *note_index)),
+                            }
+                        }).flatten();
+
+                        if let Some((is_folder, path, note_index)) = item_info {
+                            if is_folder {
+                                app.focus = Focus::Sidebar;
+                                app.toggle_folder(path);
+                            } else {
+                                app.focus = Focus::Content;
+                                app.sync_selected_note_from_sidebar();
+                                app.update_content_items();
+                                app.update_outline();
+                                // Push to navigation history
+                                app.push_navigation_history(note_index);
                             }
                         }
                     }
@@ -1280,6 +1285,7 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                                 app.update_outline();
                                 app.dialog = DialogState::None;
                                 app.focus = Focus::Content;
+                                app.push_navigation_history(note_idx);
                                 return;
                             }
                         }
@@ -1657,7 +1663,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('q') => return true,
         KeyCode::Tab if !app.zen_mode => app.toggle_focus(false),
         KeyCode::BackTab if !app.zen_mode => app.toggle_focus(true),
-        KeyCode::Char('e') => app.enter_edit_mode(),
+        KeyCode::Char('e') => {
+            app.push_navigation_history(app.selected_note);
+            app.enter_edit_mode();
+        }
         KeyCode::Char('n') if !app.zen_mode => {
             app.input_buffer.clear();
             app.dialog_error = None;
@@ -1755,6 +1764,12 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_outline_collapsed();
+        }
+        KeyCode::Char('-') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+            app.navigate_back();
+        }
+        KeyCode::Char('=') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+            app.navigate_forward();
         }
         KeyCode::Char('o') => {
             if app.focus == Focus::Content {

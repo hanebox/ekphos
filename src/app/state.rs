@@ -573,6 +573,9 @@ pub struct App {
     pub graph_view: GraphViewState,
     // Sidebar sorting
     pub sort_mode: SortMode,
+    // Navigation history (like browser back/forward)
+    pub navigation_history: Vec<usize>,  
+    pub navigation_index: usize,         
 }
 
 #[allow(dead_code)]
@@ -718,6 +721,8 @@ impl App {
             help_scroll: 0,
             graph_view: GraphViewState::default(),
             sort_mode: SortMode::default(),
+            navigation_history: Vec::new(),
+            navigation_index: 0,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -867,6 +872,8 @@ impl App {
             help_scroll: 0,
             graph_view: GraphViewState::default(),
             sort_mode: SortMode::default(),
+            navigation_history: Vec::new(),
+            navigation_index: 0,
         };
 
         if notes_dir_exists {
@@ -2736,6 +2743,7 @@ impl App {
                         self.selected_link_index = 0;
                         self.update_content_items();
                         self.update_outline();
+                        self.push_navigation_history(note_idx);
 
                         // If heading is specified, navigate to it
                         if let Some(heading_text) = heading {
@@ -2775,6 +2783,114 @@ impl App {
                 }
             }
         }
+    }
+
+    // ==================== Navigation History ====================
+
+    /// push a note to navigation history 
+    /// called when navigating to a new note
+    pub fn push_navigation_history(&mut self, note_idx: usize) {
+        if let Some(&current) = self.navigation_history.get(self.navigation_index) {
+            if current == note_idx {
+                return;
+            }
+        }
+        if self.navigation_index + 1 < self.navigation_history.len() {
+            self.navigation_history.truncate(self.navigation_index + 1);
+        }
+
+        self.navigation_history.push(note_idx);
+        self.navigation_index = self.navigation_history.len().saturating_sub(1);
+        
+        // limit history size to prevent memory bloat
+        const MAX_HISTORY: usize = 100;
+        if self.navigation_history.len() > MAX_HISTORY {
+            let remove_count = self.navigation_history.len() - MAX_HISTORY;
+            self.navigation_history.drain(0..remove_count);
+            self.navigation_index = self.navigation_index.saturating_sub(remove_count);
+        }
+    }
+
+    pub fn navigate_back(&mut self) -> bool {
+        if self.navigation_index == 0 || self.navigation_history.is_empty() {
+            return false;
+        }
+
+        self.navigation_index -= 1;
+        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
+            self.go_to_note_without_history(note_idx);
+            return true;
+        }
+        false
+    }
+
+    /// navigate to next note in history 
+    pub fn navigate_forward(&mut self) -> bool {
+        if self.navigation_index + 1 >= self.navigation_history.len() {
+            return false;
+        }
+
+        self.navigation_index += 1;
+        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
+            self.go_to_note_without_history(note_idx);
+            return true;
+        }
+        false
+    }
+
+    /// go to a note without pushing to history used by back/forward to prevent infinite loop
+    fn go_to_note_without_history(&mut self, note_idx: usize) {
+        if note_idx >= self.notes.len() {
+            return;
+        }
+
+        if let Some(note) = self.notes.get(note_idx) {
+            if let Some(ref file_path) = note.file_path {
+                let notes_root = self.config.notes_path();
+                let mut current = file_path.parent();
+                let mut needs_rebuild = false;
+                while let Some(parent) = current {
+                    if parent == notes_root {
+                        break;
+                    }
+                    if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                        self.folder_states.insert(parent.to_path_buf(), true);
+                        needs_rebuild = true;
+                    }
+                    current = parent.parent();
+                }
+                if needs_rebuild {
+                    Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                    self.rebuild_sidebar_items();
+                }
+            }
+        }
+
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if *note_index == note_idx {
+                    self.end_buffer_search();
+                    self.selected_sidebar_index = idx;
+                    self.selected_note = note_idx;
+                    self.content_cursor = 0;
+                    self.content_scroll_offset = 0;
+                    self.selected_link_index = 0;
+                    self.update_content_items();
+                    self.update_outline();
+                    return;
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn can_navigate_back(&self) -> bool {
+        self.navigation_index > 0 && !self.navigation_history.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub fn can_navigate_forward(&self) -> bool {
+        self.navigation_index + 1 < self.navigation_history.len()
     }
 
     pub fn build_graph(&mut self) {
@@ -3069,14 +3185,19 @@ impl App {
     }
 
     pub fn handle_sidebar_enter(&mut self) {
-        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+        let item_info = self.sidebar_items.get(self.selected_sidebar_index).map(|item| {
             match &item.kind {
-                SidebarItemKind::Folder { path, .. } => {
-                    self.toggle_folder(path.clone());
-                }
-                SidebarItemKind::Note { .. } => {
-                    self.toggle_focus(false);
-                }
+                SidebarItemKind::Folder { path, .. } => (true, path.clone(), 0),
+                SidebarItemKind::Note { note_index } => (false, PathBuf::new(), *note_index),
+            }
+        });
+
+        if let Some((is_folder, path, note_index)) = item_info {
+            if is_folder {
+                self.toggle_folder(path);
+            } else {
+                self.toggle_focus(false);
+                self.push_navigation_history(note_index);
             }
         }
     }
