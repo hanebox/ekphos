@@ -197,6 +197,7 @@ fn find_quote_bounds(
     let mut in_quote = false;
     let mut quote_start = None;
     let mut found_pair = None;
+    let mut seek_pair = None;
 
     for (i, &c) in chars.iter().enumerate() {
         if c == open {
@@ -204,6 +205,9 @@ fn find_quote_bounds(
                 if quote_start.map_or(false, |start| start <= pos.col && i >= pos.col) {
                     found_pair = Some((quote_start.unwrap(), i));
                     break;
+                }
+                if seek_pair.is_none() && quote_start.map_or(false, |start| start >= pos.col) {
+                    seek_pair = Some((quote_start.unwrap(), i));
                 }
                 in_quote = false;
                 quote_start = None;
@@ -214,7 +218,7 @@ fn find_quote_bounds(
         }
     }
 
-    let (start, end) = found_pair?;
+    let (start, end) = found_pair.or(seek_pair)?;
 
     match scope {
         TextObjectScope::Inner => Some((Position::new(pos.row, start + 1), Position::new(pos.row, end))),
