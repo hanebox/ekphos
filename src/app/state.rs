@@ -33,8 +33,8 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 
 **Collapsible Panels:**
 
-- Press `Ctrl+b` to collapse/expand the sidebar
-- Press `Ctrl+o` to collapse/expand the outline
+- `Ctrl+b` to collapse/expand the sidebar
+- `Ctrl+o` to collapse/expand the outline
 
 ## Quick Start
 
@@ -43,38 +43,66 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - `n`: Create new note
 - `/`: Search notes
 - `?`: Show help dialog
-- `g`: Open graph view
+- `Ctrl+g`: Open graph view
 - `z`: Toggle zen mode
 
 Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
 
-## Wikilinks
+## Interactive Demo
 
-Connect your notes using wikilinks! Type `[[Note Name]]` to link to another note.
+Try these interactive elements! Press `Space` or click to interact:
 
-- Link to the demo note: [[02-Demo Note]]
-- Press `Space` on a wikilink to navigate to that note
-- Type `[[` in edit mode for autocomplete suggestions
-- Link to non-existent notes to create them!
+### Task Lists
+
+- [ ] Try pressing Space on this checkbox
+- [ ] Or click on a task to toggle it
+- [x] This one is already completed
+
+### Wikilinks
+
+Navigate between notes using wikilinks:
+
+- [[02-Demo Note]] - Press `Space` or click to visit
+- Use `]` and `[` to jump between links on a line
+- In edit mode, type `[[` for autocomplete suggestions
+- [[Non-existent Note]] - Opens a dialog to create it!
+
+### Collapsible Sections
+
+<details>
+<summary>Click or press Space to expand this section</summary>
+
+This content is hidden by default! Great for:
+- FAQs and documentation
+- Optional information
+- Keeping notes organized
+</details>
+
+<details>
+<summary>Another collapsible section</summary>
+
+You can have multiple collapsible sections in one note.
+Each maintains its own open/closed state.
+</details>
 
 ## Graph View
 
-Press `g` to open the interactive graph view and visualize connections between your notes.
+Press `Ctrl+g` to open the interactive graph view and visualize connections between your notes.
 
 - See how your notes link together
 - Click on nodes to navigate
-- Use mouse to pan and zoom
+- Drag to pan, scroll to zoom
 
-## Task Lists
+## Markdown Features
 
-Track your tasks with checkboxes! Press `Space` to toggle:
+### Text Formatting
 
-- [ ] Unchecked task
-- [x] Completed task
+- **Bold text** with double asterisks
+- *Italic text* with single asterisks
+- `Inline code` with backticks
+- ~~Strikethrough~~ in task items
 
-## Code Blocks
-
-Code blocks support **syntax highlighting** for many languages:
+### Code Blocks
 
 ```rust
 fn main() {
@@ -82,21 +110,18 @@ fn main() {
 }
 ```
 
-## Images
+### Blockquotes
 
-Embed images with `![alt](path/to/image.png)`. Press `Enter` to open in system viewer.
+> Blockquotes are rendered with a colored border.
+> Great for highlighting important information.
 
-Inline preview works in compatible terminals (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
+### Images
 
-## Collapsible Details
+Embed images with `![alt](path/to/image.png)`. Press `Enter`, `o`, or click to open in system viewer.
 
-Use `<details>` for collapsible sections. Press `Space` to toggle:
+![Ekphos Screenshot](https://raw.githubusercontent.com/hanebox/ekphos/release/examples/ekphos-screenshot.png)
 
-<details>
-<summary>Click to expand</summary>
-
-Hidden content goes here. Great for FAQs or optional information.
-</details>
+Inline preview works in terminals with image support (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
 
 ---
 
@@ -106,29 +131,53 @@ Press `q` to quit. Happy note-taking!"#;
 
 const DEMO_NOTE_CONTENT: &str = r#"# Demo Note
 
-This is a demo note to showcase wikilinks!
+This is a demo note to showcase wikilinks and interactive markdown features!
 
-## About Wikilinks
+## Wikilinks
 
 Wikilinks let you connect your notes together, creating a personal knowledge base.
 
-You can link back to [[Getting Started]] to see the main documentation.
+- [[Getting Started]] - Link back to the main documentation
+- [[Getting Started#Graph View]] - Link to a specific heading
+- [[Getting Started|Main Guide]] - Custom display text with `|`
 
-## Ideas
+### Creating Wikilinks
+
+1. Press `e` to enter edit mode
+2. Type `[[` to see autocomplete suggestions
+3. Add `#` to link to specific headings
+4. Add `|` to customize the display text
+5. Press `Ctrl+s` or `:w` to save
+
+### Navigation
+
+- Press `Space` or click on any wikilink to navigate
+- Use `]` to jump to next link, `[` for previous
+- Links to non-existent notes will prompt to create them
+
+## Interactive Elements
+
+### Tasks with Links
+
+- [ ] Check out the [[Getting Started]] guide
+- [ ] Try pressing `Space` on this checkbox
+- [x] Complete the tutorial
+
+### Collapsible Content
+
+<details>
+<summary>Wikilink Ideas</summary>
 
 Here are some ways to use wikilinks:
-
 - Create a **daily notes** system with links between days
 - Build a **zettelkasten** for research and learning
 - Organize **project notes** with interconnected topics
 - Make a **personal wiki** for anything you want to remember
+</details>
 
-## Try It Out
+## Graph View
 
-1. Press `e` to enter edit mode
-2. Type `[[` to see autocomplete suggestions
-3. Create new notes by linking to names that don't exist yet
-4. Press `Space` on any wikilink to navigate
+Press `Ctrl+g` to see how this note connects to [[Getting Started]] in the graph visualization!
 
 Happy linking!"#;
 
