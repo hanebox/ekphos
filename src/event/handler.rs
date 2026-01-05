@@ -228,7 +228,10 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }).map(|(idx, _)| *idx);
 
                     if let Some(idx) = clicked_item {
-                        if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
+                        if app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x) {
+                            app.toggle_task_at(idx);
+                        }
+                        else if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
                             #[cfg(target_os = "macos")]
                             let _ = std::process::Command::new("open").arg(&url).spawn();
                             #[cfg(target_os = "linux")]

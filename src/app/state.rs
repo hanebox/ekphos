@@ -2386,6 +2386,53 @@ impl App {
         }
     }
 
+    pub fn item_is_task_at(&self, index: usize) -> bool {
+        matches!(self.content_items.get(index), Some(ContentItem::TaskItem { .. }))
+    }
+
+    pub fn is_click_on_task_checkbox(&self, index: usize, col: u16, content_x: u16) -> bool {
+        if !self.item_is_task_at(index) {
+            return false;
+        }
+        let click_col = col.saturating_sub(content_x) as usize;
+        click_col >= 2 && click_col <= 4
+    }
+
+    pub fn toggle_task_at(&mut self, index: usize) {
+        let saved_cursor = self.content_cursor;
+
+        if let Some(item) = self.content_items.get(index) {
+            if let ContentItem::TaskItem { line_index, checked, .. } = item {
+                let line_index = *line_index;
+                let new_checked = !*checked;
+
+                if let Some(note) = self.notes.get_mut(self.selected_note) {
+                    let lines: Vec<&str> = note.content.lines().collect();
+                    if line_index < lines.len() {
+                        let line = lines[line_index];
+                        let new_line = if new_checked {
+                            line.replacen("- [ ]", "- [x]", 1)
+                        } else {
+                            line.replacen("- [x]", "- [ ]", 1)
+                                .replacen("- [X]", "- [ ]", 1)
+                        };
+
+                        let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+                        new_lines[line_index] = new_line;
+                        note.content = new_lines.join("\n");
+
+                        if let Some(ref path) = note.file_path {
+                            let _ = fs::write(path, &note.content);
+                        }
+                    }
+                }
+
+                self.update_content_items();
+                self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn open_current_link(&self) {
         if let Some(url) = self.current_item_link() {
