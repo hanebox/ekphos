@@ -1612,8 +1612,6 @@ impl App {
 
     pub fn dismiss_welcome(&mut self) {
         self.show_welcome = false;
-        self.config.welcome_shown = false; // Set to false so welcome won't show again
-        let _ = self.config.save();
     }
 
     pub fn update_outline(&mut self) {
