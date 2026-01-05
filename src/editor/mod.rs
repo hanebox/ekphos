@@ -181,6 +181,7 @@ pub struct Editor {
     cursor_line_style: Style,
     selection_style: Style,
     clipboard: Option<String>,
+    clipboard_linewise: bool,
     // General highlighting system
     highlights: Vec<HighlightRange>,
     // Wiki link highlighting (legacy, kept for compatibility)
@@ -188,6 +189,7 @@ pub struct Editor {
     wiki_link_valid_style: Style,
     wiki_link_invalid_style: Style,
     visual_line_selection: Option<(usize, usize)>,
+    visual_block_selection: Option<(Position, Position)>,
     // Markdown highlighting colors
     heading_colors: [Color; 6],
     code_color: Color,
@@ -227,11 +229,13 @@ impl Editor {
             cursor_line_style: Style::default(),
             selection_style: Style::default().bg(ratatui::style::Color::DarkGray),
             clipboard: None,
+            clipboard_linewise: false,
             highlights: Vec::new(),
             wiki_link_ranges: Vec::new(),
             wiki_link_valid_style: Style::default().fg(Color::Cyan),
             wiki_link_invalid_style: Style::default().fg(Color::Red),
             visual_line_selection: None,
+            visual_block_selection: None,
             heading_colors: [Color::Blue, Color::Green, Color::Yellow, Color::Magenta, Color::Cyan, Color::Gray],
             code_color: Color::Green,
             link_color: Color::Cyan,
@@ -330,6 +334,14 @@ impl Editor {
         self.visual_line_selection = None;
     }
 
+    pub fn set_visual_block_selection(&mut self, anchor: Position, current: Position) {
+        self.visual_block_selection = Some((anchor, current));
+    }
+
+    pub fn clear_visual_block_selection(&mut self) {
+        self.visual_block_selection = None;
+    }
+
     pub fn visual_line_selected_text(&self) -> Option<String> {
         let (anchor_row, current_row) = self.visual_line_selection?;
         let (start_row, end_row) = if anchor_row <= current_row {
@@ -351,6 +363,7 @@ impl Editor {
     pub fn copy_visual_lines(&mut self) {
         if let Some(text) = self.visual_line_selected_text() {
             self.clipboard = Some(text.clone());
+            self.clipboard_linewise = true;
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let _ = clipboard.set_text(&text);
             }
@@ -365,12 +378,20 @@ impl Editor {
                 (current_row, anchor_row)
             };
 
-            // Get the text first for clipboard
-            if let Some(text) = self.visual_line_selected_text() {
-                self.clipboard = Some(text.clone());
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(&text);
+            // Collect lines for undo and clipboard
+            let mut deleted_lines: Vec<String> = Vec::new();
+            for row in start_row..=end_row {
+                if let Some(line) = self.buffer.line(row) {
+                    deleted_lines.push(line.to_string());
                 }
+            }
+
+            // Set clipboard (with newlines for vim compatibility)
+            let clipboard_text = deleted_lines.join("\n") + "\n";
+            self.clipboard = Some(clipboard_text.clone());
+            self.clipboard_linewise = true;
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&clipboard_text);
             }
 
             let cursor_before = self.cursor.pos();
@@ -378,25 +399,145 @@ impl Editor {
             // Delete lines from end to start to preserve row indices
             for row in (start_row..=end_row).rev() {
                 self.buffer.delete_line(row);
+                self.wrap_cache.remove_line(row);
             }
-
-            // Invalidate wrap cache
-            self.wrap_cache.invalidate_from(start_row);
 
             // Move cursor to start of deleted region
             let new_row = start_row.min(self.buffer.line_count().saturating_sub(1));
             self.cursor.move_to(new_row, 0);
             self.cursor.cancel_selection();
 
-            let deleted_text = self.clipboard.clone().unwrap_or_default();
             self.history.record(
-                EditOperation::Delete {
-                    start: Position { row: start_row, col: 0 },
-                    end: Position { row: end_row + 1, col: 0 },
-                    deleted_text,
+                EditOperation::LineDelete {
+                    row: start_row,
+                    lines: deleted_lines,
                 },
                 cursor_before,
                 Position { row: new_row, col: 0 },
+            );
+        }
+    }
+
+    pub fn visual_block_selected_text(&self) -> Option<String> {
+        let (anchor, current) = self.visual_block_selection?;
+        let (start_row, end_row) = if anchor.row <= current.row {
+            (anchor.row, current.row)
+        } else {
+            (current.row, anchor.row)
+        };
+        let (start_col, end_col) = if anchor.col <= current.col {
+            (anchor.col, current.col)
+        } else {
+            (current.col, anchor.col)
+        };
+
+        let mut result = Vec::new();
+        for row in start_row..=end_row {
+            if let Some(line) = self.buffer.line(row) {
+                let chars: Vec<char> = line.chars().collect();
+                let line_len = chars.len();
+                // Extract only the columns within the block
+                let actual_start = start_col.min(line_len);
+                let actual_end = (end_col + 1).min(line_len);
+                if actual_start < actual_end {
+                    let block_text: String = chars[actual_start..actual_end].iter().collect();
+                    result.push(block_text);
+                } else {
+                    result.push(String::new());
+                }
+            }
+        }
+        Some(result.join("\n"))
+    }
+
+    pub fn copy_visual_block(&mut self) {
+        if let Some(text) = self.visual_block_selected_text() {
+            self.clipboard = Some(text.clone());
+            self.clipboard_linewise = false;
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&text);
+            }
+        }
+    }
+
+    pub fn cut_visual_block(&mut self) {
+        if let Some((anchor, current)) = self.visual_block_selection {
+            let (start_row, end_row) = if anchor.row <= current.row {
+                (anchor.row, current.row)
+            } else {
+                (current.row, anchor.row)
+            };
+            let (start_col, end_col) = if anchor.col <= current.col {
+                (anchor.col, current.col)
+            } else {
+                (current.col, anchor.col)
+            };
+
+            // Collect deleted text for each line (for undo)
+            let mut deleted_lines = Vec::new();
+            for row in start_row..=end_row {
+                if let Some(line) = self.buffer.line(row) {
+                    let chars: Vec<char> = line.chars().collect();
+                    let line_len = chars.len();
+                    let actual_start = start_col.min(line_len);
+                    let actual_end = (end_col + 1).min(line_len);
+                    if actual_start < actual_end {
+                        let block_text: String = chars[actual_start..actual_end].iter().collect();
+                        deleted_lines.push(block_text);
+                    } else {
+                        deleted_lines.push(String::new());
+                    }
+                }
+            }
+
+            // Get the text for clipboard (newline-separated)
+            let clipboard_text = deleted_lines.join("\n");
+            self.clipboard = Some(clipboard_text.clone());
+            self.clipboard_linewise = false;
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(&clipboard_text);
+            }
+
+            let cursor_before = self.cursor.pos();
+
+            // Delete block from each line (process from end to preserve indices)
+            for row in (start_row..=end_row).rev() {
+                if let Some(line) = self.buffer.line(row) {
+                    let chars: Vec<char> = line.chars().collect();
+                    let line_len = chars.len();
+                    let actual_start = start_col.min(line_len);
+                    let actual_end = (end_col + 1).min(line_len);
+                    if actual_start < actual_end {
+                        // Build new line without the block
+                        let new_line: String = chars[..actual_start]
+                            .iter()
+                            .chain(chars[actual_end..].iter())
+                            .collect();
+                        if let Some(line_ref) = self.buffer.line_mut(row) {
+                            *line_ref = new_line;
+                        }
+                    }
+                }
+            }
+
+            // Invalidate wrap cache
+            self.wrap_cache.invalidate_from(start_row);
+
+            // Move cursor to start of deleted region
+            self.cursor.move_to(start_row, start_col);
+            self.cursor.cancel_selection();
+
+            // Record in history using BlockDelete for proper undo
+            self.history.record(
+                EditOperation::BlockDelete {
+                    start_row,
+                    end_row,
+                    start_col,
+                    end_col,
+                    deleted_lines,
+                },
+                cursor_before,
+                Position { row: start_row, col: start_col },
             );
         }
     }
@@ -1337,7 +1478,7 @@ impl Editor {
     pub fn copy(&mut self) {
         if let Some(text) = self.selected_text() {
             self.clipboard = Some(text.clone());
-            // Sorryyy forgot the damn system clipboard 
+            self.clipboard_linewise = false;
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let _ = clipboard.set_text(&text);
             }
@@ -1349,7 +1490,7 @@ impl Editor {
             let cursor_before = self.cursor.pos();
             let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
             self.clipboard = Some(deleted.clone());
-            // This one too copy to system clipboard
+            self.clipboard_linewise = false;
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let _ = clipboard.set_text(&deleted);
             }
@@ -1410,6 +1551,78 @@ impl Editor {
     pub fn paste(&mut self) {
         if let Some(text) = self.clipboard.clone() {
             self.insert_str(&text);
+        }
+    }
+
+    /// Paste after cursor (vim 'p' command)
+    /// For line-wise content: paste below current line
+    /// For character-wise content: paste after cursor
+    pub fn paste_after(&mut self) {
+        if let Some(text) = self.clipboard.clone() {
+            if self.clipboard_linewise {
+                let (row, col) = self.cursor();
+                let cursor_before = Position { row, col };
+
+                let new_row = row + 1;
+
+                let text_to_insert = text.trim_end_matches('\n');
+                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+                for (i, line) in lines.iter().enumerate() {
+                    self.buffer.insert_line(new_row + i, line.clone());
+                    self.wrap_cache.insert_line(new_row + i);
+                }
+
+                self.cursor.move_to(new_row, 0);
+
+                self.history.record(
+                    EditOperation::LineInsert {
+                        row: new_row,
+                        lines,
+                    },
+                    cursor_before,
+                    Position { row: new_row, col: 0 },
+                );
+            } else {
+                let (row, col) = self.cursor();
+                let line_len = self.buffer.line(row).map(|l| l.chars().count()).unwrap_or(0);
+                let new_col = (col + 1).min(line_len);
+                self.cursor.move_to(row, new_col);
+                self.insert_str(&text);
+            }
+        }
+    }
+
+    /// Paste before cursor (vim 'P' command)
+    /// For line-wise content: paste above current line
+    /// For character-wise content: paste before cursor
+    pub fn paste_before(&mut self) {
+        if let Some(text) = self.clipboard.clone() {
+            if self.clipboard_linewise {
+                let (row, col) = self.cursor();
+                let cursor_before = Position { row, col };
+
+                let text_to_insert = text.trim_end_matches('\n');
+                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+                for (i, line) in lines.iter().enumerate() {
+                    self.buffer.insert_line(row + i, line.clone());
+                    self.wrap_cache.insert_line(row + i);
+                }
+
+                self.cursor.move_to(row, 0);
+
+                self.history.record(
+                    EditOperation::LineInsert {
+                        row,
+                        lines,
+                    },
+                    cursor_before,
+                    Position { row, col: 0 },
+                );
+            } else {
+                self.insert_str(&text);
+            }
         }
     }
 
@@ -1726,6 +1939,49 @@ impl Editor {
                 self.wrap_cache.remove_line(*row);
                 self.wrap_cache.invalidate_line(row - 1);
             }
+            EditOperation::BlockDelete { start_row, end_row, start_col, end_col, .. } => {
+                for row in (*start_row..=*end_row).rev() {
+                    if let Some(line) = self.buffer.line(row) {
+                        let chars: Vec<char> = line.chars().collect();
+                        let line_len = chars.len();
+                        let actual_start = (*start_col).min(line_len);
+                        let actual_end = (*end_col + 1).min(line_len);
+                        if actual_start < actual_end {
+                            let new_line: String = chars[..actual_start]
+                                .iter()
+                                .chain(chars[actual_end..].iter())
+                                .collect();
+                            if let Some(line_ref) = self.buffer.line_mut(row) {
+                                *line_ref = new_line;
+                            }
+                        }
+                    }
+                }
+                self.wrap_cache.invalidate_from(*start_row);
+            }
+            EditOperation::BlockInsert { start_row, col, lines } => {
+                for (i, text) in lines.iter().enumerate() {
+                    let row = start_row + i;
+                    if row < self.buffer.line_count() {
+                        self.buffer.insert_str(row, *col, text);
+                    }
+                }
+                self.wrap_cache.invalidate_from(*start_row);
+            }
+            EditOperation::LineInsert { row, lines } => {
+                for (i, line) in lines.iter().enumerate() {
+                    self.buffer.insert_line(row + i, line.clone());
+                    self.wrap_cache.insert_line(row + i);
+                }
+            }
+            EditOperation::LineDelete { row, lines } => {
+                for _ in 0..lines.len() {
+                    if *row < self.buffer.line_count() {
+                        self.buffer.delete_line(*row);
+                        self.wrap_cache.remove_line(*row);
+                    }
+                }
+            }
         }
     }
 
@@ -1950,6 +2206,7 @@ impl Editor {
         } else {
             self.cursor.selection_range()
         };
+        let block_selection = self.visual_block_selection;
         let line_count = self.buffer.line_count();
 
         // Use row-based scrolling (consistent with update_scroll)
@@ -2021,7 +2278,7 @@ impl Editor {
 
                 while col < chars.len() && x < content_end_x {
                     let ch = chars[col];
-                    let mut style = self.get_char_style(row, col, selection);
+                    let mut style = self.get_char_style(row, col, selection, block_selection);
                     let is_cursor = is_cursor_line && col == cursor_pos.col;
                     if is_cursor {
                         style = style.add_modifier(Modifier::REVERSED);
@@ -2038,7 +2295,7 @@ impl Editor {
                                 if i == 0 && is_cursor {
                                     cell.set_style(style);
                                 } else {
-                                    cell.set_style(self.get_char_style(row, col, selection));
+                                    cell.set_style(self.get_char_style(row, col, selection, block_selection));
                                 }
                             }
                             x += 1;
@@ -2095,6 +2352,7 @@ impl Editor {
         } else {
             self.cursor.selection_range()
         };
+        let block_selection = self.visual_block_selection;
         let h_scroll = self.h_scroll_offset;
 
         let mut y = area.y;
@@ -2132,7 +2390,7 @@ impl Editor {
                 }
 
                 let ch = chars[col];
-                let mut style = self.get_char_style(row, col, selection);
+                let mut style = self.get_char_style(row, col, selection, block_selection);
                 let is_cursor = is_cursor_line && col == cursor_pos.col;
                 if is_cursor {
                     style = style.add_modifier(Modifier::REVERSED);
@@ -2149,7 +2407,7 @@ impl Editor {
                             if i == 0 && is_cursor {
                                 cell.set_style(style);
                             } else {
-                                cell.set_style(self.get_char_style(row, col, selection));
+                                cell.set_style(self.get_char_style(row, col, selection, block_selection));
                             }
                         }
                         x += 1;
@@ -2183,8 +2441,34 @@ impl Editor {
         }
     }
 
-    fn get_char_style(&self, row: usize, col: usize, selection: Option<(Position, Position)>) -> Style {
-        // Selection takes priority (highest)
+    fn get_char_style(
+        &self,
+        row: usize,
+        col: usize,
+        selection: Option<(Position, Position)>,
+        block_selection: Option<(Position, Position)>,
+    ) -> Style {
+        // Block selection takes priority (rectangular selection)
+        if let Some((anchor, current)) = block_selection {
+            let (start_row, end_row) = if anchor.row <= current.row {
+                (anchor.row, current.row)
+            } else {
+                (current.row, anchor.row)
+            };
+            let (start_col, end_col) = if anchor.col <= current.col {
+                (anchor.col, current.col)
+            } else {
+                (current.col, anchor.col)
+            };
+
+            let in_block = row >= start_row && row <= end_row && col >= start_col && col <= end_col;
+
+            if in_block {
+                return self.selection_style;
+            }
+        }
+
+        // Character-wise selection
         if let Some((start, end)) = selection {
             let in_selection = if start.row == end.row {
                 row == start.row && col >= start.col && col < end.col

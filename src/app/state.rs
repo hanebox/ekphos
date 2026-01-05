@@ -12,7 +12,7 @@ use ratatui::{
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
-use crate::editor::Editor;
+use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
 use crate::config::{Config, Theme};
 use crate::vim::VimState;
@@ -568,6 +568,7 @@ pub struct App {
     pub vim: VimState,
     pub visual_line_anchor: Option<usize>,
     pub visual_line_current: Option<usize>,
+    pub visual_block_anchor: Option<Position>,
     pub content_cursor: usize,
     pub content_scroll_offset: usize,
     pub floating_cursor_mode: bool,
@@ -719,6 +720,7 @@ impl App {
             vim: VimState::new(),
             visual_line_anchor: None,
             visual_line_current: None,
+            visual_block_anchor: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
@@ -871,6 +873,7 @@ impl App {
             vim: VimState::new(),
             visual_line_anchor: None,
             visual_line_current: None,
+            visual_block_anchor: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
