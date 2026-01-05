@@ -243,7 +243,7 @@ impl Editor {
             list_marker_color: Color::Yellow,
             bold_color: None,
             italic_color: None,
-            line_number_mode: LineNumberMode::None,
+            line_number_mode: LineNumberMode::Absolute,
             line_number_style: Style::default().fg(Color::DarkGray),
             line_number_width: 4, // Default width for line numbers
         }
@@ -269,7 +269,7 @@ impl Editor {
             LineNumberMode::None => None,
             LineNumberMode::Absolute => Some(format!("{:>width$}", row + 1, width = (self.line_number_width - 1) as usize)),
             LineNumberMode::Relative => {
-                let rel = if row == cursor_row { row + 1 } else { (row as isize - cursor_row as isize).unsigned_abs() };
+                let rel = (row as isize - cursor_row as isize).unsigned_abs();
                 Some(format!("{:>width$}", rel, width = (self.line_number_width - 1) as usize))
             }
             LineNumberMode::Hybrid => {

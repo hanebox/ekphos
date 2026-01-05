@@ -3685,6 +3685,11 @@ impl App {
             let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
 
             self.editor = Editor::new(lines);
+            self.editor.set_line_wrap(self.config.editor.line_wrap);
+            self.editor.set_tab_width(self.config.editor.tab_width);
+            self.editor.set_padding(self.config.editor.left_padding, self.config.editor.right_padding);
+            self.editor.set_line_number_mode(self.config.editor.line_numbers);
+
             self.vim_mode = VimMode::Normal;
             self.vim.mode = crate::vim::VimMode::Normal;
             self.vim.reset_pending();

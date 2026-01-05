@@ -30,8 +30,8 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LineNumberMode {
-    #[default]
     None,
+    #[default]
     Absolute,
     Relative,
     Hybrid,
