@@ -2356,9 +2356,10 @@ impl App {
 
         if target.contains('/') {
             let expected_path = notes_path.join(format!("{}.md", target));
+            let expected_str = expected_path.to_string_lossy();
             for (idx, note) in self.notes.iter().enumerate() {
                 if let Some(file_path) = &note.file_path {
-                    if file_path == &expected_path {
+                    if file_path.to_string_lossy() == expected_str {
                         return Some(idx);
                     }
                 }
@@ -2559,8 +2560,9 @@ impl App {
                         };
 
                         let rendered_start = Self::calc_wiki_rendered_pos(text, abs_start);
-                        // Display text determines rendered length if present
-                        let display_len = display_text.as_ref().map_or(raw_content.chars().count(), |d| d.chars().count());
+                        // Display text determines rendered length if present (use unicode width for CJK support)
+                        use unicode_width::UnicodeWidthStr;
+                        let display_len = display_text.as_ref().map_or(raw_content.width(), |d| d.width());
                         let rendered_end = rendered_start + display_len;
                         // Validate against target file (without heading)
                         let is_valid = self.wiki_link_exists(target);
@@ -2586,6 +2588,7 @@ impl App {
     }
 
     fn calc_wiki_rendered_pos(text: &str, target_pos: usize) -> usize {
+        use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
         let mut rendered_pos = 0;
         let mut i = 0;
 
@@ -2602,9 +2605,9 @@ impl App {
 
                         if i + full_link_len <= target_pos {
                             let display_len = if alt_text.is_empty() {
-                                url.chars().count()
+                                url.width()
                             } else {
-                                alt_text.chars().count()
+                                alt_text.width()
                             };
                             rendered_pos += display_len;
                             i += full_link_len;
@@ -2626,9 +2629,9 @@ impl App {
 
                         if i + full_link_len <= target_pos {
                             let display_len = if alt_text.is_empty() {
-                                6 + url.chars().count() + 1 
+                                6 + url.width() + 1
                             } else {
-                                6 + alt_text.chars().count() + 1 
+                                6 + alt_text.width() + 1
                             };
                             rendered_pos += display_len;
                             i += full_link_len;
@@ -2646,7 +2649,7 @@ impl App {
                     let full_link_len = 2 + end_pos + 2;
 
                     if i + full_link_len <= target_pos {
-                        rendered_pos += target.chars().count();
+                        rendered_pos += target.width();
                         i += full_link_len;
                         continue;
                     } else {
@@ -2665,9 +2668,9 @@ impl App {
 
                         if i + full_link_len <= target_pos {
                             let display_len = if link_text.is_empty() {
-                                url.chars().count()
+                                url.width()
                             } else {
-                                link_text.chars().count()
+                                link_text.width()
                             };
                             rendered_pos += display_len;
                             i += full_link_len;
@@ -2679,7 +2682,8 @@ impl App {
                 }
             }
 
-            rendered_pos += 1;
+            // Use unicode widh for individual characters (CJK = 2, ASCII = 1)
+            rendered_pos += remaining.chars().next().map(|c| c.width().unwrap_or(1)).unwrap_or(1);
             i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         }
 
@@ -2698,6 +2702,28 @@ impl App {
 
     pub fn navigate_to_wiki_link_with_heading(&mut self, target: &str, heading: Option<&str>) -> bool {
         if let Some(note_idx) = self.resolve_wiki_link(target) {
+            if let Some(note) = self.notes.get(note_idx) {
+                if let Some(ref file_path) = note.file_path {
+                    let notes_root = self.config.notes_path();
+                    let mut current = file_path.parent();
+                    let mut needs_rebuild = false;
+                    while let Some(parent) = current {
+                        if parent == notes_root {
+                            break;
+                        }
+                        if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                            self.folder_states.insert(parent.to_path_buf(), true);
+                            needs_rebuild = true;
+                        }
+                        current = parent.parent();
+                    }
+                    if needs_rebuild {
+                        Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                        self.rebuild_sidebar_items();
+                    }
+                }
+            }
+
             for (idx, item) in self.sidebar_items.iter().enumerate() {
                 if let SidebarItemKind::Note { note_index } = &item.kind {
                     if *note_index == note_idx {
