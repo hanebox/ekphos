@@ -986,9 +986,16 @@ impl App {
                 }
             }
         }
-        self.content_cursor = content_cursor.min(self.content_items.len().saturating_sub(1));
-        self.content_scroll_offset = scroll_offset;
+        // Rebuild content_items for the restored note BEFORE clamping positions,
+        // so that content_items.len() reflects the correct note's length
         self.update_content_items();
+        let len = self.content_items.len();
+        self.content_cursor = content_cursor.min(len.saturating_sub(1));
+        self.content_scroll_offset = if len == 0 {
+            0
+        } else {
+            scroll_offset.clamp(1, len)
+        };
         self.update_outline();
     }
 
