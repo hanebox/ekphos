@@ -1232,7 +1232,9 @@ fn handle_help_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
 /// Zoom the graph view, anchoring on the selected node or graph center
 fn zoom_graph(app: &mut App, factor: f32) {
     let old_zoom = app.graph_view.zoom;
-    let new_zoom = (old_zoom * factor).clamp(0.3, 1.5);
+
+    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
+    let new_zoom = (old_zoom * factor).clamp(min_zoom, 3.0);
     let (anchor_x, anchor_y) = if let Some(idx) = app.graph_view.selected_node {
         if idx < app.graph_view.nodes.len() {
             let node = &app.graph_view.nodes[idx];
@@ -1253,6 +1255,38 @@ fn zoom_graph(app: &mut App, factor: f32) {
     app.graph_view.viewport_y = anchor_y - screen_anchor_y / new_zoom;
 }
 
+/// Calculate minimum zoom level to keep graph filling a percentage of viewport
+fn calculate_min_zoom_for_viewport_fill(app: &App, fill_ratio: f32) -> f32 {
+    if app.graph_view.nodes.is_empty() {
+        return 0.1;
+    }
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+
+    for node in &app.graph_view.nodes {
+        min_x = min_x.min(node.x);
+        min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x + 3.0);
+        max_y = max_y.max(node.y + 4.0);
+    }
+
+    let graph_width = (max_x - min_x).max(10.0);
+    let graph_height = (max_y - min_y).max(5.0);
+
+    let view_width = app.graph_view.view_width;
+    let view_height = app.graph_view.view_height;
+
+    if view_width <= 0.0 || view_height <= 0.0 {
+        return 0.1;
+    }
+
+    let zoom_x = (view_width * fill_ratio) / graph_width;
+    let zoom_y = (view_height * fill_ratio) / graph_height;
+    zoom_x.min(zoom_y).max(0.05)
+}
+
 /// Calculate center of all nodes
 fn graph_center(app: &App) -> (f32, f32) {
     if app.graph_view.nodes.is_empty() {
@@ -1266,6 +1300,54 @@ fn graph_center(app: &App) -> (f32, f32) {
     }
     let n = app.graph_view.nodes.len() as f32;
     (sum_x / n, sum_y / n)
+}
+
+/// Fit all nodes in the viewport (targets 80% fill for comfortable view)
+fn fit_graph_to_screen(app: &mut App) {
+    if app.graph_view.nodes.is_empty() {
+        return;
+    }
+
+    // Calculate graph bounds
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+
+    for node in &app.graph_view.nodes {
+        min_x = min_x.min(node.x);
+        min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x + 3.0);
+        max_y = max_y.max(node.y + 4.0);
+    }
+
+    let graph_width = (max_x - min_x).max(10.0);
+    let graph_height = (max_y - min_y).max(5.0);
+
+    let view_width = app.graph_view.view_width;
+    let view_height = app.graph_view.view_height;
+
+    if view_width <= 0.0 || view_height <= 0.0 {
+        return;
+    }
+
+    // Target 80% of viewport for comfortable fit
+    let target_fill = 0.8;
+    let zoom_x = (view_width * target_fill) / graph_width;
+    let zoom_y = (view_height * target_fill) / graph_height;
+
+    // Clamp to reasonable range, minimum is 40% fill
+    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
+    let fit_zoom = zoom_x.min(zoom_y).min(2.0).max(min_zoom);
+
+    app.graph_view.zoom = fit_zoom;
+
+    // Center viewport on graph center
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+
+    app.graph_view.viewport_x = center_x - (view_width / fit_zoom / 2.0);
+    app.graph_view.viewport_y = center_y - (view_height / fit_zoom / 2.0);
 }
 
 /// Repel other nodes away from the dragged node, with snap-back to home positions
@@ -1402,10 +1484,13 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
             app.graph_view.viewport_x += 10.0;
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            zoom_graph(app, 1.15);
+            zoom_graph(app, 1.25); 
         }
-        KeyCode::Char('-') => {
-            zoom_graph(app, 1.0 / 1.15);
+        KeyCode::Char('-') | KeyCode::Char('_') => {
+            zoom_graph(app, 1.0 / 1.25); 
+        }
+        KeyCode::Char('f') => {
+            fit_graph_to_screen(app);
         }
         KeyCode::Char('0') => {
             app.graph_view.zoom = 1.0;
@@ -1422,6 +1507,10 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.graph_view.selected_node = Some(app.graph_view.nodes.len() - 1);
                 center_on_selected_node(app);
             }
+        }
+        KeyCode::Char('u') => {
+            // Unselect current node
+            app.graph_view.selected_node = None;
         }
         _ => {}
     }
@@ -1499,6 +1588,7 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 app.graph_view.drag_start = Some((mouse_x, mouse_y));
                 app.graph_view.is_panning = false;
             } else {
+                // Clicking on empty area starts panning (use 'u' to unselect)
                 app.graph_view.dragging_node = None;
                 app.graph_view.is_panning = true;
                 app.graph_view.drag_start = Some((mouse_x, mouse_y));

@@ -2,6 +2,7 @@
 //! Uses force-directed layout with central gravity for circular distribution (Obsidian-like)
 
 use crate::app::{GraphEdge, GraphNode};
+use unicode_width::UnicodeWidthStr;
 
 struct Rng {
     state: u32,
@@ -42,12 +43,20 @@ pub fn apply_force_directed_layout(
     }
 
     // Terminal aspect ratio: characters are roughly 2x taller than wide
-    // We use 2.0 to make the circular layout appear circular on screen
-    let aspect_ratio = 2.0;
+    // We stretch horizontally to make the circular layout appear circular on screen
+    let aspect_ratio = 2.2;
+
+    // Pre-calculate text widths for text-aware spacing
+    let text_widths: Vec<f32> = nodes
+        .iter()
+        .map(|node| node.title.width() as f32)
+        .collect();
+    let avg_text_width = text_widths.iter().sum::<f32>() / n as f32;
 
     // Calculate radius based on number of nodes - more nodes = larger circle
-    // Base radius scales with sqrt of node count for even density
-    let base_radius = (n as f32).sqrt() * 12.0;
+    // Scale to ensure nodes are well spread out at any zoom level
+    let text_factor = 1.0 + (avg_text_width / 12.0).min(2.0);
+    let base_radius = (n as f32).sqrt() * 45.0 * text_factor;
 
     // Center of the graph
     let center_x = 60.0;
@@ -79,16 +88,32 @@ pub fn apply_force_directed_layout(
         node.vy = 0.0;
     }
 
-    // Force-directed simulation parameters (Obsidian-like)
-    let iterations = 150;
-    let initial_temperature = 10.0; // Simulated annealing - starts hot, cools down
+    // Store initial radii for radial force (maintains circular shape)
+    let initial_radii: Vec<f32> = nodes
+        .iter()
+        .map(|node| {
+            let dx = (node.x - center_x) / aspect_ratio;
+            let dy = node.y - center_y;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .collect();
 
-    // Forces
-    let repulsion_strength = 500.0; // Repulsion between all nodes
-    let attraction_strength = 0.03; // Attraction along edges
-    let gravity_strength = 0.08; // Pull toward center (creates circular shape)
-    let ideal_edge_length = 25.0; // Target distance for connected nodes
-    let min_distance = 18.0; // Minimum distance between any nodes
+    // Force-directed simulation parameters (Obsidian-like)
+    let iterations = 200; // More iterations for better convergence
+    let initial_temperature = 12.0; // Slightly higher initial temperature
+
+    // Text-aware scaling for forces
+    let text_scale = 1.0 + (avg_text_width / 12.0).min(2.0);
+
+    // Forces - very strong repulsion to maintain gaps at all zoom levels
+    let repulsion_strength = 2000.0 * text_scale;
+    let attraction_strength = 0.008; // Weaker attraction
+    let gravity_strength = 0.015; // Weaker gravity for more spread
+    let radial_strength = 0.01;
+
+    // Large minimum distances to ensure gaps even at max zoom out
+    let ideal_edge_length = 60.0 + avg_text_width * 0.6;
+    let base_min_distance = 50.0 + avg_text_width * 0.5;
 
     for iter in 0..iterations {
         // Temperature decreases over time (simulated annealing)
@@ -111,7 +136,6 @@ pub fn apply_force_directed_layout(
         cy /= n as f32;
 
         // Central gravity - pull all nodes toward center of mass
-        // This maintains the circular shape
         for node in nodes.iter_mut() {
             let dx = cx - node.x;
             let dy = cy - node.y;
@@ -123,7 +147,26 @@ pub fn apply_force_directed_layout(
             node.vy += (dy / dist) * force;
         }
 
+        // Radial force - maintain circular shape by pulling nodes toward their ideal radius
+        for (i, node) in nodes.iter_mut().enumerate() {
+            let dx = (node.x - cx) / aspect_ratio;
+            let dy = node.y - cy;
+            let current_radius = (dx * dx + dy * dy).sqrt().max(0.1);
+            let ideal_radius = initial_radii[i];
+
+            // Pull toward ideal radius
+            let radius_diff = current_radius - ideal_radius;
+            let force = -radius_diff * radial_strength;
+
+            // Apply force in radial direction
+            let nx = dx / current_radius;
+            let ny = dy / current_radius;
+            node.vx += nx * force * aspect_ratio;
+            node.vy += ny * force;
+        }
+
         // Repulsion between all pairs of nodes (Coulomb's law)
+        // Text-aware: nodes with longer labels repel more strongly
         for i in 0..n {
             for j in (i + 1)..n {
                 let dx = nodes[j].x - nodes[i].x;
@@ -131,8 +174,13 @@ pub fn apply_force_directed_layout(
                 let dist_sq = (dx * dx + dy * dy).max(1.0);
                 let dist = dist_sq.sqrt();
 
+                // Text-aware repulsion: scale by combined text widths
+                let combined_width = (text_widths[i] + text_widths[j]) / 2.0;
+                let text_factor = 1.0 + (combined_width / 30.0).min(1.0);
+                let adjusted_repulsion = repulsion_strength * text_factor;
+
                 // Repulsion force: inversely proportional to distance squared
-                let force = repulsion_strength / dist_sq;
+                let force = adjusted_repulsion / dist_sq;
                 let fx = (dx / dist) * force;
                 let fy = (dy / dist) * force;
 
@@ -179,15 +227,49 @@ pub fn apply_force_directed_layout(
         }
 
         // Enforce minimum distance between nodes (collision resolution)
+        // Text-aware: nodes with longer labels need more space
+        // Run multiple passes for better separation
+        for _ in 0..3 {
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dx = nodes[j].x - nodes[i].x;
+                    let dy = nodes[j].y - nodes[i].y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let half_width_i = text_widths[i] / 2.0;
+                    let half_width_j = text_widths[j] / 2.0;
+                    let min_distance = base_min_distance + (half_width_i + half_width_j) * 0.6;
+
+                    if dist < min_distance && dist > 0.01 {
+                        let overlap = min_distance - dist;
+                        let push = (overlap / 2.0 + 1.0) * 1.2;
+                        let nx = dx / dist;
+                        let ny = dy / dist;
+
+                        nodes[i].x -= nx * push;
+                        nodes[i].y -= ny * push;
+                        nodes[j].x += nx * push;
+                        nodes[j].y += ny * push;
+                    }
+                }
+            }
+        }
+    }
+
+    // Final collision resolution pass - run multiple times to guarantee no overlaps
+    for _ in 0..10 {
         for i in 0..n {
             for j in (i + 1)..n {
                 let dx = nodes[j].x - nodes[i].x;
                 let dy = nodes[j].y - nodes[i].y;
                 let dist = (dx * dx + dy * dy).sqrt();
 
+                let half_width_i = text_widths[i] / 2.0;
+                let half_width_j = text_widths[j] / 2.0;
+                let min_distance = base_min_distance + (half_width_i + half_width_j) * 0.5;
+
                 if dist < min_distance && dist > 0.01 {
                     let overlap = min_distance - dist;
-                    let push = overlap / 2.0 + 0.5;
+                    let push = overlap / 2.0 + 2.0; // Strong push
                     let nx = dx / dist;
                     let ny = dy / dist;
 

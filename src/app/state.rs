@@ -3090,6 +3090,7 @@ impl App {
 
         if let Some(&node_idx) = note_to_node.get(&self.selected_note) {
             self.graph_view.selected_node = Some(node_idx);
+            self.graph_view.needs_center = true;
         } else {
             self.graph_view.selected_node = if !self.graph_view.nodes.is_empty() { Some(0) } else { None };
         }

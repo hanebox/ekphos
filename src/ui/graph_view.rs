@@ -44,20 +44,20 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
             inner.height as f32,
         );
 
-        // Start zoomed out to see more of the graph
-        app.graph_view.zoom = 0.5;
+        let (min_x, min_y, max_x, max_y) = graph_bounds(&app.graph_view.nodes);
+        let graph_width = (max_x - min_x).max(10.0);
+        let graph_height = (max_y - min_y).max(5.0);
+        let target_fill = 0.8;
+        let zoom_x = (inner.width as f32 * target_fill) / graph_width;
+        let zoom_y = (inner.height as f32 * target_fill) / graph_height;
+        let min_zoom_x = (inner.width as f32 * 0.4) / graph_width;
+        let min_zoom_y = (inner.height as f32 * 0.4) / graph_height;
+        let min_zoom = min_zoom_x.min(min_zoom_y).max(0.1);
 
-        // Center viewport on selected node if any, otherwise graph center
-        let (center_x, center_y) = if let Some(idx) = app.graph_view.selected_node {
-            if idx < app.graph_view.nodes.len() {
-                let node = &app.graph_view.nodes[idx];
-                (node.x + NODE_WIDTH as f32 / 2.0, node.y + NODE_HEIGHT as f32 / 2.0)
-            } else {
-                graph_center(&app.graph_view.nodes)
-            }
-        } else {
-            graph_center(&app.graph_view.nodes)
-        };
+        let fit_zoom = zoom_x.min(zoom_y).min(1.0).max(min_zoom);
+
+        app.graph_view.zoom = fit_zoom;
+        let (center_x, center_y) = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
 
         let zoom = app.graph_view.zoom;
         app.graph_view.viewport_x = center_x - (inner.width as f32 / zoom / 2.0);
@@ -99,6 +99,11 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
     let vy = app.graph_view.viewport_y;
     let zoom = app.graph_view.zoom;
     let buf = f.buffer_mut();
+
+    // Determine if labels should be shown based on zoom level
+    // Show labels when zoomed in enough to have readable spacing
+    // At very low zoom (far out), hide labels to reduce clutter
+    let show_labels = zoom >= 0.15;
 
     // Build set of connected nodes for dimming effect
     let connected_nodes: std::collections::HashSet<usize> = if let Some(selected) = app.graph_view.selected_node {
@@ -143,9 +148,9 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         let to_center_x = to_screen_x + NODE_WIDTH as i32 / 2;
         let to_center_y = to_screen_y + NODE_HEIGHT as i32 / 2;
 
-        // Dimmed edge color when there's a selection
+        // Very dimmed edge color when there's a selection (almost invisible for better tracing)
         let edge_color = if has_selection {
-            theme.muted
+            ratatui::style::Color::Rgb(40, 40, 40) // Very dark, almost invisible
         } else {
             theme.border
         };
@@ -171,7 +176,7 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
             continue;
         }
 
-        render_node(buf, node, screen_x, screen_y, false, true, theme, inner);
+        render_node(buf, node, screen_x, screen_y, false, true, show_labels, theme, inner);
     }
 
     // Layer 3: Draw highlighted edges (connected to selected node) on top
@@ -222,7 +227,9 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         }
 
         let is_selected = app.graph_view.selected_node == Some(idx);
-        render_node(buf, node, screen_x, screen_y, is_selected, false, theme, inner);
+        // Always show label for selected node, otherwise respect zoom-based visibility
+        let node_show_label = show_labels || is_selected;
+        render_node(buf, node, screen_x, screen_y, is_selected, false, node_show_label, theme, inner);
     }
 
     render_help_bar(f, app, area);
@@ -247,15 +254,8 @@ fn draw_line(
     let mut x = x0;
     let mut y = y0;
 
-    // Determine line character based on overall direction
-    // Use simpler dot character for cleaner appearance
-    let line_char = if dx == 0 {
-        '│' 
-    } else if dy == 0 {
-        '─' 
-    } else {
-        '·' 
-    };
+    // Always use dots for edges for consistent appearance
+    let line_char = '·';
 
     loop {
         if x >= clip.x as i32
@@ -266,7 +266,7 @@ fn draw_line(
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 let current = cell.symbol();
                 // For highlighted edges, overwrite more aggressively
-                if force_overwrite || current == " " || current == "·" || current == "─" || current == "│" {
+                if force_overwrite || current == " " || current == "·" {
                     cell.set_char(line_char);
                     cell.set_fg(color);
                 }
@@ -296,6 +296,7 @@ fn render_node(
     screen_y: i32,
     is_selected: bool,
     is_dimmed: bool,
+    show_label: bool,
     theme: &crate::config::Theme,
     clip: Rect,
 ) {
@@ -303,7 +304,9 @@ fn render_node(
     let (node_color, text_color) = if is_selected {
         (theme.primary, theme.primary)
     } else if is_dimmed {
-        (theme.muted, theme.muted)
+        // Dimmed but still visible (not as dark as edges)
+        let dim_color = ratatui::style::Color::Rgb(70, 70, 70);
+        (dim_color, dim_color)
     } else {
         (theme.foreground, theme.dialog.text)
     };
@@ -346,27 +349,29 @@ fn render_node(
         }
     }
 
-    // Draw floating label below the node (centered)
-    let label_y = screen_y + node_height + LABEL_OFFSET;
-    if label_y >= clip.y as i32 && label_y < (clip.y + clip.height) as i32 {
-        let display_title = &node.title;
-        let display_len = display_title.width();
+    // Draw floating label below the node (centered) - only if show_label is true
+    if show_label {
+        let label_y = screen_y + node_height + LABEL_OFFSET;
+        if label_y >= clip.y as i32 && label_y < (clip.y + clip.height) as i32 {
+            let display_title = &node.title;
+            let display_len = display_title.width();
 
-        // Center the label under the node
-        let label_x = screen_x + (NODE_WIDTH as i32 / 2) - (display_len as i32 / 2);
+            // Center the label under the node
+            let label_x = screen_x + (NODE_WIDTH as i32 / 2) - (display_len as i32 / 2);
 
-        // Track display column position for proper CJK character rendering
-        let mut col_offset = 0i32;
-        for ch in display_title.chars() {
-            let ch_width = ch.width().unwrap_or(1);
-            let col = label_x + col_offset;
-            if col >= clip.x as i32 && col < (clip.x + clip.width) as i32 {
-                if let Some(cell) = buf.cell_mut((col as u16, label_y as u16)) {
-                    cell.set_char(ch);
-                    cell.set_fg(text_color);
+            // Track display column position for proper CJK character rendering
+            let mut col_offset = 0i32;
+            for ch in display_title.chars() {
+                let ch_width = ch.width().unwrap_or(1);
+                let col = label_x + col_offset;
+                if col >= clip.x as i32 && col < (clip.x + clip.width) as i32 {
+                    if let Some(cell) = buf.cell_mut((col as u16, label_y as u16)) {
+                        cell.set_char(ch);
+                        cell.set_fg(text_color);
+                    }
                 }
+                col_offset += ch_width as i32;
             }
-            col_offset += ch_width as i32;
         }
     }
 }
@@ -377,14 +382,16 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let hint = Line::from(vec![
         Span::styled("hjkl", Style::default().fg(theme.warning)),
         Span::styled(": select  ", Style::default().fg(theme.muted)),
+        Span::styled("u", Style::default().fg(theme.warning)),
+        Span::styled(": unselect  ", Style::default().fg(theme.muted)),
         Span::styled("HJKL", Style::default().fg(theme.warning)),
         Span::styled(": pan  ", Style::default().fg(theme.muted)),
-        Span::styled("C-hjkl", Style::default().fg(theme.warning)),
-        Span::styled(": move node  ", Style::default().fg(theme.muted)),
-        Span::styled("Enter", Style::default().fg(theme.warning)),
-        Span::styled(": open  ", Style::default().fg(theme.muted)),
         Span::styled("+/-", Style::default().fg(theme.warning)),
         Span::styled(": zoom  ", Style::default().fg(theme.muted)),
+        Span::styled("f", Style::default().fg(theme.warning)),
+        Span::styled(": fit  ", Style::default().fg(theme.muted)),
+        Span::styled("Enter", Style::default().fg(theme.warning)),
+        Span::styled(": open  ", Style::default().fg(theme.muted)),
         Span::styled("Esc", Style::default().fg(theme.warning)),
         Span::styled(": close", Style::default().fg(theme.muted)),
     ]);
@@ -393,20 +400,24 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(hint), hint_area);
 }
 
-/// Calculate center of all nodes
-fn graph_center(nodes: &[crate::app::GraphNode]) -> (f32, f32) {
+/// Calculate bounds of all nodes (min_x, min_y, max_x, max_y)
+fn graph_bounds(nodes: &[crate::app::GraphNode]) -> (f32, f32, f32, f32) {
     if nodes.is_empty() {
-        return (0.0, 0.0);
+        return (0.0, 0.0, 0.0, 0.0);
     }
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
     let mut max_y = f32::MIN;
     for node in nodes {
-        min_x = min_x.min(node.x);
+        let label_width = node.title.width() as f32;
+        let node_left = node.x - label_width / 2.0;
+        let node_right = node.x + NODE_WIDTH as f32 + label_width / 2.0;
+        min_x = min_x.min(node_left);
         min_y = min_y.min(node.y);
-        max_x = max_x.max(node.x + NODE_WIDTH as f32);
-        max_y = max_y.max(node.y + NODE_HEIGHT as f32);
+        max_x = max_x.max(node_right);
+        max_y = max_y.max(node.y + NODE_HEIGHT as f32 + 2.0); // +2 for label below
     }
-    ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+    (min_x, min_y, max_x, max_y)
 }
+
