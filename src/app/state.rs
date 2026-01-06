@@ -308,9 +308,10 @@ pub struct GraphNode {
     pub title: String,
     pub x: f32,
     pub y: f32,
+    pub home_x: f32,  // Original position for snap-back
+    pub home_y: f32,
     pub vx: f32,
     pub vy: f32,
-    pub width: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -3016,6 +3017,8 @@ impl App {
     }
 
     pub fn build_graph(&mut self) {
+        use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
+
         let mut nodes: Vec<GraphNode> = Vec::new();
         let mut edges: Vec<GraphEdge> = Vec::new();
         let mut note_to_node: HashMap<usize, usize> = HashMap::new();
@@ -3023,23 +3026,34 @@ impl App {
             let node_idx = nodes.len();
             note_to_node.insert(note_idx, node_idx);
 
-            let title = if note.title.chars().count() > 40 {
-                note.title.chars().take(37).collect::<String>() + "..."
-            } else {
-                note.title.clone()
+            let title = {
+                let display_width = note.title.width();
+                if display_width > 20 {
+                    let mut truncated = String::new();
+                    let mut current_width = 0;
+                    for ch in note.title.chars() {
+                        let ch_width = ch.width().unwrap_or(1);
+                        if current_width + ch_width > 17 {
+                            break;
+                        }
+                        truncated.push(ch);
+                        current_width += ch_width;
+                    }
+                    truncated + "..."
+                } else {
+                    note.title.clone()
+                }
             };
-
-            let title_len = title.chars().count() as u16;
-            let width = (title_len + 4).max(8); // Minimum width of 8
 
             nodes.push(GraphNode {
                 note_index: note_idx,
                 title,
                 x: 0.0,
                 y: 0.0,
+                home_x: 0.0,
+                home_y: 0.0,
                 vx: 0.0,
                 vy: 0.0,
-                width,
             });
         }
 

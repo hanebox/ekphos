@@ -1229,6 +1229,95 @@ fn handle_help_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+/// Zoom the graph view, anchoring on the selected node or graph center
+fn zoom_graph(app: &mut App, factor: f32) {
+    let old_zoom = app.graph_view.zoom;
+    let new_zoom = (old_zoom * factor).clamp(0.3, 1.5);
+    let (anchor_x, anchor_y) = if let Some(idx) = app.graph_view.selected_node {
+        if idx < app.graph_view.nodes.len() {
+            let node = &app.graph_view.nodes[idx];
+            (node.x + 1.5, node.y + 1.0)
+        } else {
+            graph_center(app)
+        }
+    } else {
+        graph_center(app)
+    };
+
+    let screen_anchor_x = (anchor_x - app.graph_view.viewport_x) * old_zoom;
+    let screen_anchor_y = (anchor_y - app.graph_view.viewport_y) * old_zoom;
+
+    app.graph_view.zoom = new_zoom;
+
+    app.graph_view.viewport_x = anchor_x - screen_anchor_x / new_zoom;
+    app.graph_view.viewport_y = anchor_y - screen_anchor_y / new_zoom;
+}
+
+/// Calculate center of all nodes
+fn graph_center(app: &App) -> (f32, f32) {
+    if app.graph_view.nodes.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sum_x = 0.0f32;
+    let mut sum_y = 0.0f32;
+    for node in &app.graph_view.nodes {
+        sum_x += node.x;
+        sum_y += node.y;
+    }
+    let n = app.graph_view.nodes.len() as f32;
+    (sum_x / n, sum_y / n)
+}
+
+/// Repel other nodes away from the dragged node, with snap-back to home positions
+fn repel_nodes_from(app: &mut App, node_idx: usize) {
+    if node_idx >= app.graph_view.nodes.len() {
+        return;
+    }
+
+    app.graph_view.nodes[node_idx].home_x = app.graph_view.nodes[node_idx].x;
+    app.graph_view.nodes[node_idx].home_y = app.graph_view.nodes[node_idx].y;
+
+    let dragged_x = app.graph_view.nodes[node_idx].x;
+    let dragged_y = app.graph_view.nodes[node_idx].y;
+
+    let repel_radius: f32 = 30.0;  
+    let repel_strength: f32 = 10.0; 
+    let snap_back_strength: f32 = 0.12; 
+    for i in 0..app.graph_view.nodes.len() {
+        if i == node_idx {
+            continue;
+        }
+
+        let other = &app.graph_view.nodes[i];
+        let other_x = other.x;
+        let other_y = other.y;
+        let home_x = other.home_x;
+        let home_y = other.home_y;
+
+        let dist_x = other_x - dragged_x;
+        let dist_y = other_y - dragged_y;
+        let dist = (dist_x * dist_x + dist_y * dist_y).sqrt();
+
+        if dist < repel_radius && dist > 0.1 {
+            let force = ((repel_radius - dist) / repel_radius) * repel_strength;
+            let push_x = (dist_x / dist) * force;
+            let push_y = (dist_y / dist) * force;
+            app.graph_view.nodes[i].x += push_x;
+            app.graph_view.nodes[i].y += push_y;
+        } else {
+            let to_home_x = home_x - other_x;
+            let to_home_y = home_y - other_y;
+            let home_dist = (to_home_x * to_home_x + to_home_y * to_home_y).sqrt();
+            if home_dist > 0.5 {
+                let snap_x = to_home_x * snap_back_strength;
+                let snap_y = to_home_y * snap_back_strength;
+                app.graph_view.nodes[i].x += snap_x;
+                app.graph_view.nodes[i].y += snap_y;
+            }
+        }
+    }
+}
+
 fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
         if let Some(node_idx) = app.graph_view.selected_node {
@@ -1237,18 +1326,22 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                 match key.code {
                     KeyCode::Char('h') => {
                         app.graph_view.nodes[node_idx].x -= move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('j') => {
                         app.graph_view.nodes[node_idx].y += move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('k') => {
                         app.graph_view.nodes[node_idx].y -= move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('l') => {
                         app.graph_view.nodes[node_idx].x += move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     _ => {}
@@ -1309,16 +1402,14 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
             app.graph_view.viewport_x += 10.0;
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+            zoom_graph(app, 1.15);
         }
         KeyCode::Char('-') => {
-            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+            zoom_graph(app, 1.0 / 1.15);
         }
         KeyCode::Char('0') => {
             app.graph_view.zoom = 1.0;
-            app.graph_view.viewport_x = 0.0;
-            app.graph_view.viewport_y = 0.0;
-            app.graph_view.dirty = true;
+            center_on_selected_node(app);
         }
         KeyCode::Char('g') => {
             if !app.graph_view.nodes.is_empty() {
@@ -1428,6 +1519,7 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     if node_idx < app.graph_view.nodes.len() {
                         app.graph_view.nodes[node_idx].x += dx / app.graph_view.zoom;
                         app.graph_view.nodes[node_idx].y += dy / app.graph_view.zoom;
+                        repel_nodes_from(app, node_idx);
                     }
                 } else if app.graph_view.is_panning {
                     // Panning the viewport
@@ -1439,17 +1531,18 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             }
         }
         MouseEventKind::ScrollUp => {
-            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+            zoom_graph(app, 1.15);
         }
         MouseEventKind::ScrollDown => {
-            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+            zoom_graph(app, 1.0 / 1.15);
         }
         _ => {}
     }
 }
 
 fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize> {
-    const NODE_HEIGHT: u16 = 3;
+    const NODE_WIDTH: i32 = 3;
+    const NODE_HEIGHT: i32 = 2;
 
     let vx = app.graph_view.viewport_x;
     let vy = app.graph_view.viewport_y;
@@ -1461,12 +1554,11 @@ fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize>
     for (idx, node) in app.graph_view.nodes.iter().enumerate() {
         let screen_x = ((node.x - vx) * zoom + inner_x as f32) as i32;
         let screen_y = ((node.y - vy) * zoom + inner_y as f32) as i32;
-        let node_width = node.width as i32;
 
-        if mouse_x as i32 >= screen_x
-            && (mouse_x as i32) < (screen_x + node_width)
-            && mouse_y as i32 >= screen_y
-            && (mouse_y as i32) < (screen_y + NODE_HEIGHT as i32)
+        if mouse_x as i32 >= screen_x - 1
+            && mouse_x as i32 <= screen_x + NODE_WIDTH
+            && mouse_y as i32 >= screen_y - 1
+            && mouse_y as i32 <= screen_y + NODE_HEIGHT
         {
             return Some(idx);
         }

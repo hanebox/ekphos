@@ -1,188 +1,223 @@
 //! Graph layout algorithms for the Graph View feature
-//! Uses a force-directed layout for organic, evenly-spread visualization
+//! Uses force-directed layout with central gravity for circular distribution (Obsidian-like)
 
-use crate::app::{GraphNode, GraphEdge};
+use crate::app::{GraphEdge, GraphNode};
 
-const REPULSION_STRENGTH: f32 = 1500.0;
-const ATTRACTION_STRENGTH: f32 = 0.05; 
-const CENTER_GRAVITY: f32 = 0.01;       
-const DAMPING: f32 = 0.85;              
-const NODE_HEIGHT: f32 = 3.0;           
-const NODE_PADDING: f32 = 4.0;          
-const ITERATIONS: usize = 200;          
+struct Rng {
+    state: u32,
+}
+
+impl Rng {
+    fn new(seed: u32) -> Self {
+        Self { state: seed.max(1) }
+    }
+
+    fn next(&mut self) -> f32 {
+        self.state = self.state.wrapping_mul(1103515245).wrapping_add(12345);
+        ((self.state >> 16) & 0x7fff) as f32 / 32767.0
+    }
+
+    fn next_range(&mut self, min: f32, max: f32) -> f32 {
+        min + self.next() * (max - min)
+    }
+}
 
 pub fn apply_force_directed_layout(
     nodes: &mut [GraphNode],
     edges: &[GraphEdge],
-    width: f32,
-    height: f32,
+    _width: f32,
+    _height: f32,
 ) {
     if nodes.is_empty() {
         return;
     }
 
     let n = nodes.len();
+    if n == 1 {
+        nodes[0].x = 50.0;
+        nodes[0].y = 25.0;
+        nodes[0].home_x = 50.0;
+        nodes[0].home_y = 25.0;
+        return;
+    }
 
-    let cols = (n as f32).sqrt().ceil() as usize;
-    let spacing_x = 25.0;
-    let spacing_y = 8.0;
+    // Terminal aspect ratio: characters are roughly 2x taller than wide
+    // We use 2.0 to make the circular layout appear circular on screen
+    let aspect_ratio = 2.0;
 
+    // Calculate radius based on number of nodes - more nodes = larger circle
+    // Base radius scales with sqrt of node count for even density
+    let base_radius = (n as f32).sqrt() * 12.0;
+
+    // Center of the graph
+    let center_x = 60.0;
+    let center_y = 30.0;
+
+    let mut rng = Rng::new((n as u32 * 31337) ^ 12345);
+
+    // Initialize nodes in a circular/spiral pattern with some randomization
+    // This creates the initial circular shape
     for (i, node) in nodes.iter_mut().enumerate() {
-        let col = i % cols;
-        let row = i / cols;
-        node.x = width / 4.0 + col as f32 * spacing_x;
-        node.y = height / 4.0 + row as f32 * spacing_y;
+        // Golden angle for even distribution (like sunflower seeds)
+        let golden_angle = std::f32::consts::PI * (3.0 - (5.0_f32).sqrt());
+        let angle = i as f32 * golden_angle;
+
+        // Radius increases with sqrt of index for even area distribution
+        let r = base_radius * ((i as f32 + 1.0) / n as f32).sqrt();
+
+        // Add some randomization to avoid perfect patterns
+        let r_jitter = rng.next_range(0.8, 1.2);
+        let angle_jitter = rng.next_range(-0.2, 0.2);
+
+        let final_r = r * r_jitter;
+        let final_angle = angle + angle_jitter;
+
+        // Apply aspect ratio correction for terminal display
+        node.x = center_x + final_r * final_angle.cos() * aspect_ratio;
+        node.y = center_y + final_r * final_angle.sin();
         node.vx = 0.0;
         node.vy = 0.0;
     }
 
-    let center_x = width / 2.0;
-    let center_y = height / 2.0;
+    // Force-directed simulation parameters (Obsidian-like)
+    let iterations = 150;
+    let initial_temperature = 10.0; // Simulated annealing - starts hot, cools down
 
-    // Run force simulation
-    for iteration in 0..ITERATIONS {
-        let temperature = 1.0 - (iteration as f32 / ITERATIONS as f32) * 0.8;
-        let mut forces: Vec<(f32, f32)> = vec![(0.0, 0.0); n];
+    // Forces
+    let repulsion_strength = 500.0; // Repulsion between all nodes
+    let attraction_strength = 0.03; // Attraction along edges
+    let gravity_strength = 0.08; // Pull toward center (creates circular shape)
+    let ideal_edge_length = 25.0; // Target distance for connected nodes
+    let min_distance = 18.0; // Minimum distance between any nodes
 
+    for iter in 0..iterations {
+        // Temperature decreases over time (simulated annealing)
+        let temperature = initial_temperature * (1.0 - iter as f32 / iterations as f32);
+        let damping = 0.85 + 0.1 * (iter as f32 / iterations as f32); // Increases over time
+
+        // Reset velocities
+        for node in nodes.iter_mut() {
+            node.vx = 0.0;
+            node.vy = 0.0;
+        }
+
+        // Calculate current center of mass
+        let (mut cx, mut cy) = (0.0, 0.0);
+        for node in nodes.iter() {
+            cx += node.x;
+            cy += node.y;
+        }
+        cx /= n as f32;
+        cy /= n as f32;
+
+        // Central gravity - pull all nodes toward center of mass
+        // This maintains the circular shape
+        for node in nodes.iter_mut() {
+            let dx = cx - node.x;
+            let dy = cy - node.y;
+            let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+
+            // Gravity force proportional to distance from center
+            let force = gravity_strength * dist;
+            node.vx += (dx / dist) * force;
+            node.vy += (dy / dist) * force;
+        }
+
+        // Repulsion between all pairs of nodes (Coulomb's law)
         for i in 0..n {
             for j in (i + 1)..n {
-                let node_i = &nodes[i];
-                let node_j = &nodes[j];
-                let ci_x = node_i.x + node_i.width as f32 / 2.0;
-                let ci_y = node_i.y + NODE_HEIGHT / 2.0;
-                let cj_x = node_j.x + node_j.width as f32 / 2.0;
-                let cj_y = node_j.y + NODE_HEIGHT / 2.0;
-                let dx = cj_x - ci_x;
-                let dy = cj_y - ci_y;
-                let dist_sq = dx * dx + dy * dy;
-                let dist = dist_sq.sqrt().max(1.0);
+                let dx = nodes[j].x - nodes[i].x;
+                let dy = nodes[j].y - nodes[i].y;
+                let dist_sq = (dx * dx + dy * dy).max(1.0);
+                let dist = dist_sq.sqrt();
 
-                let min_dist_x = (node_i.width + node_j.width) as f32 / 2.0 + NODE_PADDING;
-                let min_dist_y = NODE_HEIGHT + NODE_PADDING;
-                let min_dist = (min_dist_x * min_dist_x + min_dist_y * min_dist_y).sqrt();
-                let effective_dist = dist.max(min_dist * 0.5);
-                let force = REPULSION_STRENGTH / (effective_dist * effective_dist);
-
+                // Repulsion force: inversely proportional to distance squared
+                let force = repulsion_strength / dist_sq;
                 let fx = (dx / dist) * force;
                 let fy = (dy / dist) * force;
 
-                forces[i].0 -= fx;
-                forces[i].1 -= fy;
-                forces[j].0 += fx;
-                forces[j].1 += fy;
-                if dist < min_dist {
-                    let overlap = min_dist - dist;
-                    let push = overlap * 0.5;
-                    let push_x = (dx / dist) * push;
-                    let push_y = (dy / dist) * push;
-
-                    forces[i].0 -= push_x;
-                    forces[i].1 -= push_y;
-                    forces[j].0 += push_x;
-                    forces[j].1 += push_y;
-                }
+                nodes[i].vx -= fx;
+                nodes[i].vy -= fy;
+                nodes[j].vx += fx;
+                nodes[j].vy += fy;
             }
         }
 
+        // Attraction along edges (spring force)
         for edge in edges {
             if edge.from >= n || edge.to >= n {
                 continue;
             }
 
-            let node_from = &nodes[edge.from];
-            let node_to = &nodes[edge.to];
-
-            let from_cx = node_from.x + node_from.width as f32 / 2.0;
-            let from_cy = node_from.y + NODE_HEIGHT / 2.0;
-            let to_cx = node_to.x + node_to.width as f32 / 2.0;
-            let to_cy = node_to.y + NODE_HEIGHT / 2.0;
-
-            let dx = to_cx - from_cx;
-            let dy = to_cy - from_cy;
+            let dx = nodes[edge.to].x - nodes[edge.from].x;
+            let dy = nodes[edge.to].y - nodes[edge.from].y;
             let dist = (dx * dx + dy * dy).sqrt().max(1.0);
 
-            let ideal_dist = (node_from.width + node_to.width) as f32 / 2.0 + NODE_PADDING + 8.0;
-            let displacement = dist - ideal_dist;
+            // Spring force: pull toward ideal length
+            let displacement = dist - ideal_edge_length;
+            let force = displacement * attraction_strength;
+            let fx = (dx / dist) * force;
+            let fy = (dy / dist) * force;
 
-            let fx = (dx / dist) * displacement * ATTRACTION_STRENGTH;
-            let fy = (dy / dist) * displacement * ATTRACTION_STRENGTH;
-
-            forces[edge.from].0 += fx;
-            forces[edge.from].1 += fy;
-            forces[edge.to].0 -= fx;
-            forces[edge.to].1 -= fy;
+            nodes[edge.from].vx += fx;
+            nodes[edge.from].vy += fy;
+            nodes[edge.to].vx -= fx;
+            nodes[edge.to].vy -= fy;
         }
 
-        for i in 0..n {
-            let node_cx = nodes[i].x + nodes[i].width as f32 / 2.0;
-            let node_cy = nodes[i].y + NODE_HEIGHT / 2.0;
-            let dx = center_x - node_cx;
-            let dy = center_y - node_cy;
-            forces[i].0 += dx * CENTER_GRAVITY;
-            forces[i].1 += dy * CENTER_GRAVITY;
-        }
-
-        for i in 0..n {
-            nodes[i].vx = (nodes[i].vx + forces[i].0) * DAMPING * temperature;
-            nodes[i].vy = (nodes[i].vy + forces[i].1) * DAMPING * temperature;
-
-            let speed = (nodes[i].vx * nodes[i].vx + nodes[i].vy * nodes[i].vy).sqrt();
-            let max_speed = 8.0 * temperature;
-            if speed > max_speed {
-                nodes[i].vx = nodes[i].vx / speed * max_speed;
-                nodes[i].vy = nodes[i].vy / speed * max_speed;
+        // Apply velocities with temperature-based limiting and damping
+        for node in nodes.iter_mut() {
+            // Limit velocity by temperature
+            let speed = (node.vx * node.vx + node.vy * node.vy).sqrt();
+            if speed > temperature {
+                node.vx = (node.vx / speed) * temperature;
+                node.vy = (node.vy / speed) * temperature;
             }
 
-            nodes[i].x += nodes[i].vx;
-            nodes[i].y += nodes[i].vy;
+            node.x += node.vx * damping;
+            node.y += node.vy * damping;
         }
-    }
 
-    for _ in 0..10 {
+        // Enforce minimum distance between nodes (collision resolution)
         for i in 0..n {
             for j in (i + 1)..n {
-                let (left, right) = nodes.split_at_mut(j);
-                let node_i = &mut left[i];
-                let node_j = &mut right[0];
+                let dx = nodes[j].x - nodes[i].x;
+                let dy = nodes[j].y - nodes[i].y;
+                let dist = (dx * dx + dy * dy).sqrt();
 
-                let ci_x = node_i.x + node_i.width as f32 / 2.0;
-                let ci_y = node_i.y + NODE_HEIGHT / 2.0;
-                let cj_x = node_j.x + node_j.width as f32 / 2.0;
-                let cj_y = node_j.y + NODE_HEIGHT / 2.0;
+                if dist < min_distance && dist > 0.01 {
+                    let overlap = min_distance - dist;
+                    let push = overlap / 2.0 + 0.5;
+                    let nx = dx / dist;
+                    let ny = dy / dist;
 
-                let dx = cj_x - ci_x;
-                let dy = cj_y - ci_y;
-                let dist = (dx * dx + dy * dy).sqrt().max(0.1);
-
-                let min_dist_x = (node_i.width + node_j.width) as f32 / 2.0 + NODE_PADDING;
-                let min_dist_y = NODE_HEIGHT + NODE_PADDING;
-                let min_dist = (min_dist_x * min_dist_x + min_dist_y * min_dist_y).sqrt();
-
-                if dist < min_dist {
-                    let overlap = (min_dist - dist) / 2.0;
-                    let push_x = (dx / dist) * overlap;
-                    let push_y = (dy / dist) * overlap;
-
-                    node_i.x -= push_x;
-                    node_i.y -= push_y;
-                    node_j.x += push_x;
-                    node_j.y += push_y;
+                    nodes[i].x -= nx * push;
+                    nodes[i].y -= ny * push;
+                    nodes[j].x += nx * push;
+                    nodes[j].y += ny * push;
                 }
             }
         }
     }
 
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
+    // Final pass: center the graph and normalize positions
+    let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+    let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
 
     for node in nodes.iter() {
         min_x = min_x.min(node.x);
         min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x);
+        max_y = max_y.max(node.y);
     }
 
-    let padding = 5.0;
+    // Center the graph with some padding
+    let padding = 15.0;
+
     for node in nodes.iter_mut() {
         node.x = node.x - min_x + padding;
-        node.y = node.y - min_y + padding;
+        node.y = node.y - min_y + padding / 2.0;
+        node.home_x = node.x;
+        node.home_y = node.y;
     }
 }
