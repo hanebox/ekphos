@@ -485,9 +485,9 @@ impl BufferSearchState {
 /// A suggestion item for wiki link autocomplete
 #[derive(Debug, Clone, PartialEq)]
 pub struct WikiSuggestion {
-    /// Display name shown in the list
+    /// Display name shown in the list (note title)
     pub display_name: String,
-    /// Text to insert when selected
+    /// Text to insert when selected (full path for nested notes)
     pub insert_text: String,
     /// True if this is a folder, false if it's a note
     pub is_folder: bool,
@@ -495,6 +495,8 @@ pub struct WikiSuggestion {
     pub path: String,
     /// Fuzzy match score (higher is better)
     pub score: i32,
+    /// Optional folder hint for nested notes (shown below title)
+    pub folder_hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2475,7 +2477,7 @@ impl App {
     // ==================== Wiki Link Support ====================
 
     /// Resolve a wiki link target to a note index
-    /// "note" -> searches all notes for matching title
+    /// "note" -> searches all notes recursively for matching title (root first, then subfolders)
     /// "folder/note" -> searches for note in specific folder
     pub fn resolve_wiki_link(&self, target: &str) -> Option<usize> {
         if target.is_empty() {
@@ -2495,13 +2497,21 @@ impl App {
                 }
             }
         } else {
+            // First, try to find in root directory (for backwards compatibility)
             for (idx, note) in self.notes.iter().enumerate() {
                 if note.title.eq_ignore_ascii_case(target) {
                     if let Some(file_path) = &note.file_path {
-                        if file_path.parent() == Some(&notes_path) {
+                        if file_path.parent() == Some(notes_path.as_path()) {
                             return Some(idx);
                         }
                     }
+                }
+            }
+            // If not found in root, search recursively in all subdirectories
+            // all notes in self.notes are already from the notes directory
+            for (idx, note) in self.notes.iter().enumerate() {
+                if note.title.eq_ignore_ascii_case(target) {
+                    return Some(idx);
                 }
             }
         }
@@ -3126,14 +3136,20 @@ impl App {
                 }
 
                 if let Some(score) = fuzzy_match(&note.title, note_query) {
+                    let folder_hint = if let Some(last_slash) = wiki_path.rfind('/') {
+                        Some(wiki_path[..last_slash].to_string())
+                    } else {
+                        None
+                    };
                     suggestions.push(WikiSuggestion {
                         display_name: note.title.clone(),
-                        insert_text: wiki_path.clone(),
+                        insert_text: note.title.clone(),
                         is_folder: false,
                         path: note.file_path.as_ref()
                             .map(|p| p.display().to_string())
                             .unwrap_or_default(),
                         score,
+                        folder_hint,
                     });
                 }
             }
@@ -3161,6 +3177,7 @@ impl App {
                             is_folder: true,
                             path: path.display().to_string(),
                             score,
+                            folder_hint: None,
                         });
                     }
                 }
@@ -3215,6 +3232,7 @@ impl App {
                                 is_folder: false,
                                 path: format!("{}#{}", wiki_path, title),
                                 score,
+                                folder_hint: None,
                             });
                         }
                     }
@@ -3781,10 +3799,11 @@ impl App {
                 if let Ok(relative) = file_path.strip_prefix(&notes_path) {
                     let path_str = relative.to_string_lossy();
                     if let Some(stripped) = path_str.strip_suffix(".md") {
+                        // Add full path (e.g., "folder/note-name")
                         valid_targets.insert(stripped.to_string());
-                        if !stripped.contains('/') {
-                            valid_targets.insert(stripped.to_lowercase());
-                        }
+                        // Also add just the note title for recursive search support
+                        valid_targets.insert(note.title.clone());
+                        valid_targets.insert(note.title.to_lowercase());
                     }
                 }
             }

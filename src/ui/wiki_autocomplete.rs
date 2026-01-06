@@ -10,7 +10,7 @@ use crate::app::{App, WikiAutocompleteMode, WikiAutocompleteState};
 
 const POPUP_WIDTH: u16 = 45;
 const POPUP_MAX_VISIBLE_ITEMS: usize = 5;
-const POPUP_MAX_HEIGHT: u16 = (POPUP_MAX_VISIBLE_ITEMS as u16) + 2;
+const POPUP_MAX_VISIBLE_LINES: usize = 8; // Max lines for items with folder hints
 
 pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
     if let WikiAutocompleteState::Open {
@@ -33,11 +33,20 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
         let is_alias_mode = *mode == WikiAutocompleteMode::Alias;
 
         let visible_items = if is_alias_mode {
-            1 
+            1
         } else {
             suggestions.len().min(POPUP_MAX_VISIBLE_ITEMS)
         };
-        let popup_height = (visible_items as u16 + 2).min(POPUP_MAX_HEIGHT);
+
+        let total_lines: usize = if is_alias_mode {
+            1
+        } else {
+            suggestions.iter().take(visible_items).map(|s| {
+                if s.folder_hint.is_some() { 2 } else { 1 }
+            }).sum::<usize>().min(POPUP_MAX_VISIBLE_LINES)
+        };
+
+        let popup_height = (total_lines as u16 + 2).min(POPUP_MAX_VISIBLE_LINES as u16 + 2);
         let popup_width = POPUP_WIDTH.min(area.width.saturating_sub(2));
 
         let popup_y = if cursor_screen_y + popup_height + 1 <= area.height {
@@ -72,62 +81,85 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
                 Span::styled(hint_text, Style::default().fg(theme.muted)),
             ])]
         } else {
-            suggestions
-                .iter()
-                .enumerate()
-                .skip(scroll_offset)
-                .take(visible_count)
-                .map(|(idx, suggestion)| {
-                    let prefix = if suggestion.is_folder { "dir: " } else { "" };
-                    let prefix_len = prefix.len();
-                    let is_selected = idx == *selected_index;
+            let mut lines = Vec::new();
+            for (idx, suggestion) in suggestions.iter().enumerate().skip(scroll_offset).take(visible_count) {
+                let prefix = if suggestion.is_folder { "dir: " } else { "" };
+                let prefix_len = prefix.len();
+                let is_selected = idx == *selected_index;
 
-                    // Truncate display name if too long (use chars for Unicode safety)
-                    let display_name = if suggestion.display_name.chars().count() > max_name_width {
-                        let truncated: String = suggestion
-                            .display_name
-                            .chars()
-                            .take(max_name_width.saturating_sub(1))
-                            .collect();
-                        format!("{}…", truncated)
-                    } else {
-                        suggestion.display_name.clone()
-                    };
+                // Truncate display name if too long (use chars for Unicode safety)
+                let display_name = if suggestion.display_name.chars().count() > max_name_width {
+                    let truncated: String = suggestion
+                        .display_name
+                        .chars()
+                        .take(max_name_width.saturating_sub(1))
+                        .collect();
+                    format!("{}…", truncated)
+                } else {
+                    suggestion.display_name.clone()
+                };
 
-                    let style = if is_selected {
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.foreground)
+                };
+
+                let prefix_style = if is_selected {
+                    style
+                } else {
+                    Style::default().fg(theme.warning)
+                };
+
+                // Main line with title
+                if is_selected {
+                    let content_width = (popup_width as usize).saturating_sub(2);
+                    let used_width = 1 + prefix_len + display_name.chars().count();
+                    let padding_right = " ".repeat(content_width.saturating_sub(used_width));
+                    lines.push(Line::from(vec![
+                        Span::styled(" ".to_string(), style),
+                        Span::styled(prefix.to_string(), prefix_style),
+                        Span::styled(display_name, style),
+                        Span::styled(padding_right, style),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw(" "),
+                        Span::styled(prefix.to_string(), prefix_style),
+                        Span::styled(display_name, style),
+                    ]));
+                }
+
+                if let Some(ref folder) = suggestion.folder_hint {
+                    let hint_style = if is_selected {
                         Style::default()
-                            .fg(theme.background)
+                            .fg(theme.muted)
                             .bg(theme.primary)
-                            .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(theme.foreground)
+                        Style::default().fg(theme.muted)
                     };
-
-                    let prefix_style = if is_selected {
-                        style
+                    let hint_text = if folder.chars().count() > max_name_width.saturating_sub(2) {
+                        let truncated: String = folder.chars().take(max_name_width.saturating_sub(3)).collect();
+                        format!("  {}…", truncated)
                     } else {
-                        Style::default().fg(theme.warning)
+                        format!("  {}", folder)
                     };
-
                     if is_selected {
                         let content_width = (popup_width as usize).saturating_sub(2);
-                        let used_width = 1 + prefix_len + display_name.chars().count();
-                        let padding_right = " ".repeat(content_width.saturating_sub(used_width));
-                        Line::from(vec![
-                            Span::styled(" ".to_string(), style),
-                            Span::styled(prefix.to_string(), prefix_style),
-                            Span::styled(display_name, style),
-                            Span::styled(padding_right, style),
-                        ])
+                        let padding_right = " ".repeat(content_width.saturating_sub(hint_text.chars().count()));
+                        lines.push(Line::from(vec![
+                            Span::styled(hint_text, hint_style),
+                            Span::styled(padding_right, Style::default().bg(theme.primary)),
+                        ]));
                     } else {
-                        Line::from(vec![
-                            Span::raw(" "),
-                            Span::styled(prefix.to_string(), prefix_style),
-                            Span::styled(display_name, style),
-                        ])
+                        lines.push(Line::from(Span::styled(hint_text, hint_style)));
                     }
-                })
-                .collect()
+                }
+            }
+            lines
         };
 
         let title = match mode {
