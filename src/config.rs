@@ -21,8 +21,20 @@ pub struct Config {
     pub sidebar_collapsed: bool,
     #[serde(default = "default_outline_collapsed")]
     pub outline_collapsed: bool,
+    #[serde(default = "default_folders_first")]
+    pub folders_first: bool,
     #[serde(default)]
     pub editor: EditorConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LineNumberMode {
+    None,
+    #[default]
+    Absolute,
+    Relative,
+    Hybrid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,12 +47,17 @@ pub struct EditorConfig {
     pub left_padding: u16,
     #[serde(default = "default_right_padding")]
     pub right_padding: u16,
+    #[serde(default)]
+    pub line_numbers: LineNumberMode,
+    #[serde(default = "default_scrolloff")]
+    pub scrolloff: u8,
 }
 
 fn default_line_wrap() -> bool { true }
 fn default_tab_width() -> u16 { 4 }
 fn default_left_padding() -> u16 { 0 }
 fn default_right_padding() -> u16 { 1 }
+fn default_scrolloff() -> u8 { 0 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
@@ -49,6 +66,8 @@ impl Default for EditorConfig {
             tab_width: default_tab_width(),
             left_padding: default_left_padding(),
             right_padding: default_right_padding(),
+            line_numbers: LineNumberMode::default(),
+            scrolloff: default_scrolloff(),
         }
     }
 }
@@ -60,6 +79,7 @@ fn default_theme_name() -> String { "ekphos-dawn".to_string() }
 fn default_syntax_theme() -> String { "base16-ocean.dark".to_string() }
 fn default_sidebar_collapsed() -> bool { false }
 fn default_outline_collapsed() -> bool { false }
+fn default_folders_first() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -71,6 +91,7 @@ impl Default for Config {
             syntax_theme: default_syntax_theme(),
             sidebar_collapsed: default_sidebar_collapsed(),
             outline_collapsed: default_outline_collapsed(),
+            folders_first: default_folders_first(),
             editor: EditorConfig::default(),
         }
     }

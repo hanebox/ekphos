@@ -197,6 +197,7 @@ fn find_quote_bounds(
     let mut in_quote = false;
     let mut quote_start = None;
     let mut found_pair = None;
+    let mut seek_pair = None;
 
     for (i, &c) in chars.iter().enumerate() {
         if c == open {
@@ -204,6 +205,9 @@ fn find_quote_bounds(
                 if quote_start.map_or(false, |start| start <= pos.col && i >= pos.col) {
                     found_pair = Some((quote_start.unwrap(), i));
                     break;
+                }
+                if seek_pair.is_none() && quote_start.map_or(false, |start| start >= pos.col) {
+                    seek_pair = Some((quote_start.unwrap(), i));
                 }
                 in_quote = false;
                 quote_start = None;
@@ -214,7 +218,7 @@ fn find_quote_bounds(
         }
     }
 
-    let (start, end) = found_pair?;
+    let (start, end) = found_pair.or(seek_pair)?;
 
     match scope {
         TextObjectScope::Inner => Some((Position::new(pos.row, start + 1), Position::new(pos.row, end))),
@@ -230,28 +234,60 @@ fn find_bracket_bounds(
     close: char,
 ) -> Option<(Position, Position)> {
     let mut open_pos = None;
-    let mut depth = 0;
-    let mut row = pos.row;
-    let mut col = pos.col;
+    let row = pos.row;
+    let col = pos.col;
 
     let current_line: Vec<char> = lines.get(row)?.chars().collect();
+
+    // Step 1: Check if cursor is directly on an opening bracket
     if current_line.get(col) == Some(&open) {
         open_pos = Some(Position::new(row, col));
-        depth = 1;
     }
 
+    // Step 2: Search backward on CURRENT LINE ONLY first
+    // This prevents unmatched brackets from previous lines from interfering
     if open_pos.is_none() {
-        loop {
-            let line: Vec<char> = lines.get(row)?.chars().collect();
-            let start_col = if row == pos.row { col } else { line.len() };
+        let mut depth = 0;
+        for c in (0..col).rev() {
+            let ch = current_line.get(c)?;
+            if *ch == close {
+                depth += 1;
+            } else if *ch == open {
+                if depth == 0 {
+                    open_pos = Some(Position::new(row, c));
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+    }
 
-            for c in (0..start_col).rev() {
+    // Step 3: Seek forward on current line for an open bracket
+    if open_pos.is_none() {
+        for c in col..current_line.len() {
+            if current_line.get(c) == Some(&open) {
+                open_pos = Some(Position::new(pos.row, c));
+                break;
+            }
+        }
+    }
+
+    // Step 4: If nothing found on current line, search backward across previous lines
+    // This handles multi-line bracket pairs
+    if open_pos.is_none() {
+        let mut depth = 0;
+        let mut search_row = row;
+        while search_row > 0 {
+            search_row -= 1;
+            let line: Vec<char> = lines.get(search_row)?.chars().collect();
+
+            for c in (0..line.len()).rev() {
                 let ch = line.get(c)?;
                 if *ch == close {
                     depth += 1;
                 } else if *ch == open {
                     if depth == 0 {
-                        open_pos = Some(Position::new(row, c));
+                        open_pos = Some(Position::new(search_row, c));
                         break;
                     }
                     depth -= 1;
@@ -261,22 +297,21 @@ fn find_bracket_bounds(
             if open_pos.is_some() {
                 break;
             }
-
-            if row == 0 {
-                return None;
-            }
-            row -= 1;
         }
     }
 
+    if open_pos.is_none() {
+        return None;
+    }
+
     let open_pos = open_pos?;
-    depth = 1;
-    row = open_pos.row;
-    col = open_pos.col + 1;
+    let mut depth = 1;
+    let mut search_row = open_pos.row;
+    let search_col = open_pos.col + 1;
 
     loop {
-        let line: Vec<char> = lines.get(row)?.chars().collect();
-        let start_col = if row == open_pos.row { col } else { 0 };
+        let line: Vec<char> = lines.get(search_row)?.chars().collect();
+        let start_col = if search_row == open_pos.row { search_col } else { 0 };
 
         for c in start_col..line.len() {
             let ch = line.get(c)?;
@@ -285,7 +320,7 @@ fn find_bracket_bounds(
             } else if *ch == close {
                 depth -= 1;
                 if depth == 0 {
-                    let close_pos = Position::new(row, c);
+                    let close_pos = Position::new(search_row, c);
                     return match scope {
                         TextObjectScope::Inner => Some((
                             Position::new(open_pos.row, open_pos.col + 1),
@@ -300,8 +335,8 @@ fn find_bracket_bounds(
             }
         }
 
-        row += 1;
-        if row >= lines.len() {
+        search_row += 1;
+        if search_row >= lines.len() {
             return None;
         }
     }
@@ -656,10 +691,106 @@ mod tests {
     }
 
     #[test]
+    fn test_find_bracket_bounds_seek_forward_parentheses() {
+        let lines = vec!["foo (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_braces() {
+        let lines = vec!["foo {bar}"];
+        let bounds = TextObject::Braces.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_brackets() {
+        let lines = vec!["foo [bar]"];
+        let bounds = TextObject::Brackets.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_angle() {
+        let lines = vec!["foo <bar>"];
+        let bounds = TextObject::AngleBrackets.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_around() {
+        let lines = vec!["foo (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Around, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 4), Position::new(0, 9))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_mid_line() {
+        let lines = vec!["foo bar (baz)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 2));
+        assert_eq!(bounds, Some((Position::new(0, 9), Position::new(0, 12))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_cursor_after_closed_pair() {
+        let lines = vec!["(foo) (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 5));
+        assert_eq!(bounds, Some((Position::new(0, 7), Position::new(0, 10))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_cursor_after_only_pair() {
+        let lines = vec!["(foo) bar"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 6));
+        assert_eq!(bounds, None);
+    }
+
+    #[test]
     fn test_find_bracket_bounds_complex_code() {
         let lines = vec!["fn test(a: (i32, i32)) {"];
         let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 12));
         assert_eq!(bounds, Some((Position::new(0, 12), Position::new(0, 20))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_unmatched_on_previous_line() {
+        // Regression test: unmatched brackets on previous lines should not
+        // interfere with bracket matching on current line
+        let lines = vec![
+            "abc()",                           // line 0: matched
+            "text with unmatched ( paren",     // line 1: unmatched opening
+            "abc(...)",                        // line 2: should still work!
+        ];
+        // Cursor at start of line 2, should seek forward to find abc(...)
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(2, 0));
+        assert_eq!(bounds, Some((Position::new(2, 4), Position::new(2, 7))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_unmatched_does_not_match_later_close() {
+        // An unmatched opening bracket should not match with a closing bracket
+        // from a different pair on a later line
+        let lines = vec![
+            "unmatched (",                     // line 0: unmatched opening
+            "abc(foo)",                        // line 1: complete pair
+        ];
+        // Cursor inside abc(foo), should find that pair, not the unmatched one
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(1, 5));
+        assert_eq!(bounds, Some((Position::new(1, 4), Position::new(1, 7))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_multiple_unmatched() {
+        // Multiple unmatched brackets on different lines
+        let lines = vec![
+            "( unmatched",                     // line 0
+            "another ( unmatched",             // line 1
+            "",                                // line 2
+            "valid(content)",                  // line 3
+        ];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(3, 7));
+        assert_eq!(bounds, Some((Position::new(3, 6), Position::new(3, 13))));
     }
 
     // ==================== Paragraph Bounds Tests ====================

@@ -3,6 +3,7 @@
 use crossterm::event::KeyEvent;
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MacroState {
     macros: HashMap<char, Vec<KeyEvent>>,
@@ -48,6 +49,7 @@ impl MacroState {
         self.macros.get(&register)
     }
 
+    #[allow(dead_code)]
     pub fn get_last_macro(&self) -> Option<&Vec<KeyEvent>> {
         self.last_played.and_then(|r| self.macros.get(&r))
     }

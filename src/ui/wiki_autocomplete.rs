@@ -6,17 +6,19 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, WikiAutocompleteState};
+use crate::app::{App, WikiAutocompleteMode, WikiAutocompleteState};
 
 const POPUP_WIDTH: u16 = 45;
 const POPUP_MAX_VISIBLE_ITEMS: usize = 5;
-const POPUP_MAX_HEIGHT: u16 = (POPUP_MAX_VISIBLE_ITEMS as u16) + 2;
+const POPUP_MAX_VISIBLE_LINES: usize = 8; // Max lines for items with folder hints
 
 pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
     if let WikiAutocompleteState::Open {
         query,
         suggestions,
         selected_index,
+        mode,
+        target_note,
         ..
     } = &app.wiki_autocomplete
     {
@@ -27,8 +29,24 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
         let editor_area = app.editor_area;
         let cursor_screen_y = editor_area.y + 1 + (cursor_row.saturating_sub(app.editor_scroll_top)) as u16;
         let cursor_screen_x = editor_area.x + 1 + cursor_col as u16;
-        let visible_items = suggestions.len().min(POPUP_MAX_VISIBLE_ITEMS);
-        let popup_height = (visible_items as u16 + 2).min(POPUP_MAX_HEIGHT);
+
+        let is_alias_mode = *mode == WikiAutocompleteMode::Alias;
+
+        let visible_items = if is_alias_mode {
+            1
+        } else {
+            suggestions.len().min(POPUP_MAX_VISIBLE_ITEMS)
+        };
+
+        let total_lines: usize = if is_alias_mode {
+            1
+        } else {
+            suggestions.iter().take(visible_items).map(|s| {
+                if s.folder_hint.is_some() { 2 } else { 1 }
+            }).sum::<usize>().min(POPUP_MAX_VISIBLE_LINES)
+        };
+
+        let popup_height = (total_lines as u16 + 2).min(POPUP_MAX_VISIBLE_LINES as u16 + 2);
         let popup_width = POPUP_WIDTH.min(area.width.saturating_sub(2));
 
         let popup_y = if cursor_screen_y + popup_height + 1 <= area.height {
@@ -52,23 +70,29 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
 
         let max_name_width = (popup_width as usize).saturating_sub(8);
 
-        let lines: Vec<Line> = suggestions
-            .iter()
-            .enumerate()
-            .skip(scroll_offset)
-            .take(visible_count)
-            .map(|(idx, suggestion)| {
+        let lines: Vec<Line> = if is_alias_mode {
+            let hint_text = if query.is_empty() {
+                "Type display text..."
+            } else {
+                query.as_str()
+            };
+            vec![Line::from(vec![
+                Span::raw(" "),
+                Span::styled(hint_text, Style::default().fg(theme.muted)),
+            ])]
+        } else {
+            let mut lines = Vec::new();
+            for (idx, suggestion) in suggestions.iter().enumerate().skip(scroll_offset).take(visible_count) {
                 let prefix = if suggestion.is_folder { "dir: " } else { "" };
                 let prefix_len = prefix.len();
                 let is_selected = idx == *selected_index;
 
-                // Truncate display name if too long
-                // fix here
+                // Truncate display name if too long (use chars for Unicode safety)
                 let display_name = if suggestion.display_name.chars().count() > max_name_width {
-               // use chars() iterator to safely get words
-                    let truncated: String = suggestion.display_name
+                    let truncated: String = suggestion
+                        .display_name
                         .chars()
-                        .take(max_name_width.saturating_sub(1) as usize)
+                        .take(max_name_width.saturating_sub(1))
                         .collect();
                     format!("{}…", truncated)
                 } else {
@@ -90,36 +114,84 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
                     Style::default().fg(theme.warning)
                 };
 
+                // Main line with title
                 if is_selected {
                     let content_width = (popup_width as usize).saturating_sub(2);
                     let used_width = 1 + prefix_len + display_name.chars().count();
                     let padding_right = " ".repeat(content_width.saturating_sub(used_width));
-                    Line::from(vec![
+                    lines.push(Line::from(vec![
                         Span::styled(" ".to_string(), style),
                         Span::styled(prefix.to_string(), prefix_style),
                         Span::styled(display_name, style),
                         Span::styled(padding_right, style),
-                    ])
+                    ]));
                 } else {
-                    Line::from(vec![
+                    lines.push(Line::from(vec![
                         Span::raw(" "),
                         Span::styled(prefix.to_string(), prefix_style),
                         Span::styled(display_name, style),
-                    ])
+                    ]));
                 }
-            })
-            .collect();
 
-        let title = if query.is_empty() {
-            " Wiki Link ".to_string()
-        } else {
-            format!(" [[{} ", query)
+                if let Some(ref folder) = suggestion.folder_hint {
+                    let hint_style = if is_selected {
+                        Style::default()
+                            .fg(theme.muted)
+                            .bg(theme.primary)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+                    let hint_text = if folder.chars().count() > max_name_width.saturating_sub(2) {
+                        let truncated: String = folder.chars().take(max_name_width.saturating_sub(3)).collect();
+                        format!("  {}…", truncated)
+                    } else {
+                        format!("  {}", folder)
+                    };
+                    if is_selected {
+                        let content_width = (popup_width as usize).saturating_sub(2);
+                        let padding_right = " ".repeat(content_width.saturating_sub(hint_text.chars().count()));
+                        lines.push(Line::from(vec![
+                            Span::styled(hint_text, hint_style),
+                            Span::styled(padding_right, Style::default().bg(theme.primary)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(Span::styled(hint_text, hint_style)));
+                    }
+                }
+            }
+            lines
         };
 
-        let hint = if !suggestions.is_empty() {
-            format!(" {}/{} ", selected_index + 1, suggestions.len())
-        } else {
-            " No matches ".to_string()
+        let title = match mode {
+            WikiAutocompleteMode::Note => {
+                if query.is_empty() {
+                    " Wiki Link ".to_string()
+                } else {
+                    format!(" [[{} ", query)
+                }
+            }
+            WikiAutocompleteMode::Heading => {
+                let note = target_note.as_ref().map(|s| s.as_str()).unwrap_or("");
+                if query.is_empty() {
+                    format!(" [[{}# ", note)
+                } else {
+                    format!(" [[{}#{} ", note, query)
+                }
+            }
+            WikiAutocompleteMode::Alias => {
+                let target = target_note.as_ref().map(|s| s.as_str()).unwrap_or("");
+                if query.is_empty() {
+                    format!(" [[{}| ", target)
+                } else {
+                    format!(" [[{}|{} ", target, query)
+                }
+            }
+        };
+
+        let hint = match mode {
+            WikiAutocompleteMode::Alias => " Enter to close ".to_string(),
+            _ if !suggestions.is_empty() => format!(" {}/{} ", selected_index + 1, suggestions.len()),
+            _ => " No matches ".to_string(),
         };
 
         let popup = Paragraph::new(lines).block(

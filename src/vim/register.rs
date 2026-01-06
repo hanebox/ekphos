@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RegisterMap {
     named: HashMap<char, RegisterContent>,
@@ -13,12 +14,14 @@ pub struct RegisterMap {
     selected: Option<char>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RegisterContent {
     pub text: String,
     pub linewise: bool,
 }
 
+#[allow(dead_code)]
 impl RegisterMap {
     pub fn new() -> Self {
         Self::default()

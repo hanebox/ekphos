@@ -12,10 +12,25 @@ use ratatui::{
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
-use crate::editor::Editor;
+use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
 use crate::config::{Config, Theme};
 use crate::vim::VimState;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockInsertMode {
+    Insert,
+    Append,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockInsertState {
+    pub mode: BlockInsertMode,
+    pub rows: (usize, usize),
+    pub insert_col: usize,
+    pub active_row: usize,
+    pub start_col: usize,
+}
 
 const GETTING_STARTED_CONTENT: &str = r#"# Getting Started
 
@@ -33,8 +48,8 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 
 **Collapsible Panels:**
 
-- Press `Ctrl+b` to collapse/expand the sidebar
-- Press `Ctrl+o` to collapse/expand the outline
+- `Ctrl+b` to collapse/expand the sidebar
+- `Ctrl+o` to collapse/expand the outline
 
 ## Quick Start
 
@@ -43,38 +58,66 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - `n`: Create new note
 - `/`: Search notes
 - `?`: Show help dialog
-- `g`: Open graph view
-- `z`: Toggle zen mode
+- `Ctrl+g`: Open graph view
+- `Ctrl+z`: Toggle zen mode
 
 Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
 
-## Wikilinks
+## Interactive Demo
 
-Connect your notes using wikilinks! Type `[[Note Name]]` to link to another note.
+Try these interactive elements! Press `Space` or click to interact:
 
-- Link to the demo note: [[02-Demo Note]]
-- Press `Space` on a wikilink to navigate to that note
-- Type `[[` in edit mode for autocomplete suggestions
-- Link to non-existent notes to create them!
+### Task Lists
+
+- [ ] Try pressing Space on this checkbox
+- [ ] Or click on a task to toggle it
+- [x] This one is already completed
+
+### Wikilinks
+
+Navigate between notes using wikilinks:
+
+- [[02-Demo Note]] - Press `Space` or click to visit
+- Use `]` and `[` to jump between links on a line
+- In edit mode, type `[[` for autocomplete suggestions
+- [[Non-existent Note]] - Opens a dialog to create it!
+
+### Collapsible Sections
+
+<details>
+<summary>Click or press Space to expand this section</summary>
+
+This content is hidden by default! Great for:
+- FAQs and documentation
+- Optional information
+- Keeping notes organized
+</details>
+
+<details>
+<summary>Another collapsible section</summary>
+
+You can have multiple collapsible sections in one note.
+Each maintains its own open/closed state.
+</details>
 
 ## Graph View
 
-Press `g` to open the interactive graph view and visualize connections between your notes.
+Press `Ctrl+g` to open the interactive graph view and visualize connections between your notes.
 
 - See how your notes link together
 - Click on nodes to navigate
-- Use mouse to pan and zoom
+- Drag to pan, scroll to zoom
 
-## Task Lists
+## Markdown Features
 
-Track your tasks with checkboxes! Press `Space` to toggle:
+### Text Formatting
 
-- [ ] Unchecked task
-- [x] Completed task
+- **Bold text** with double asterisks
+- *Italic text* with single asterisks
+- `Inline code` with backticks
+- ~~Strikethrough~~ in task items
 
-## Code Blocks
-
-Code blocks support **syntax highlighting** for many languages:
+### Code Blocks
 
 ```rust
 fn main() {
@@ -82,21 +125,18 @@ fn main() {
 }
 ```
 
-## Images
+### Blockquotes
 
-Embed images with `![alt](path/to/image.png)`. Press `Enter` to open in system viewer.
+> Blockquotes are rendered with a colored border.
+> Great for highlighting important information.
 
-Inline preview works in compatible terminals (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
+### Images
 
-## Collapsible Details
+Embed images with `![alt](path/to/image.png)`. Press `Enter`, `o`, or click to open in system viewer.
 
-Use `<details>` for collapsible sections. Press `Space` to toggle:
+![Ekphos Screenshot](https://raw.githubusercontent.com/hanebox/ekphos/release/examples/ekphos-screenshot.png)
 
-<details>
-<summary>Click to expand</summary>
-
-Hidden content goes here. Great for FAQs or optional information.
-</details>
+Inline preview works in terminals with image support (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
 
 ---
 
@@ -106,29 +146,53 @@ Press `q` to quit. Happy note-taking!"#;
 
 const DEMO_NOTE_CONTENT: &str = r#"# Demo Note
 
-This is a demo note to showcase wikilinks!
+This is a demo note to showcase wikilinks and interactive markdown features!
 
-## About Wikilinks
+## Wikilinks
 
 Wikilinks let you connect your notes together, creating a personal knowledge base.
 
-You can link back to [[Getting Started]] to see the main documentation.
+- [[Getting Started]] - Link back to the main documentation
+- [[Getting Started#Graph View]] - Link to a specific heading
+- [[Getting Started|Main Guide]] - Custom display text with `|`
 
-## Ideas
+### Creating Wikilinks
+
+1. Press `e` to enter edit mode
+2. Type `[[` to see autocomplete suggestions
+3. Add `#` to link to specific headings
+4. Add `|` to customize the display text
+5. Press `Ctrl+s` or `:w` to save
+
+### Navigation
+
+- Press `Space` or click on any wikilink to navigate
+- Use `]` to jump to next link, `[` for previous
+- Links to non-existent notes will prompt to create them
+
+## Interactive Elements
+
+### Tasks with Links
+
+- [ ] Check out the [[Getting Started]] guide
+- [ ] Try pressing `Space` on this checkbox
+- [x] Complete the tutorial
+
+### Collapsible Content
+
+<details>
+<summary>Wikilink Ideas</summary>
 
 Here are some ways to use wikilinks:
-
 - Create a **daily notes** system with links between days
 - Build a **zettelkasten** for research and learning
 - Organize **project notes** with interconnected topics
 - Make a **personal wiki** for anything you want to remember
+</details>
 
-## Try It Out
+## Graph View
 
-1. Press `e` to enter edit mode
-2. Type `[[` to see autocomplete suggestions
-3. Create new notes by linking to names that don't exist yet
-4. Press `Space` on any wikilink to navigate
+Press `Ctrl+g` to see how this note connects to [[Getting Started]] in the graph visualization!
 
 Happy linking!"#;
 
@@ -137,6 +201,8 @@ pub struct Note {
     pub title: String,
     pub content: String,
     pub file_path: Option<PathBuf>,
+    pub modified_time: Option<std::time::SystemTime>,
+    pub created_time: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,6 +230,41 @@ pub enum DialogState {
     GraphView,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SortMode {
+    #[default]
+    NameAsc,       
+    NameDesc,       
+    ModifiedOldest, 
+    ModifiedNewest, 
+    CreatedOldest,  
+    CreatedNewest,  
+}
+
+impl SortMode {
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::NameAsc => SortMode::NameDesc,
+            SortMode::NameDesc => SortMode::ModifiedOldest,
+            SortMode::ModifiedOldest => SortMode::ModifiedNewest,
+            SortMode::ModifiedNewest => SortMode::CreatedOldest,
+            SortMode::CreatedOldest => SortMode::CreatedNewest,
+            SortMode::CreatedNewest => SortMode::NameAsc,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::NameAsc => "A→Z",
+            SortMode::NameDesc => "Z→A",
+            SortMode::ModifiedOldest => "Mod↑",
+            SortMode::ModifiedNewest => "Mod↓",
+            SortMode::CreatedOldest => "Cre↑",
+            SortMode::CreatedNewest => "Cre↓",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphViewState {
     pub nodes: Vec<GraphNode>,
@@ -176,6 +277,9 @@ pub struct GraphViewState {
     pub drag_start: Option<(u16, u16)>,
     pub is_panning: bool,
     pub dragging_node: Option<usize>,
+    pub view_width: f32,
+    pub view_height: f32,
+    pub needs_center: bool,
 }
 
 impl Default for GraphViewState {
@@ -191,6 +295,9 @@ impl Default for GraphViewState {
             drag_start: None,
             is_panning: false,
             dragging_node: None,
+            view_width: 100.0,
+            view_height: 50.0,
+            needs_center: false,
         }
     }
 }
@@ -201,9 +308,10 @@ pub struct GraphNode {
     pub title: String,
     pub x: f32,
     pub y: f32,
+    pub home_x: f32,  // Original position for snap-back
+    pub home_y: f32,
     pub vx: f32,
     pub vy: f32,
-    pub width: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +355,7 @@ pub enum ContentItem {
 pub enum VimMode {
     Normal,
     Insert,
+    Replace,
     Visual,
     VisualLine,
     VisualBlock,
@@ -290,6 +399,14 @@ impl ContextMenuItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+pub enum WikiAutocompleteMode {
+    #[default]
+    Note,    
+    Heading,  
+    Alias,   
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum WikiAutocompleteState {
     #[default]
     None,
@@ -298,6 +415,8 @@ pub enum WikiAutocompleteState {
         query: String,
         suggestions: Vec<WikiSuggestion>,
         selected_index: usize,
+        mode: WikiAutocompleteMode,
+        target_note: Option<String>,
     },
 }
 
@@ -366,9 +485,9 @@ impl BufferSearchState {
 /// A suggestion item for wiki link autocomplete
 #[derive(Debug, Clone, PartialEq)]
 pub struct WikiSuggestion {
-    /// Display name shown in the list
+    /// Display name shown in the list (note title)
     pub display_name: String,
-    /// Text to insert when selected
+    /// Text to insert when selected (full path for nested notes)
     pub insert_text: String,
     /// True if this is a folder, false if it's a note
     pub is_folder: bool,
@@ -376,12 +495,16 @@ pub struct WikiSuggestion {
     pub path: String,
     /// Fuzzy match score (higher is better)
     pub score: i32,
+    /// Optional folder hint for nested notes (shown below title)
+    pub folder_hint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct WikiLinkInfo {
-    pub target: String,
+    pub target: String,           // The file path (without heading)
+    pub heading: Option<String>,  // Optional #heading part
+    pub display_text: Option<String>, // Optional |alias part
     pub start_col: usize,
     pub end_col: usize,
     pub is_valid: bool,
@@ -398,6 +521,7 @@ pub enum LinkInfo {
     },
     Wiki {
         target: String,
+        heading: Option<String>,
         start_col: usize,
         end_col: usize,
         is_valid: bool,
@@ -444,6 +568,7 @@ pub enum SidebarItemKind {
 pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
+    #[allow(dead_code)]
     pub list_state: ListState,
     pub focus: Focus,
     pub mode: Mode,
@@ -461,6 +586,8 @@ pub struct App {
     pub vim: VimState,
     pub visual_line_anchor: Option<usize>,
     pub visual_line_current: Option<usize>,
+    pub visual_block_anchor: Option<Position>,
+    pub block_insert_state: Option<BlockInsertState>,
     pub content_cursor: usize,
     pub content_scroll_offset: usize,
     pub floating_cursor_mode: bool,
@@ -491,6 +618,7 @@ pub struct App {
     pub content_item_rects: Vec<(usize, Rect)>,
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
+    pub heading_fold_states: HashMap<usize, bool>,  // content_item index -> is_folded
     pub highlighter: Option<Highlighter>,
     pub highlighter_loading: bool,
     pub highlighter_sender: Sender<Highlighter>,
@@ -509,12 +637,20 @@ pub struct App {
     pub pending_wiki_target: Option<String>,
     pub needs_full_clear: bool,
     pub pending_g: bool,
+    pub pending_z: bool,  // For z-prefixed commands like zM, zR
+    pub status_message: Option<String>,  // Status message shown next to path
     pub buffer_search: BufferSearchState,
     pub help_scroll: usize,
     // Graph view state
     pub graph_view: GraphViewState,
+    // Sidebar sorting
+    pub sort_mode: SortMode,
+    // Navigation history (like browser back/forward)
+    pub navigation_history: Vec<usize>,  
+    pub navigation_index: usize,         
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeleteType {
     Word,
@@ -541,6 +677,8 @@ impl App {
         editor.set_line_wrap(config.editor.line_wrap);
         editor.set_tab_width(config.editor.tab_width);
         editor.set_padding(config.editor.left_padding, config.editor.right_padding);
+        editor.set_line_number_mode(config.editor.line_numbers);
+        editor.set_scrolloff(config.editor.scrolloff as usize);
         editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -605,6 +743,8 @@ impl App {
             vim: VimState::new(),
             visual_line_anchor: None,
             visual_line_current: None,
+            visual_block_anchor: None,
+            block_insert_state: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
@@ -635,6 +775,7 @@ impl App {
             content_item_rects: Vec::new(),
             selected_link_index: 0,
             details_open_states: HashMap::new(),
+            heading_fold_states: HashMap::new(),
             highlighter: None,
             highlighter_loading: false,
             highlighter_sender,
@@ -652,9 +793,14 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            pending_z: false,
+            status_message: None,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            sort_mode: SortMode::default(),
+            navigation_history: Vec::new(),
+            navigation_index: 0,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -695,6 +841,8 @@ impl App {
         editor.set_line_wrap(config.editor.line_wrap);
         editor.set_tab_width(config.editor.tab_width);
         editor.set_padding(config.editor.left_padding, config.editor.right_padding);
+        editor.set_line_number_mode(config.editor.line_numbers);
+        editor.set_scrolloff(config.editor.scrolloff as usize);
         editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -753,6 +901,8 @@ impl App {
             vim: VimState::new(),
             visual_line_anchor: None,
             visual_line_current: None,
+            visual_block_anchor: None,
+            block_insert_state: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
@@ -783,6 +933,7 @@ impl App {
             content_item_rects: Vec::new(),
             selected_link_index: 0,
             details_open_states: HashMap::new(),
+            heading_fold_states: HashMap::new(),
             highlighter: None,
             highlighter_loading: false,
             highlighter_sender,
@@ -799,9 +950,14 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            pending_z: false,
+            status_message: None,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            sort_mode: SortMode::default(),
+            navigation_history: Vec::new(),
+            navigation_index: 0,
         };
 
         if notes_dir_exists {
@@ -865,9 +1021,16 @@ impl App {
                 }
             }
         }
-        self.content_cursor = content_cursor.min(self.content_items.len().saturating_sub(1));
-        self.content_scroll_offset = scroll_offset;
+        // Rebuild content_items for the restored note BEFORE clamping positions,
+        // so that content_items.len() reflects the correct note's length
         self.update_content_items();
+        let len = self.content_items.len();
+        self.content_cursor = content_cursor.min(len.saturating_sub(1));
+        self.content_scroll_offset = if len == 0 {
+            0
+        } else {
+            scroll_offset.clamp(1, len)
+        };
         self.update_outline();
     }
 
@@ -883,6 +1046,8 @@ impl App {
         self.editor.set_line_wrap(self.config.editor.line_wrap);
         self.editor.set_tab_width(self.config.editor.tab_width);
         self.editor.set_padding(self.config.editor.left_padding, self.config.editor.right_padding);
+        self.editor.set_line_number_mode(self.config.editor.line_numbers);
+        self.editor.set_scrolloff(self.config.editor.scrolloff as usize);
         self.editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -940,8 +1105,8 @@ impl App {
 
         self.file_tree = self.build_tree(&notes_path, 0);
 
-        // Don't sort - preserve filesystem order so users can control with numbered prefixes
-        // e.g., "01-Getting Started.md" appears before "02-Advanced.md"
+        // Sort the tree according to current sort mode
+        self.sort_tree();
 
         self.rebuild_sidebar_items();
 
@@ -993,11 +1158,17 @@ impl App {
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
 
+                        let (modified_time, created_time) = fs::metadata(&path)
+                            .map(|m| (m.modified().ok(), m.created().ok()))
+                            .unwrap_or((None, None));
+
                         let note_index = self.notes.len();
                         self.notes.push(Note {
                             title,
                             content,
                             file_path: Some(path),
+                            modified_time,
+                            created_time,
                         });
 
                         items.push(FileTreeItem::Note {
@@ -1020,19 +1191,64 @@ impl App {
     }
 
     fn sort_tree(&mut self) {
-        Self::sort_tree_items(&mut self.file_tree, &self.notes);
+        let sort_mode = self.sort_mode;
+        let folders_first = self.config.folders_first;
+        Self::sort_tree_items(&mut self.file_tree, &self.notes, sort_mode, folders_first);
     }
 
-    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note]) {
+    fn sort_tree_items(items: &mut [FileTreeItem], notes: &[Note], sort_mode: SortMode, folders_first: bool) {
         items.sort_by(|a, b| {
-            let name_a = Self::get_tree_item_name(a, notes);
-            let name_b = Self::get_tree_item_name(b, notes);
-            name_a.to_lowercase().cmp(&name_b.to_lowercase())
+            if folders_first {
+                let is_folder_a = matches!(a, FileTreeItem::Folder { .. });
+                let is_folder_b = matches!(b, FileTreeItem::Folder { .. });
+
+                match (is_folder_a, is_folder_b) {
+                    (true, false) => return std::cmp::Ordering::Less,
+                    (false, true) => return std::cmp::Ordering::Greater,
+                    _ => {}
+                }
+            }
+            Self::compare_items(a, b, notes, sort_mode)
         });
 
         for item in items.iter_mut() {
             if let FileTreeItem::Folder { children, .. } = item {
-                Self::sort_tree_items(children, notes);
+                Self::sort_tree_items(children, notes, sort_mode, folders_first);
+            }
+        }
+    }
+
+    fn compare_items(a: &FileTreeItem, b: &FileTreeItem, notes: &[Note], sort_mode: SortMode) -> std::cmp::Ordering {
+        match sort_mode {
+            SortMode::NameAsc => {
+                let name_a = Self::get_tree_item_name(a, notes);
+                let name_b = Self::get_tree_item_name(b, notes);
+                name_a.to_lowercase().cmp(&name_b.to_lowercase())
+            }
+            SortMode::NameDesc => {
+                let name_a = Self::get_tree_item_name(a, notes);
+                let name_b = Self::get_tree_item_name(b, notes);
+                name_b.to_lowercase().cmp(&name_a.to_lowercase())
+            }
+            SortMode::ModifiedOldest => {
+                let time_a = Self::get_tree_item_modified(a, notes);
+                let time_b = Self::get_tree_item_modified(b, notes);
+                time_a.cmp(&time_b)
+            }
+            SortMode::ModifiedNewest => {
+                let time_a = Self::get_tree_item_modified(a, notes);
+                let time_b = Self::get_tree_item_modified(b, notes);
+                time_b.cmp(&time_a)
+            }
+            SortMode::CreatedOldest => {
+                let time_a = Self::get_tree_item_created(a, notes);
+                let time_b = Self::get_tree_item_created(b, notes);
+                time_a.cmp(&time_b)
+            }
+            SortMode::CreatedNewest => {
+                let time_a = Self::get_tree_item_created(a, notes);
+                let time_b = Self::get_tree_item_created(b, notes);
+                time_b.cmp(&time_a)
             }
         }
     }
@@ -1042,6 +1258,30 @@ impl App {
             FileTreeItem::Folder { name, .. } => name,
             FileTreeItem::Note { note_index, .. } => &notes[*note_index].title,
         }
+    }
+
+    fn get_tree_item_modified(item: &FileTreeItem, notes: &[Note]) -> Option<std::time::SystemTime> {
+        match item {
+            FileTreeItem::Folder { path, .. } => {
+                fs::metadata(path).ok().and_then(|m| m.modified().ok())
+            }
+            FileTreeItem::Note { note_index, .. } => notes[*note_index].modified_time,
+        }
+    }
+
+    fn get_tree_item_created(item: &FileTreeItem, notes: &[Note]) -> Option<std::time::SystemTime> {
+        match item {
+            FileTreeItem::Folder { path, .. } => {
+                fs::metadata(path).ok().and_then(|m| m.created().ok())
+            }
+            FileTreeItem::Note { note_index, .. } => notes[*note_index].created_time,
+        }
+    }
+
+    pub fn cycle_sort_mode(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+        self.sort_tree();
+        self.rebuild_sidebar_items();
     }
 
     pub fn rebuild_sidebar_items(&mut self) {
@@ -1122,6 +1362,18 @@ impl App {
             }
             self.selected_note = new_note_idx;
             self.current_image = None;
+        }
+    }
+
+    /// find and select the current note in the sidebar after re sorting
+    fn select_current_note_in_sidebar(&mut self) {
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if *note_index == self.selected_note {
+                    self.selected_sidebar_index = idx;
+                    return;
+                }
+            }
         }
     }
 
@@ -1403,8 +1655,6 @@ impl App {
 
     pub fn dismiss_welcome(&mut self) {
         self.show_welcome = false;
-        self.config.welcome_shown = false; // Set to false so welcome won't show again
-        let _ = self.config.save();
     }
 
     pub fn update_outline(&mut self) {
@@ -1443,6 +1693,7 @@ impl App {
         self.content_items.clear();
         self.content_item_source_lines.clear();
         self.details_open_states.clear();
+        self.heading_fold_states.clear();
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
             let mut in_code_block = false;
@@ -1618,29 +1869,92 @@ impl App {
         if self.content_items.is_empty() {
             return;
         }
-        if self.content_cursor < self.content_items.len() - 1 {
-            self.content_cursor += 1;
+        // Find next visible content item
+        let mut next = self.content_cursor + 1;
+        while next < self.content_items.len() && !self.is_content_item_visible(next) {
+            next += 1;
+        }
+        if next < self.content_items.len() {
+            self.content_cursor = next;
             self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
     pub fn previous_content_line(&mut self) {
-        if self.content_cursor > 0 {
-            self.content_cursor -= 1;
+        if self.content_cursor == 0 {
+            return;
+        }
+        // Find previous visible content item
+        let mut prev = self.content_cursor.saturating_sub(1);
+        while prev > 0 && !self.is_content_item_visible(prev) {
+            prev = prev.saturating_sub(1);
+        }
+        // Only move if the target is visible
+        if self.is_content_item_visible(prev) {
+            self.content_cursor = prev;
             self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
     pub fn goto_first_content_line(&mut self) {
+        // Find first visible item
         self.content_cursor = 0;
+        while self.content_cursor < self.content_items.len() && !self.is_content_item_visible(self.content_cursor) {
+            self.content_cursor += 1;
+        }
         self.selected_link_index = 0;
     }
 
     pub fn goto_last_content_line(&mut self) {
         if !self.content_items.is_empty() {
+            // Find last visible item
             self.content_cursor = self.content_items.len() - 1;
+            while self.content_cursor > 0 && !self.is_content_item_visible(self.content_cursor) {
+                self.content_cursor -= 1;
+            }
             self.selected_link_index = 0;
         }
+    }
+
+    pub fn half_page_down_content(&mut self) {
+        if self.content_items.is_empty() {
+            return;
+        }
+        let content_height = self.content_area.height.saturating_sub(2) as usize;
+        let half = content_height / 2;
+        let max_cursor = self.content_items.len().saturating_sub(1);
+
+        // Count visible items to move by half page
+        let mut moved = 0;
+        let mut new_cursor = self.content_cursor;
+        while moved < half && new_cursor < max_cursor {
+            new_cursor += 1;
+            if self.is_content_item_visible(new_cursor) {
+                moved += 1;
+            }
+        }
+        self.content_cursor = new_cursor;
+        self.selected_link_index = 0;
+    }
+
+    pub fn half_page_up_content(&mut self) {
+        if self.content_items.is_empty() {
+            return;
+        }
+        let content_height = self.content_area.height.saturating_sub(2) as usize;
+        let half = content_height / 2;
+
+        // Count visible items to move by half page
+        let mut moved = 0;
+        let mut new_cursor = self.content_cursor;
+        while moved < half && new_cursor > 0 {
+            new_cursor -= 1;
+            if self.is_content_item_visible(new_cursor) {
+                moved += 1;
+            }
+        }
+        self.content_cursor = new_cursor;
+        self.selected_link_index = 0;
     }
 
     pub fn toggle_floating_cursor(&mut self) {
@@ -1652,8 +1966,13 @@ impl App {
             return;
         }
 
-        if self.content_cursor < self.content_items.len() - 1 {
-            self.content_cursor += 1;
+        // Find next visible content item
+        let mut next = self.content_cursor + 1;
+        while next < self.content_items.len() && !self.is_content_item_visible(next) {
+            next += 1;
+        }
+        if next < self.content_items.len() {
+            self.content_cursor = next;
             self.selected_link_index = 0;
         }
     }
@@ -1663,8 +1982,16 @@ impl App {
             return;
         }
 
-        if self.content_cursor > 0 {
-            self.content_cursor -= 1;
+        if self.content_cursor == 0 {
+            return;
+        }
+        // Find previous visible content item
+        let mut prev = self.content_cursor.saturating_sub(1);
+        while prev > 0 && !self.is_content_item_visible(prev) {
+            prev = prev.saturating_sub(1);
+        }
+        if self.is_content_item_visible(prev) {
+            self.content_cursor = prev;
             self.selected_link_index = 0;
         }
     }
@@ -1711,6 +2038,97 @@ impl App {
                 let current = self.details_open_states.get(&id).copied().unwrap_or(false);
                 self.details_open_states.insert(id, !current);
             }
+        }
+    }
+    pub fn heading_level(line: &str) -> Option<usize> {
+        if line.starts_with("### ") {
+            Some(3)
+        } else if line.starts_with("## ") {
+            Some(2)
+        } else if line.starts_with("# ") {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    pub fn is_heading_at(&self, idx: usize) -> bool {
+        if let Some(ContentItem::TextLine(line)) = self.content_items.get(idx) {
+            Self::heading_level(line).is_some()
+        } else {
+            false
+        }
+    }
+    pub fn is_heading_folded(&self, idx: usize) -> bool {
+        self.heading_fold_states.get(&idx).copied().unwrap_or(false)
+    }
+    pub fn toggle_current_heading_fold(&mut self) {
+        if self.is_heading_at(self.content_cursor) {
+            let idx = self.content_cursor;
+            let current = self.heading_fold_states.get(&idx).copied().unwrap_or(false);
+            let new_state = !current;
+            self.heading_fold_states.insert(idx, new_state);
+            let msg = if new_state { "Folded" } else { "Unfolded" };
+            self.status_message = Some(msg.to_string());
+        }
+    }
+    pub fn toggle_heading_fold_at(&mut self, idx: usize) {
+        if self.is_heading_at(idx) {
+            let current = self.heading_fold_states.get(&idx).copied().unwrap_or(false);
+            let new_state = !current;
+            self.heading_fold_states.insert(idx, new_state);
+            let msg = if new_state { "Folded" } else { "Unfolded" };
+            self.status_message = Some(msg.to_string());
+        }
+    }
+    pub fn get_heading_children_range(&self, heading_idx: usize) -> std::ops::Range<usize> {
+        let heading_level = if let Some(ContentItem::TextLine(line)) = self.content_items.get(heading_idx) {
+            Self::heading_level(line).unwrap_or(0)
+        } else {
+            return heading_idx..heading_idx;
+        };
+
+        let mut end_idx = heading_idx + 1;
+        while end_idx < self.content_items.len() {
+            if let ContentItem::TextLine(line) = &self.content_items[end_idx] {
+                if let Some(level) = Self::heading_level(line) {
+                    if level <= heading_level {
+                        break;
+                    }
+                }
+            }
+            end_idx += 1;
+        }
+        (heading_idx + 1)..end_idx
+    }
+    pub fn is_content_item_visible(&self, idx: usize) -> bool {
+        for (heading_idx, is_folded) in &self.heading_fold_states {
+            if *is_folded && *heading_idx < idx {
+                let children_range = self.get_heading_children_range(*heading_idx);
+                if children_range.contains(&idx) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub fn fold_all_headings(&mut self) {
+        let mut count = 0;
+        for idx in 0..self.content_items.len() {
+            if self.is_heading_at(idx) {
+                self.heading_fold_states.insert(idx, true);
+                count += 1;
+            }
+        }
+        self.status_message = Some(format!("Folded {} headings", count));
+    }
+    pub fn unfold_all_headings(&mut self) {
+        let count = self.heading_fold_states.len();
+        self.heading_fold_states.clear();
+        self.status_message = Some(format!("Unfolded {} headings", count));
+    }
+    pub fn unfold_heading_at(&mut self, idx: usize) {
+        if self.is_heading_at(idx) && self.is_heading_folded(idx) {
+            self.heading_fold_states.insert(idx, false);
         }
     }
 
@@ -1765,6 +2183,7 @@ impl App {
         for wiki in self.item_wiki_links_at(index) {
             all_links.push(LinkInfo::Wiki {
                 target: wiki.target,
+                heading: wiki.heading,
                 start_col: wiki.start_col,
                 end_col: wiki.end_col,
                 is_valid: wiki.is_valid,
@@ -1775,29 +2194,62 @@ impl App {
         all_links
     }
 
+    fn is_current_task_item(&self) -> bool {
+        matches!(
+            self.content_items.get(self.content_cursor),
+            Some(ContentItem::TaskItem { .. })
+        )
+    }
+    pub fn is_task_checkbox_selected(&self) -> bool {
+        self.is_current_task_item() && self.selected_link_index == 0
+    }
+
     pub fn current_selected_link(&self) -> Option<LinkInfo> {
         let all_links = self.item_all_links_at(self.content_cursor);
         if all_links.is_empty() {
             return None;
         }
-        let idx = self.selected_link_index.min(all_links.len().saturating_sub(1));
+
+        let idx = if self.is_current_task_item() {
+            if self.selected_link_index == 0 {
+                return None; 
+            }
+            (self.selected_link_index - 1).min(all_links.len().saturating_sub(1))
+        } else {
+            self.selected_link_index.min(all_links.len().saturating_sub(1))
+        };
+
         all_links.get(idx).cloned()
     }
 
     pub fn current_line_link_count(&self) -> usize {
-        self.item_all_links_at(self.content_cursor).len()
+        let link_count = self.item_all_links_at(self.content_cursor).len();
+        if self.is_current_task_item() && link_count > 0 {
+            link_count + 1
+        } else {
+            link_count
+        }
     }
+
 
     pub fn next_link(&mut self) {
         let link_count = self.current_line_link_count();
-        if link_count > 1 {
+        if self.is_current_task_item() && link_count > 0 {
+            self.selected_link_index = (self.selected_link_index + 1) % link_count;
+        } else if link_count > 1 {
             self.selected_link_index = (self.selected_link_index + 1) % link_count;
         }
     }
 
     pub fn previous_link(&mut self) {
         let link_count = self.current_line_link_count();
-        if link_count > 1 {
+        if self.is_current_task_item() && link_count > 0 {
+            if self.selected_link_index == 0 {
+                self.selected_link_index = link_count - 1;
+            } else {
+                self.selected_link_index -= 1;
+            }
+        } else if link_count > 1 {
             if self.selected_link_index == 0 {
                 self.selected_link_index = link_count - 1;
             } else {
@@ -1816,7 +2268,7 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
-    /// Extract all links from a specific content item as (text, url, start_col, end_col) tuples
+    /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
     /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
     pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
         let text = match self.content_items.get(index) {
@@ -1830,9 +2282,105 @@ impl App {
 
         while search_start < text.len() {
             let remaining = &text[search_start..];
+
+            // Check for double-bang image !![alt](url) first (text-only, no preview)
+            if let Some(dbl_img_pos) = remaining.find("!![") {
+                let single_img_pos = remaining.find("![");
+                let bracket_pos = remaining.find('[');
+
+                let is_first = single_img_pos.map(|s| dbl_img_pos <= s).unwrap_or(true)
+                    && bracket_pos.map(|b| dbl_img_pos < b).unwrap_or(true);
+
+                if is_first {
+                    let abs_img_pos = search_start + dbl_img_pos;
+                    let from_img = &text[abs_img_pos..];
+
+                    if let Some(bracket_end) = from_img[2..].find("](") {
+                        let after_bracket = &from_img[2 + bracket_end + 2..];
+                        if let Some(paren_end) = after_bracket.find(')') {
+                            let alt_text = &from_img[3..2 + bracket_end];
+                            let url = &after_bracket[..paren_end];
+
+                            if !url.is_empty() {
+                                let display_text = if alt_text.is_empty() {
+                                    url.to_string()
+                                } else {
+                                    alt_text.to_string()
+                                };
+                                let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
+                                let rendered_end = rendered_start + display_text.chars().count();
+
+                                links.push((
+                                    display_text,
+                                    url.to_string(),
+                                    rendered_start,
+                                    rendered_end,
+                                ));
+                            }
+
+                            search_start = abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // check for single-bang image
+            if let Some(img_pos) = remaining.find("![") {
+                // skip if this is actually a double-bang
+                if img_pos > 0 && remaining.as_bytes().get(img_pos.saturating_sub(1)) == Some(&b'!') {
+                    search_start = search_start + img_pos + 2;
+                    continue;
+                }
+
+                let bracket_pos = remaining.find('[');
+
+                if bracket_pos.is_none() || img_pos < bracket_pos.unwrap() {
+                    let abs_img_pos = search_start + img_pos;
+                    let from_img = &text[abs_img_pos..];
+
+                    if let Some(bracket_end) = from_img[1..].find("](") {
+                        let after_bracket = &from_img[1 + bracket_end + 2..];
+                        if let Some(paren_end) = after_bracket.find(')') {
+                            let alt_text = &from_img[2..1 + bracket_end];
+                            let url = &after_bracket[..paren_end];
+
+                            if !url.is_empty() {
+                                let display_text = if alt_text.is_empty() {
+                                    format!("[img: {}]", url)
+                                } else {
+                                    format!("[img: {}]", alt_text)
+                                };
+                                let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
+                                let rendered_end = rendered_start + display_text.chars().count();
+
+                                links.push((
+                                    display_text,
+                                    url.to_string(),
+                                    rendered_start,
+                                    rendered_end,
+                                ));
+                            }
+
+                            search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            //check for regular markdown link
             if let Some(bracket_pos) = remaining.find('[') {
                 let abs_bracket_pos = search_start + bracket_pos;
                 let from_bracket = &text[abs_bracket_pos..];
+
+                // skip if this is part of a wiki link
+                if from_bracket.starts_with("[[") {
+                    if let Some(close_pos) = from_bracket[2..].find("]]") {
+                        search_start = abs_bracket_pos + 2 + close_pos + 2;
+                        continue;
+                    }
+                }
 
                 if let Some(bracket_end) = from_bracket.find("](") {
                     let after_bracket = &from_bracket[bracket_end + 2..];
@@ -1841,11 +2389,16 @@ impl App {
                         let url = &after_bracket[..paren_end];
 
                         if !url.is_empty() {
+                            let display_text = if link_text.is_empty() {
+                                url.to_string()
+                            } else {
+                                link_text.to_string()
+                            };
                             let rendered_start = Self::calc_rendered_pos(text, abs_bracket_pos);
-                            let rendered_end = rendered_start + link_text.chars().count();
+                            let rendered_end = rendered_start + display_text.chars().count();
 
                             links.push((
-                                link_text.to_string(),
+                                display_text,
                                 url.to_string(),
                                 rendered_start,
                                 rendered_end,
@@ -1869,6 +2422,70 @@ impl App {
 
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
+
+            if remaining.starts_with("!![") {
+                if let Some(bracket_end) = remaining[2..].find("](") {
+                    let after_bracket = &remaining[2 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[3..2 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 2 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                url.chars().count()
+                            } else {
+                                alt_text.chars().count()
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("![") {
+                if let Some(bracket_end) = remaining[1..].find("](") {
+                    let after_bracket = &remaining[1 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[2..1 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 1 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                6 + url.chars().count() + 1 
+                            } else {
+                                6 + alt_text.chars().count() + 1 
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("[[") {
+                if let Some(end_pos) = remaining[2..].find("]]") {
+                    let target = &remaining[2..2 + end_pos];
+                    let full_link_len = 2 + end_pos + 2;
+
+                    if i + full_link_len <= target_pos {
+                        rendered_pos += target.chars().count();
+                        i += full_link_len;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
             if remaining.starts_with('[') {
                 if let Some(bracket_end) = remaining.find("](") {
                     let after_bracket = &remaining[bracket_end + 2..];
@@ -1877,7 +2494,12 @@ impl App {
                         let full_link_len = bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            rendered_pos += link_text.chars().count();
+                            let display_len = if link_text.is_empty() {
+                                after_bracket[..paren_end].chars().count()
+                            } else {
+                                link_text.chars().count()
+                            };
+                            rendered_pos += display_len;
                             i += full_link_len;
                             continue;
                         } else {
@@ -1973,6 +2595,53 @@ impl App {
         }
     }
 
+    pub fn item_is_task_at(&self, index: usize) -> bool {
+        matches!(self.content_items.get(index), Some(ContentItem::TaskItem { .. }))
+    }
+
+    pub fn is_click_on_task_checkbox(&self, index: usize, col: u16, content_x: u16) -> bool {
+        if !self.item_is_task_at(index) {
+            return false;
+        }
+        let click_col = col.saturating_sub(content_x) as usize;
+        click_col >= 2 && click_col <= 4
+    }
+
+    pub fn toggle_task_at(&mut self, index: usize) {
+        let saved_cursor = self.content_cursor;
+
+        if let Some(item) = self.content_items.get(index) {
+            if let ContentItem::TaskItem { line_index, checked, .. } = item {
+                let line_index = *line_index;
+                let new_checked = !*checked;
+
+                if let Some(note) = self.notes.get_mut(self.selected_note) {
+                    let lines: Vec<&str> = note.content.lines().collect();
+                    if line_index < lines.len() {
+                        let line = lines[line_index];
+                        let new_line = if new_checked {
+                            line.replacen("- [ ]", "- [x]", 1)
+                        } else {
+                            line.replacen("- [x]", "- [ ]", 1)
+                                .replacen("- [X]", "- [ ]", 1)
+                        };
+
+                        let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+                        new_lines[line_index] = new_line;
+                        note.content = new_lines.join("\n");
+
+                        if let Some(ref path) = note.file_path {
+                            let _ = fs::write(path, &note.content);
+                        }
+                    }
+                }
+
+                self.update_content_items();
+                self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn open_current_link(&self) {
         if let Some(url) = self.current_item_link() {
@@ -1988,7 +2657,7 @@ impl App {
     // ==================== Wiki Link Support ====================
 
     /// Resolve a wiki link target to a note index
-    /// "note" -> searches all notes for matching title
+    /// "note" -> searches all notes recursively for matching title (root first, then subfolders)
     /// "folder/note" -> searches for note in specific folder
     pub fn resolve_wiki_link(&self, target: &str) -> Option<usize> {
         if target.is_empty() {
@@ -1999,21 +2668,30 @@ impl App {
 
         if target.contains('/') {
             let expected_path = notes_path.join(format!("{}.md", target));
+            let expected_str = expected_path.to_string_lossy();
             for (idx, note) in self.notes.iter().enumerate() {
                 if let Some(file_path) = &note.file_path {
-                    if file_path == &expected_path {
+                    if file_path.to_string_lossy() == expected_str {
                         return Some(idx);
                     }
                 }
             }
         } else {
+            // First, try to find in root directory (for backwards compatibility)
             for (idx, note) in self.notes.iter().enumerate() {
                 if note.title.eq_ignore_ascii_case(target) {
                     if let Some(file_path) = &note.file_path {
-                        if file_path.parent() == Some(&notes_path) {
+                        if file_path.parent() == Some(notes_path.as_path()) {
                             return Some(idx);
                         }
                     }
+                }
+            }
+            // If not found in root, search recursively in all subdirectories
+            // all notes in self.notes are already from the notes directory
+            for (idx, note) in self.notes.iter().enumerate() {
+                if note.title.eq_ignore_ascii_case(target) {
+                    return Some(idx);
                 }
             }
         }
@@ -2071,6 +2749,64 @@ impl App {
         false
     }
 
+    /// Check if cursor is inside an unclosed wikilink and return the current state
+    /// Returns: Option<(note_query, heading_query, alias_query, mode)>
+    /// - note_query: the part before # or |
+    /// - heading_query: the part after # (if present)
+    /// - alias_query: the part after | (if present)
+    /// - mode: WikiAutocompleteMode indicating current position
+    pub fn detect_unclosed_wikilink(&self, row: usize, col: usize) -> Option<(String, Option<String>, Option<String>, WikiAutocompleteMode)> {
+        let lines = self.editor.lines();
+        let line = lines.get(row)?;
+        let chars: Vec<char> = line.chars().collect();
+        let mut open_pos = None;
+        let mut i = col.saturating_sub(1);
+        while i > 0 {
+            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&'[') && chars.get(i) == Some(&'[') {
+                open_pos = Some(i.saturating_sub(1));
+                break;
+            }
+            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&']') && chars.get(i) == Some(&']') {
+                return None;
+            }
+            i = i.saturating_sub(1);
+        }
+        if open_pos.is_none() && i == 0 && col >= 2 {
+            if chars.get(0) == Some(&'[') && chars.get(1) == Some(&'[') {
+                open_pos = Some(0);
+            }
+        }
+
+        let start = open_pos? + 2; 
+
+        for j in start..col.saturating_sub(1) {
+            if chars.get(j) == Some(&']') && chars.get(j + 1) == Some(&']') {
+                return None;
+            }
+        }
+
+        let content: String = chars[start..col].iter().collect();
+
+        if let Some(pipe_pos) = content.find('|') {
+            let before_pipe = &content[..pipe_pos];
+            let alias_query = content[pipe_pos + 1..].to_string();
+
+            if let Some(hash_pos) = before_pipe.find('#') {
+                let note_query = before_pipe[..hash_pos].to_string();
+                let heading_query = before_pipe[hash_pos + 1..].to_string();
+                Some((note_query, Some(heading_query), Some(alias_query), WikiAutocompleteMode::Alias))
+            } else {
+                Some((before_pipe.to_string(), None, Some(alias_query), WikiAutocompleteMode::Alias))
+            }
+        } else if let Some(hash_pos) = content.find('#') {
+            let note_query = content[..hash_pos].to_string();
+            let heading_query = content[hash_pos + 1..].to_string();
+            Some((note_query, Some(heading_query), None, WikiAutocompleteMode::Heading))
+        } else {
+            Some((content, None, None, WikiAutocompleteMode::Note))
+        }
+    }
+
     pub fn get_wiki_path_for_note(&self, note_idx: usize) -> Option<String> {
         let note = self.notes.get(note_idx)?;
         let file_path = note.file_path.as_ref()?;
@@ -2126,14 +2862,35 @@ impl App {
                 let after_brackets = &text[abs_start + 2..];
 
                 if let Some(end_pos) = after_brackets.find("]]") {
-                    let target = &after_brackets[..end_pos];
-                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                    let raw_content = &after_brackets[..end_pos];
+                    if !raw_content.is_empty() && !raw_content.contains('[') && !raw_content.contains(']') {
+                        // Parse: [[target#heading|display]]
+                        // First split by | to get display text (alias)
+                        let (content, display_text) = if let Some(pipe_pos) = raw_content.find('|') {
+                            (&raw_content[..pipe_pos], Some(raw_content[pipe_pos + 1..].to_string()))
+                        } else {
+                            (raw_content, None)
+                        };
+
+                        // Then split by # to get heading
+                        let (target, heading) = if let Some(hash_pos) = content.find('#') {
+                            (&content[..hash_pos], Some(content[hash_pos + 1..].to_string()))
+                        } else {
+                            (content, None)
+                        };
+
                         let rendered_start = Self::calc_wiki_rendered_pos(text, abs_start);
-                        let rendered_end = rendered_start + target.chars().count();
+                        // Display text determines rendered length if present (use unicode width for CJK support)
+                        use unicode_width::UnicodeWidthStr;
+                        let display_len = display_text.as_ref().map_or(raw_content.width(), |d| d.width());
+                        let rendered_end = rendered_start + display_len;
+                        // Validate against target file (without heading)
                         let is_valid = self.wiki_link_exists(target);
 
                         links.push(WikiLinkInfo {
                             target: target.to_string(),
+                            heading,
+                            display_text,
                             start_col: rendered_start,
                             end_col: rendered_end,
                             is_valid,
@@ -2151,11 +2908,60 @@ impl App {
     }
 
     fn calc_wiki_rendered_pos(text: &str, target_pos: usize) -> usize {
+        use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
         let mut rendered_pos = 0;
         let mut i = 0;
 
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
+
+            if remaining.starts_with("!![") {
+                if let Some(bracket_end) = remaining[2..].find("](") {
+                    let after_bracket = &remaining[2 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[3..2 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 2 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                url.width()
+                            } else {
+                                alt_text.width()
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if remaining.starts_with("![") {
+                if let Some(bracket_end) = remaining[1..].find("](") {
+                    let after_bracket = &remaining[1 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        let alt_text = &remaining[2..1 + bracket_end];
+                        let url = &after_bracket[..paren_end];
+                        let full_link_len = 1 + bracket_end + 2 + paren_end + 1;
+
+                        if i + full_link_len <= target_pos {
+                            let display_len = if alt_text.is_empty() {
+                                6 + url.width() + 1
+                            } else {
+                                6 + alt_text.width() + 1
+                            };
+                            rendered_pos += display_len;
+                            i += full_link_len;
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
 
             if remaining.starts_with("[[") {
                 if let Some(end_pos) = remaining[2..].find("]]") {
@@ -2163,7 +2969,7 @@ impl App {
                     let full_link_len = 2 + end_pos + 2;
 
                     if i + full_link_len <= target_pos {
-                        rendered_pos += target.chars().count();
+                        rendered_pos += target.width();
                         i += full_link_len;
                         continue;
                     } else {
@@ -2177,10 +2983,16 @@ impl App {
                     let after_bracket = &remaining[bracket_end + 2..];
                     if let Some(paren_end) = after_bracket.find(')') {
                         let link_text = &remaining[1..bracket_end];
+                        let url = &after_bracket[..paren_end];
                         let full_link_len = bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            rendered_pos += link_text.chars().count();
+                            let display_len = if link_text.is_empty() {
+                                url.width()
+                            } else {
+                                link_text.width()
+                            };
+                            rendered_pos += display_len;
                             i += full_link_len;
                             continue;
                         } else {
@@ -2190,7 +3002,8 @@ impl App {
                 }
             }
 
-            rendered_pos += 1;
+            // Use unicode widh for individual characters (CJK = 2, ASCII = 1)
+            rendered_pos += remaining.chars().next().map(|c| c.width().unwrap_or(1)).unwrap_or(1);
             i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         }
 
@@ -2204,7 +3017,33 @@ impl App {
     }
 
     pub fn navigate_to_wiki_link(&mut self, target: &str) -> bool {
+        self.navigate_to_wiki_link_with_heading(target, None)
+    }
+
+    pub fn navigate_to_wiki_link_with_heading(&mut self, target: &str, heading: Option<&str>) -> bool {
         if let Some(note_idx) = self.resolve_wiki_link(target) {
+            if let Some(note) = self.notes.get(note_idx) {
+                if let Some(ref file_path) = note.file_path {
+                    let notes_root = self.config.notes_path();
+                    let mut current = file_path.parent();
+                    let mut needs_rebuild = false;
+                    while let Some(parent) = current {
+                        if parent == notes_root {
+                            break;
+                        }
+                        if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                            self.folder_states.insert(parent.to_path_buf(), true);
+                            needs_rebuild = true;
+                        }
+                        current = parent.parent();
+                    }
+                    if needs_rebuild {
+                        Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                        self.rebuild_sidebar_items();
+                    }
+                }
+            }
+
             for (idx, item) in self.sidebar_items.iter().enumerate() {
                 if let SidebarItemKind::Note { note_index } = &item.kind {
                     if *note_index == note_idx {
@@ -2217,6 +3056,13 @@ impl App {
                         self.selected_link_index = 0;
                         self.update_content_items();
                         self.update_outline();
+                        self.push_navigation_history(note_idx);
+
+                        // If heading is specified, navigate to it
+                        if let Some(heading_text) = heading {
+                            self.navigate_to_heading(heading_text);
+                        }
+
                         return true;
                     }
                 }
@@ -2225,7 +3071,144 @@ impl App {
         false
     }
 
+    /// Navigate to a heading in the current note's content
+    fn navigate_to_heading(&mut self, heading: &str) {
+        let heading_lower = heading.to_lowercase();
+
+        for (idx, item) in self.content_items.iter().enumerate() {
+            if let ContentItem::TextLine(line) = item {
+                let title = if line.starts_with("### ") {
+                    Some(line.trim_start_matches("### "))
+                } else if line.starts_with("## ") {
+                    Some(line.trim_start_matches("## "))
+                } else if line.starts_with("# ") {
+                    Some(line.trim_start_matches("# "))
+                } else {
+                    None
+                };
+
+                if let Some(title) = title {
+                    if title.to_lowercase() == heading_lower {
+                        self.content_cursor = idx;
+                        self.content_scroll_offset = idx.saturating_sub(2);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // ==================== Navigation History ====================
+
+    /// push a note to navigation history 
+    /// called when navigating to a new note
+    pub fn push_navigation_history(&mut self, note_idx: usize) {
+        if let Some(&current) = self.navigation_history.get(self.navigation_index) {
+            if current == note_idx {
+                return;
+            }
+        }
+        if self.navigation_index + 1 < self.navigation_history.len() {
+            self.navigation_history.truncate(self.navigation_index + 1);
+        }
+
+        self.navigation_history.push(note_idx);
+        self.navigation_index = self.navigation_history.len().saturating_sub(1);
+        
+        // limit history size to prevent memory bloat
+        const MAX_HISTORY: usize = 100;
+        if self.navigation_history.len() > MAX_HISTORY {
+            let remove_count = self.navigation_history.len() - MAX_HISTORY;
+            self.navigation_history.drain(0..remove_count);
+            self.navigation_index = self.navigation_index.saturating_sub(remove_count);
+        }
+    }
+
+    pub fn navigate_back(&mut self) -> bool {
+        if self.navigation_index == 0 || self.navigation_history.is_empty() {
+            return false;
+        }
+
+        self.navigation_index -= 1;
+        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
+            self.go_to_note_without_history(note_idx);
+            return true;
+        }
+        false
+    }
+
+    /// navigate to next note in history 
+    pub fn navigate_forward(&mut self) -> bool {
+        if self.navigation_index + 1 >= self.navigation_history.len() {
+            return false;
+        }
+
+        self.navigation_index += 1;
+        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
+            self.go_to_note_without_history(note_idx);
+            return true;
+        }
+        false
+    }
+
+    /// go to a note without pushing to history used by back/forward to prevent infinite loop
+    fn go_to_note_without_history(&mut self, note_idx: usize) {
+        if note_idx >= self.notes.len() {
+            return;
+        }
+
+        if let Some(note) = self.notes.get(note_idx) {
+            if let Some(ref file_path) = note.file_path {
+                let notes_root = self.config.notes_path();
+                let mut current = file_path.parent();
+                let mut needs_rebuild = false;
+                while let Some(parent) = current {
+                    if parent == notes_root {
+                        break;
+                    }
+                    if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                        self.folder_states.insert(parent.to_path_buf(), true);
+                        needs_rebuild = true;
+                    }
+                    current = parent.parent();
+                }
+                if needs_rebuild {
+                    Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                    self.rebuild_sidebar_items();
+                }
+            }
+        }
+
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if *note_index == note_idx {
+                    self.end_buffer_search();
+                    self.selected_sidebar_index = idx;
+                    self.selected_note = note_idx;
+                    self.content_cursor = 0;
+                    self.content_scroll_offset = 0;
+                    self.selected_link_index = 0;
+                    self.update_content_items();
+                    self.update_outline();
+                    return;
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn can_navigate_back(&self) -> bool {
+        self.navigation_index > 0 && !self.navigation_history.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub fn can_navigate_forward(&self) -> bool {
+        self.navigation_index + 1 < self.navigation_history.len()
+    }
+
     pub fn build_graph(&mut self) {
+        use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
+
         let mut nodes: Vec<GraphNode> = Vec::new();
         let mut edges: Vec<GraphEdge> = Vec::new();
         let mut note_to_node: HashMap<usize, usize> = HashMap::new();
@@ -2233,23 +3216,34 @@ impl App {
             let node_idx = nodes.len();
             note_to_node.insert(note_idx, node_idx);
 
-            let title = if note.title.chars().count() > 40 {
-                note.title.chars().take(37).collect::<String>() + "..."
-            } else {
-                note.title.clone()
+            let title = {
+                let display_width = note.title.width();
+                if display_width > 20 {
+                    let mut truncated = String::new();
+                    let mut current_width = 0;
+                    for ch in note.title.chars() {
+                        let ch_width = ch.width().unwrap_or(1);
+                        if current_width + ch_width > 17 {
+                            break;
+                        }
+                        truncated.push(ch);
+                        current_width += ch_width;
+                    }
+                    truncated + "..."
+                } else {
+                    note.title.clone()
+                }
             };
-
-            let title_len = title.chars().count() as u16;
-            let width = (title_len + 4).max(8); // Minimum width of 8
 
             nodes.push(GraphNode {
                 note_index: note_idx,
                 title,
                 x: 0.0,
                 y: 0.0,
+                home_x: 0.0,
+                home_y: 0.0,
                 vx: 0.0,
                 vy: 0.0,
-                width,
             });
         }
 
@@ -2286,6 +3280,7 @@ impl App {
 
         if let Some(&node_idx) = note_to_node.get(&self.selected_note) {
             self.graph_view.selected_node = Some(node_idx);
+            self.graph_view.needs_center = true;
         } else {
             self.graph_view.selected_node = if !self.graph_view.nodes.is_empty() { Some(0) } else { None };
         }
@@ -2321,14 +3316,20 @@ impl App {
                 }
 
                 if let Some(score) = fuzzy_match(&note.title, note_query) {
+                    let folder_hint = if let Some(last_slash) = wiki_path.rfind('/') {
+                        Some(wiki_path[..last_slash].to_string())
+                    } else {
+                        None
+                    };
                     suggestions.push(WikiSuggestion {
                         display_name: note.title.clone(),
-                        insert_text: wiki_path.clone(),
+                        insert_text: note.title.clone(),
                         is_folder: false,
                         path: note.file_path.as_ref()
                             .map(|p| p.display().to_string())
                             .unwrap_or_default(),
                         score,
+                        folder_hint,
                     });
                 }
             }
@@ -2356,6 +3357,7 @@ impl App {
                             is_folder: true,
                             path: path.display().to_string(),
                             score,
+                            folder_hint: None,
                         });
                     }
                 }
@@ -2370,6 +3372,56 @@ impl App {
                     .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase())),
             }
         });
+
+        suggestions
+    }
+
+    /// Build heading suggestions for a note target
+    /// This extracts headings from the note's content and filters by query
+    pub fn build_heading_suggestions(&self, note_target: &str, query: &str) -> Vec<WikiSuggestion> {
+        let mut suggestions = Vec::new();
+
+        for (idx, note) in self.notes.iter().enumerate() {
+            if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
+                if wiki_path.to_lowercase() == note_target.to_lowercase()
+                   || note.title.to_lowercase() == note_target.to_lowercase() {
+                    for line in note.content.lines() {
+                        let heading: Option<(usize, String)> = if line.starts_with("### ") {
+                            Some((3, line.trim_start_matches("### ").to_string()))
+                        } else if line.starts_with("## ") {
+                            Some((2, line.trim_start_matches("## ").to_string()))
+                        } else if line.starts_with("# ") {
+                            Some((1, line.trim_start_matches("# ").to_string()))
+                        } else {
+                            None
+                        };
+
+                        if let Some((level, title)) = heading {
+                            let score = if query.is_empty() {
+                                1000 
+                            } else if let Some(s) = fuzzy_match(&title, query) {
+                                s
+                            } else {
+                                continue; 
+                            };
+
+                            let prefix = "  ".repeat(level.saturating_sub(1));
+                            suggestions.push(WikiSuggestion {
+                                display_name: format!("{}{}", prefix, title),
+                                insert_text: title.clone(), // Just the heading text for insertion
+                                is_folder: false,
+                                path: format!("{}#{}", wiki_path, title),
+                                score,
+                                folder_hint: None,
+                            });
+                        }
+                    }
+                    break; 
+                }
+            }
+        }
+
+        suggestions.sort_by(|a, b| b.score.cmp(&a.score));
 
         suggestions
     }
@@ -2400,18 +3452,27 @@ impl App {
 
     pub fn open_current_image(&self) {
         if let Some(path) = self.current_item_is_image() {
-            let is_url = path.starts_with("http://") || path.starts_with("https://");
-            let should_open = is_url || PathBuf::from(path).exists();
-
-            if should_open {
-                #[cfg(target_os = "macos")]
-                let _ = Command::new("open").arg(path).spawn();
-                #[cfg(target_os = "linux")]
-                let _ = Command::new("xdg-open").arg(path).spawn();
-                #[cfg(target_os = "windows")]
-                let _ = Command::new("cmd").args(["/c", "start", "", path]).spawn();
-            }
+            self.open_path_or_url(path);
         }
+    }
+
+    pub fn open_path_or_url(&self, path: &str) {
+        let is_url = path.starts_with("http://") || path.starts_with("https://");
+
+        let open_path = if is_url {
+            path.to_string()
+        } else if let Some(resolved) = self.resolve_image_path(path) {
+            resolved.to_string_lossy().to_string()
+        } else {
+            path.to_string()
+        };
+
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(&open_path).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(&open_path).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
     }
 
     pub fn next_sidebar_item(&mut self) {
@@ -2459,14 +3520,19 @@ impl App {
     }
 
     pub fn handle_sidebar_enter(&mut self) {
-        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+        let item_info = self.sidebar_items.get(self.selected_sidebar_index).map(|item| {
             match &item.kind {
-                SidebarItemKind::Folder { path, .. } => {
-                    self.toggle_folder(path.clone());
-                }
-                SidebarItemKind::Note { .. } => {
-                    self.toggle_focus(false);
-                }
+                SidebarItemKind::Folder { path, .. } => (true, path.clone(), 0),
+                SidebarItemKind::Note { note_index } => (false, PathBuf::new(), *note_index),
+            }
+        });
+
+        if let Some((is_folder, path, note_index)) = item_info {
+            if is_folder {
+                self.toggle_folder(path);
+            } else {
+                self.toggle_focus(false);
+                self.push_navigation_history(note_index);
             }
         }
     }
@@ -2600,6 +3666,7 @@ impl App {
         self.start_buffer_search_with_direction(SearchDirection::Forward);
     }
 
+    #[allow(dead_code)]
     pub fn start_buffer_search_backward(&mut self) {
         self.start_buffer_search_with_direction(SearchDirection::Backward);
     }
@@ -2769,6 +3836,7 @@ impl App {
                 let target_line = outline_item.line;
                 // Set content cursor to the target line
                 if target_line < self.content_items.len() {
+                    self.unfold_heading_at(target_line);
                     self.content_cursor = target_line;
                 }
                 // Switch focus to content
@@ -2779,6 +3847,45 @@ impl App {
 
     pub fn current_note(&self) -> Option<&Note> {
         self.notes.get(self.selected_note)
+    }
+
+    pub fn resolve_image_path(&self, path: &str) -> Option<PathBuf> {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            return Some(PathBuf::from(path));
+        }
+
+        let path_buf = if path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&path[2..])
+            } else {
+                PathBuf::from(path)
+            }
+        } else if path == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+        } else {
+            PathBuf::from(path)
+        };
+
+        if path_buf.is_absolute() && path_buf.exists() {
+            return Some(path_buf);
+        }
+
+        if let Some(note) = self.current_note() {
+            if let Some(ref file_path) = note.file_path {
+                if let Some(note_dir) = file_path.parent() {
+                    let resolved = note_dir.join(&path_buf);
+                    if resolved.exists() {
+                        return Some(resolved);
+                    }
+                }
+            }
+        }
+
+        if path_buf.exists() {
+            return Some(path_buf);
+        }
+
+        None
     }
 
     /// Find the content item index for a given source line.
@@ -2810,6 +3917,12 @@ impl App {
             let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
 
             self.editor = Editor::new(lines);
+            self.editor.set_line_wrap(self.config.editor.line_wrap);
+            self.editor.set_tab_width(self.config.editor.tab_width);
+            self.editor.set_padding(self.config.editor.left_padding, self.config.editor.right_padding);
+            self.editor.set_line_number_mode(self.config.editor.line_numbers);
+            self.editor.set_scrolloff(self.config.editor.scrolloff as usize);
+
             self.vim_mode = VimMode::Normal;
             self.vim.mode = crate::vim::VimMode::Normal;
             self.vim.reset_pending();
@@ -2868,10 +3981,11 @@ impl App {
                 if let Ok(relative) = file_path.strip_prefix(&notes_path) {
                     let path_str = relative.to_string_lossy();
                     if let Some(stripped) = path_str.strip_suffix(".md") {
+                        // Add full path (e.g., "folder/note-name")
                         valid_targets.insert(stripped.to_string());
-                        if !stripped.contains('/') {
-                            valid_targets.insert(stripped.to_lowercase());
-                        }
+                        // Also add just the note title for recursive search support
+                        valid_targets.insert(note.title.clone());
+                        valid_targets.insert(note.title.to_lowercase());
                     }
                 }
             }
@@ -2899,10 +4013,16 @@ impl App {
 
         let mode_str = if is_command_mode {
             "COMMAND"
+        } else if let Some(ref block_state) = self.block_insert_state {
+            match block_state.mode {
+                BlockInsertMode::Insert => "V-BLK INSERT",
+                BlockInsertMode::Append => "V-BLK APPEND",
+            }
         } else {
             match self.vim_mode {
                 VimMode::Normal => "NORMAL",
                 VimMode::Insert => "INSERT",
+                VimMode::Replace => "REPLACE",
                 VimMode::Visual => "VISUAL",
                 VimMode::VisualLine => "V-LINE",
                 VimMode::VisualBlock => "V-BLOCK",
@@ -2915,12 +4035,15 @@ impl App {
         };
         let color = if is_command_mode {
             self.theme.info
+        } else if self.block_insert_state.is_some() {
+            self.theme.secondary // Use secondary color for block insert mode
         } else {
             match (&self.pending_delete, self.vim_mode) {
                 (Some(_), _) => self.theme.error,
                 (None, VimMode::Normal) if self.pending_operator.is_some() => self.theme.warning,
                 (None, VimMode::Normal) => self.theme.primary,
                 (None, VimMode::Insert) => self.theme.success,
+                (None, VimMode::Replace) => self.theme.warning,
                 (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => {
                     self.theme.secondary
                 }
@@ -2928,6 +4051,8 @@ impl App {
         };
         let hint = if is_command_mode {
             "Enter: Execute, Esc: Cancel"
+        } else if self.block_insert_state.is_some() {
+            "Type text, Esc: Apply to all lines"
         } else {
             match (&self.pending_delete, self.vim_mode) {
                 (Some(_), _) => "d: Confirm, Esc: Cancel",
@@ -2974,8 +4099,17 @@ impl App {
             // Save to file
             if let Some(ref path) = note.file_path {
                 let _ = fs::write(path, &note.content);
+                // Update modified time after save
+                note.modified_time = fs::metadata(path).ok().and_then(|m| m.modified().ok());
             }
         }
+
+        // Re-sort and rebuild sidebar to reflect updated modified time
+        self.sort_tree();
+        self.rebuild_sidebar_items();
+        // Re-select the current note in the sidebar after re-sorting
+        self.select_current_note_in_sidebar();
+
         self.mode = Mode::Normal;
         self.update_content_items();
         self.update_outline();

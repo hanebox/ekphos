@@ -3,6 +3,7 @@
 use crate::editor::Position;
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MarkMap {
     marks: HashMap<char, Position>,
@@ -36,18 +37,22 @@ impl MarkMap {
         self.last_jump = Some(pos);
     }
 
+    #[allow(dead_code)]
     pub fn set_last_change(&mut self, pos: Position) {
         self.last_change = Some(pos);
     }
 
+    #[allow(dead_code)]
     pub fn set_last_insert(&mut self, pos: Position) {
         self.last_insert = Some(pos);
     }
 
+    #[allow(dead_code)]
     pub fn delete(&mut self, mark: char) {
         self.marks.remove(&mark);
     }
 
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<(char, Position)> {
         let mut result: Vec<_> = self.marks.iter().map(|(&c, &p)| (c, p)).collect();
         result.sort_by_key(|(c, _)| *c);

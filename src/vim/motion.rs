@@ -2,6 +2,7 @@
 
 use crate::editor::Position;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Motion {
     Left,
@@ -40,6 +41,7 @@ pub enum Motion {
 }
 
 impl Motion {
+    #[allow(dead_code)]
     pub fn is_linewise(&self) -> bool {
         matches!(
             self,
@@ -56,6 +58,7 @@ impl Motion {
         )
     }
 
+    #[allow(dead_code)]
     pub fn is_exclusive(&self) -> bool {
         matches!(
             self,
@@ -69,10 +72,12 @@ impl Motion {
     }
 }
 
+#[allow(dead_code)]
 pub fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+#[allow(dead_code)]
 pub fn find_word_forward(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -109,6 +114,7 @@ pub fn find_word_forward(line: &str, col: usize) -> usize {
     pos
 }
 
+#[allow(dead_code)]
 pub fn find_word_back(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
 
@@ -140,6 +146,7 @@ pub fn find_word_back(line: &str, col: usize) -> usize {
     pos
 }
 
+#[allow(dead_code)]
 pub fn find_word_end_forward(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -172,6 +179,7 @@ pub fn find_word_end_forward(line: &str, col: usize) -> usize {
     pos
 }
 
+#[allow(dead_code)]
 pub fn find_big_word_forward(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -193,6 +201,7 @@ pub fn find_big_word_forward(line: &str, col: usize) -> usize {
     pos
 }
 
+#[allow(dead_code)]
 pub fn find_big_word_back(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
 
@@ -213,6 +222,7 @@ pub fn find_big_word_back(line: &str, col: usize) -> usize {
     pos
 }
 
+#[allow(dead_code)]
 pub fn find_big_word_end_forward(line: &str, col: usize) -> usize {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -234,12 +244,14 @@ pub fn find_big_word_end_forward(line: &str, col: usize) -> usize {
     pos.min(len.saturating_sub(1))
 }
 
+#[allow(dead_code)]
 pub fn find_first_non_blank(line: &str) -> usize {
     line.chars()
         .position(|c| !c.is_whitespace())
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> {
     let line = lines.get(pos.row)?;
     let chars: Vec<char> = line.chars().collect();
@@ -319,6 +331,7 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
     }
 }
 
+#[allow(dead_code)]
 pub fn find_paragraph_forward(lines: &[&str], row: usize) -> usize {
     let mut r = row;
 
@@ -333,6 +346,7 @@ pub fn find_paragraph_forward(lines: &[&str], row: usize) -> usize {
     r.min(lines.len().saturating_sub(1))
 }
 
+#[allow(dead_code)]
 pub fn find_paragraph_backward(lines: &[&str], row: usize) -> usize {
     if row == 0 {
         return 0;

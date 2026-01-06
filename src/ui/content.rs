@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -9,11 +7,52 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 
-use crate::app::{App, ContentItem, Focus, ImageState, Mode};
+use crate::app::{App, ContentItem, DialogState, Focus, ImageState, Mode};
 use crate::config::Theme;
+
+const INLINE_THUMBNAIL_HEIGHT: u16 = 4;
+
+fn extract_inline_images(text: &str) -> Vec<String> {
+    let mut images = Vec::new();
+    let mut search_start = 0;
+
+    while search_start < text.len() {
+        let remaining = &text[search_start..];
+        if let Some(img_pos) = remaining.find("![") {
+            let abs_img_pos = search_start + img_pos;
+
+            // skip double-bang images they don't get thumbnails
+            if abs_img_pos > 0 && text.as_bytes().get(abs_img_pos - 1) == Some(&b'!') {
+                search_start = abs_img_pos + 2;
+                continue;
+            }
+
+            let from_img = &text[abs_img_pos..];
+
+            if let Some(bracket_end) = from_img[1..].find("](") {
+                let after_bracket = &from_img[1 + bracket_end + 2..];
+                if let Some(paren_end) = after_bracket.find(')') {
+                    let url = &after_bracket[..paren_end];
+                    if !url.is_empty() {
+                        images.push(url.to_string());
+                    }
+                    search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                    continue;
+                }
+            }
+            search_start = abs_img_pos + 2;
+        } else {
+            break;
+        }
+    }
+
+    images
+}
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focus == Focus::Content && app.mode == Mode::Normal;
+    // Skip rendering images when dialog is active to prevent terminal graphics artifacts
+    let skip_images = app.dialog != DialogState::None || app.show_welcome;
     let theme = &app.theme;
 
     let border_style = if app.floating_cursor_mode {
@@ -98,11 +137,27 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let details_states = &app.details_open_states;
     let get_item_height = |item: &ContentItem| -> u16 {
         match item {
-            ContentItem::TextLine(line) => calc_wrapped_height(line, 4),
+            ContentItem::TextLine(line) => {
+                let base_height = calc_wrapped_height(line, 4);
+                let inline_images = extract_inline_images(line);
+                if inline_images.is_empty() {
+                    base_height
+                } else {
+                    base_height + (inline_images.len() as u16 * INLINE_THUMBNAIL_HEIGHT)
+                }
+            }
             ContentItem::Image(_) => 8u16,
             ContentItem::CodeLine(line) => calc_wrapped_height(line, 6),
             ContentItem::CodeFence(_) => 1u16,
-            ContentItem::TaskItem { text, .. } => calc_wrapped_height(text, 6),
+            ContentItem::TaskItem { text, .. } => {
+                let base_height = calc_wrapped_height(text, 6);
+                let inline_images = extract_inline_images(text);
+                if inline_images.is_empty() {
+                    base_height
+                } else {
+                    base_height + (inline_images.len() as u16 * INLINE_THUMBNAIL_HEIGHT)
+                }
+            }
             ContentItem::TableRow { .. } => 1u16,
             ContentItem::Details { content_lines, id, .. } => {
                 let is_open = details_states.get(id).copied().unwrap_or(false);
@@ -126,6 +181,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let mut height_from_offset = 0u16;
         let mut last_visible_idx = base_offset;
         for (i, item) in app.content_items.iter().enumerate().skip(base_offset) {
+            if !app.is_content_item_visible(i) {
+                continue;
+            }
             let item_height = get_item_height(item);
             if height_from_offset + item_height > inner_area.height {
                 break;
@@ -140,6 +198,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         } else if cursor > last_visible_idx {
             let mut cumulative_height = 0u16;
             for (i, item) in app.content_items.iter().enumerate() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 if i <= cursor {
                     cumulative_height += get_item_height(item);
                 }
@@ -151,6 +212,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             let mut new_offset = 0;
             let mut height_so_far = 0u16;
             for (i, item) in app.content_items.iter().enumerate() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 if i > cursor {
                     break;
                 }
@@ -171,6 +235,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let mut first_page_height = 0u16;
         let mut first_page_last_idx = 0;
         for (i, item) in app.content_items.iter().enumerate() {
+            if !app.is_content_item_visible(i) {
+                continue;
+            }
             let item_height = get_item_height(item);
             if first_page_height + item_height > inner_area.height {
                 break;
@@ -187,6 +254,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             let mut first_visible_idx = cursor;
 
             for i in (0..=cursor).rev() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 let item_height = get_item_height(&app.content_items[i]);
                 if height_from_cursor + item_height > inner_area.height {
                     break;
@@ -205,6 +275,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let mut total_height = 0u16;
 
     for (i, item) in app.content_items.iter().enumerate().skip(scroll_offset) {
+        // Skip items hidden by folded headings
+        if !app.is_content_item_visible(i) {
+            continue;
+        }
         if total_height >= inner_area.height {
             break;
         }
@@ -256,16 +330,31 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let item_clone = app.content_items[item_idx].clone();
 
         match item_clone {
-            ContentItem::TextLine(line) => {
+            ContentItem::TextLine(ref line) => {
                 let has_regular_link = app.item_link_at(item_idx).is_some();
                 let has_wiki_link = !app.item_wiki_links_at(item_idx).is_empty();
                 let has_link = (is_cursor_line || is_hovered) && (has_regular_link || has_wiki_link);
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
-                render_content_line(f, &app.theme, &line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator));
+                // Get fold state for H1-H3 headings
+                let fold_state = if app.is_heading_at(item_idx) {
+                    Some(app.is_heading_folded(item_idx))
+                } else {
+                    None
+                };
+                render_content_line(f, &app.theme, line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator), fold_state);
+                if !skip_images {
+                    let inline_images = extract_inline_images(line);
+                    if !inline_images.is_empty() {
+                        let text_height = calc_wrapped_height(line, 4);
+                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                    }
+                }
             }
             ContentItem::Image(path) => {
-                render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
+                if !skip_images {
+                    render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
+                }
             }
             ContentItem::CodeLine(line) => {
                 app.ensure_highlighter();
@@ -275,8 +364,18 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 current_lang = lang.clone();
                 render_code_fence(f, &app.theme, &lang, chunks[chunk_idx], is_cursor_line);
             }
-            ContentItem::TaskItem { text, checked, .. } => {
-                render_task_item(f, &app.theme, &text, checked, chunks[chunk_idx], is_cursor_line);
+            ContentItem::TaskItem { ref text, checked, .. } => {
+                let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
+                let has_links = !app.item_wiki_links_at(item_idx).is_empty() || !app.item_links_at(item_idx).is_empty();
+                let wiki_validator = |target: &str| app.wiki_link_exists(target);
+                render_task_item(f, &app.theme, text, checked, chunks[chunk_idx], is_cursor_line, selected_link, has_links, Some(wiki_validator));
+                if !skip_images {
+                    let inline_images = extract_inline_images(text);
+                    if !inline_images.is_empty() {
+                        let text_height = calc_wrapped_height(text, 6);
+                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                    }
+                }
             }
             ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
                 render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line);
@@ -294,7 +393,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Calculate how many characters are removed by inline formatting before a given position
-/// This accounts for **bold**, *italic*, `code`, [[wiki links]], and [markdown](links)
+/// This accounts for **bold**, *italic*, ~~strikethrough~~, `code`, [[wiki links]], and [markdown](links)
 fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
     let mut shrinkage = 0usize;
     let mut pos = 0;
@@ -342,6 +441,17 @@ fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
                     shrinkage += 1;
                 }
                 pos = end + 1;
+                continue;
+            }
+        }
+        if pos + 1 < chars.len() && chars[pos] == '~' && chars[pos + 1] == '~' {
+            if let Some(end) = find_double_marker(&chars, pos + 2, '~') {
+                if end < up_to_pos {
+                    shrinkage += 4;
+                } else if pos + 2 < up_to_pos {
+                    shrinkage += 2;
+                }
+                pos = end + 2;
                 continue;
             }
         }
@@ -725,6 +835,39 @@ where
             }
         }
 
+        // Check for ~~strikethrough~~
+        if c == '~' {
+            if let Some(&(_, '~')) = chars.peek() {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                chars.next(); 
+                let strike_start = i + 2;
+                let mut strike_end = None;
+
+                while let Some((j, ch)) = chars.next() {
+                    if ch == '~' {
+                        if let Some(&(_, '~')) = chars.peek() {
+                            strike_end = Some(j);
+                            chars.next(); 
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(end) = strike_end {
+                    spans.push(Span::styled(
+                        &text[strike_start..end],
+                        Style::default().fg(content_theme.text).add_modifier(Modifier::CROSSED_OUT),
+                    ));
+                    current_start = end + 2;
+                } else {
+                    current_start = i;
+                }
+                continue;
+            }
+        }
+
         // Check for `code`
         if c == '`' {
             if i > current_start {
@@ -753,16 +896,119 @@ where
             continue;
         }
 
+        // Check for !![image](url) - double-bang (text-only, no preview)
+        // Must check before single-bang to avoid partial match
+        if c == '!' {
+            let remaining = &text[i..];
+
+            if remaining.starts_with("!![") {
+                if let Some(bracket_end) = remaining[2..].find("](") {
+                    let after_bracket = &remaining[2 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        if i > current_start {
+                            spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                        }
+
+                        let alt_text = &remaining[3..2 + bracket_end];
+                        let image_url = &after_bracket[..paren_end];
+
+                        // Display as text link without [img:] prefix for cleaner look
+                        let display_text = if alt_text.is_empty() {
+                            image_url.to_string()
+                        } else {
+                            alt_text.to_string()
+                        };
+
+                        let is_selected = selected_link == Some(link_index);
+                        let style = if is_selected {
+                            Style::default()
+                                .fg(theme.background)
+                                .bg(theme.warning)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(content_theme.link)
+                                .add_modifier(Modifier::UNDERLINED)
+                        };
+
+                        spans.push(Span::styled(display_text, style));
+                        link_index += 1;
+
+                        let total_link_len = 2 + bracket_end + 2 + paren_end + 1; // !![alt](url)
+                        for _ in 0..total_link_len - 1 {
+                            chars.next();
+                        }
+                        current_start = i + total_link_len;
+                        continue;
+                    }
+                }
+            }
+
+            if remaining.starts_with("![") {
+                if let Some(bracket_end) = remaining[1..].find("](") {
+                    let after_bracket = &remaining[1 + bracket_end + 2..];
+                    if let Some(paren_end) = after_bracket.find(')') {
+                        if i > current_start {
+                            spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                        }
+
+                        let alt_text = &remaining[2..1 + bracket_end];
+                        let image_url = &after_bracket[..paren_end];
+
+                        let display_text = if alt_text.is_empty() {
+                            format!("[img: {}]", image_url)
+                        } else {
+                            format!("[img: {}]", alt_text)
+                        };
+
+                        let is_selected = selected_link == Some(link_index);
+                        let style = if is_selected {
+                            Style::default()
+                                .fg(theme.background)
+                                .bg(theme.warning)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(content_theme.link)
+                                .add_modifier(Modifier::UNDERLINED)
+                        };
+
+                        spans.push(Span::styled(display_text, style));
+                        link_index += 1;
+
+                        let total_link_len = 1 + bracket_end + 2 + paren_end + 1;
+                        for _ in 0..total_link_len - 1 {
+                            chars.next();
+                        }
+                        current_start = i + total_link_len;
+                        continue;
+                    }
+                }
+            }
+        }
+
         // Check for [[wiki link]]
         if c == '[' {
             let remaining = &text[i..];
             if remaining.starts_with("[[") {
                 if let Some(close_pos) = remaining[2..].find("]]") {
-                    let target = &remaining[2..2 + close_pos];
-                    if !target.is_empty() && !target.contains('[') && !target.contains(']') {
+                    let raw_content = &remaining[2..2 + close_pos];
+                    if !raw_content.is_empty() && !raw_content.contains('[') && !raw_content.contains(']') {
                         if i > current_start {
                             spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
                         }
+
+                        let (content, display_text) = if let Some(pipe_pos) = raw_content.find('|') {
+                            (&raw_content[..pipe_pos], Some(&raw_content[pipe_pos + 1..]))
+                        } else {
+                            (raw_content, None)
+                        };
+                        let target = if let Some(hash_pos) = content.find('#') {
+                            &content[..hash_pos]
+                        } else {
+                            content
+                        };
+                        let shown_text = display_text.unwrap_or(raw_content);
 
                         let is_selected = selected_link == Some(link_index);
                         let is_valid = wiki_link_validator
@@ -785,7 +1031,7 @@ where
                                 .add_modifier(Modifier::UNDERLINED)
                         };
 
-                        spans.push(Span::styled(target.to_string(), style));
+                        spans.push(Span::styled(shown_text.to_string(), style));
                         link_index += 1;
 
                         let total_link_len = 2 + close_pos + 2; // [[target]]
@@ -806,7 +1052,13 @@ where
                     }
 
                     let link_text = &remaining[1..bracket_end];
-                    let _link_url = &after_bracket[..paren_end];
+                    let link_url = &after_bracket[..paren_end];
+
+                    let display_text = if link_text.is_empty() {
+                        link_url
+                    } else {
+                        link_text
+                    };
 
                     let is_selected = selected_link == Some(link_index);
                     let style = if is_selected {
@@ -820,7 +1072,7 @@ where
                             .add_modifier(Modifier::UNDERLINED)
                     };
 
-                    spans.push(Span::styled(link_text, style));
+                    spans.push(Span::styled(display_text.to_string(), style));
                     link_index += 1;
 
                     let total_link_len = bracket_end + 2 + paren_end + 1; // [text](url)
@@ -1118,6 +1370,7 @@ fn render_content_line<F>(
     has_link: bool,
     selected_link: usize,
     wiki_link_validator: Option<F>,
+    fold_state: Option<bool>,  // None = not foldable, Some(true) = folded, Some(false) = expanded
 ) where
     F: Fn(&str) -> bool,
 {
@@ -1125,10 +1378,19 @@ fn render_content_line<F>(
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
+    // Fold indicator for H1-H3 headings
+    let fold_indicator = |is_folded: Option<bool>, color: ratatui::style::Color| -> Span {
+        match is_folded {
+            Some(true) => Span::styled("▶ ", Style::default().fg(color)),   // Folded
+            Some(false) => Span::styled("▼ ", Style::default().fg(color)),  // Expanded
+            None => Span::styled("  ", Style::default()),                    // Not foldable
+        }
+    };
+
     // Check headings from most specific (######) to least specific (#)
     let content_theme = &theme.content;
     let styled_line = if line.starts_with("###### ") {
-        // H6: Smallest, italic, subtle
+        // H6: Smallest, italic, subtle (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled(
@@ -1139,7 +1401,7 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("##### ") {
-        // H5: Small, muted color
+        // H5: Small, muted color (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled(
@@ -1150,7 +1412,7 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("#### ") {
-        // H4: Small prefix
+        // H4: Small prefix (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled("› ", Style::default().fg(content_theme.heading4)),
@@ -1162,10 +1424,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("### ") {
-        // H3: Medium prefix
+        // H3: Medium prefix (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("▸ ", Style::default().fg(content_theme.heading3)),
+            fold_indicator(fold_state, content_theme.heading3),
             Span::styled(
                 line.trim_start_matches("### "),
                 Style::default()
@@ -1174,10 +1436,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("## ") {
-        // H2: Larger prefix
+        // H2: Larger prefix (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("■ ", Style::default().fg(content_theme.heading2)),
+            fold_indicator(fold_state, content_theme.heading2),
             Span::styled(
                 line.trim_start_matches("## "),
                 Style::default()
@@ -1186,10 +1448,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("# ") {
-        // H1: Largest, most prominent
+        // H1: Largest, most prominent (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("◆ ", Style::default().fg(content_theme.heading1)),
+            fold_indicator(fold_state, content_theme.heading1),
             Span::styled(
                 line.trim_start_matches("# ").to_uppercase(),
                 Style::default()
@@ -1207,15 +1469,22 @@ fn render_content_line<F>(
         spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme, selected, wiki_link_validator));
         Line::from(spans)
     } else if line.starts_with("> ") {
-        // Blockquote
-        Line::from(vec![
+        // Blockquote - with inline formatting support
+        let selected = if is_cursor { Some(selected_link) } else { None };
+        let content = line.trim_start_matches("> ");
+        let mut spans = vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled("┃ ", Style::default().fg(content_theme.blockquote)),
-            Span::styled(
-                line.trim_start_matches("> "),
-                Style::default().fg(content_theme.blockquote).add_modifier(Modifier::ITALIC),
-            ),
-        ])
+        ];
+        let formatted = parse_inline_formatting(content, theme, selected, wiki_link_validator);
+        for span in formatted {
+            let mut style = span.style;
+            if style.fg.is_none() || style.fg == Some(content_theme.text.into()) {
+                style = style.fg(content_theme.blockquote).add_modifier(Modifier::ITALIC);
+            }
+            spans.push(Span::styled(span.content, style));
+        }
+        Line::from(spans)
     } else if line == "---" || line == "***" || line == "___" {
         // Horizontal rule
         let hr_width = available_width.saturating_sub(2);
@@ -1344,24 +1613,74 @@ fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area: Rect, is_c
     f.render_widget(paragraph, area);
 }
 
-fn render_task_item(f: &mut Frame, theme: &Theme, text: &str, checked: bool, area: Rect, is_cursor: bool) {
+fn render_task_item<F>(
+    f: &mut Frame,
+    theme: &Theme,
+    text: &str,
+    checked: bool,
+    area: Rect,
+    is_cursor: bool,
+    selected_link: usize,
+    has_links: bool,
+    wiki_link_validator: Option<F>,
+) where
+    F: Fn(&str) -> bool,
+{
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
-    let checkbox_color = if checked { theme.success } else { theme.secondary };
-    let text_style = if checked {
-        Style::default().fg(theme.muted).add_modifier(Modifier::CROSSED_OUT)
+
+    let checkbox_selected = is_cursor && has_links && selected_link == 0;
+    let checkbox_color = if checkbox_selected {
+        theme.warning 
+    } else if checked {
+        theme.success
     } else {
-        Style::default().fg(theme.foreground)
+        theme.secondary
     };
+
     let expanded_text = expand_tabs(text);
     let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
-    let spans = vec![
+    let link_selected = if is_cursor && has_links && selected_link > 0 {
+        Some(selected_link - 1)
+    } else if is_cursor && !has_links {
+        Some(selected_link)
+    } else {
+        None
+    };
+    let mut text_spans = parse_inline_formatting(&expanded_text, theme, link_selected, wiki_link_validator);
+    if checked {
+        text_spans = text_spans
+            .into_iter()
+            .map(|span| {
+                let mut style = span.style;
+                style = style.fg(theme.muted).add_modifier(Modifier::CROSSED_OUT);
+                Span::styled(span.content, style)
+            })
+            .collect();
+    }
+    let checkbox_style = if checkbox_selected {
+        Style::default()
+            .fg(theme.background)
+            .bg(theme.warning)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)
+    };
+
+    let bracket_style = if checkbox_selected {
+        Style::default().fg(theme.background).bg(theme.warning)
+    } else {
+        Style::default().fg(checkbox_color)
+    };
+
+    let mut spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-        Span::styled("[", Style::default().fg(checkbox_color)),
-        Span::styled(if checked { "x" } else { " " }, Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)),
-        Span::styled("] ", Style::default().fg(checkbox_color)),
-        Span::styled(expanded_text, text_style),
+        Span::styled("[", bracket_style),
+        Span::styled(if checked { "x" } else { " " }, checkbox_style),
+        Span::styled("]", bracket_style),
+        Span::styled(" ", Style::default()),
     ];
+    spans.extend(text_spans);
 
     let wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
 
@@ -1450,42 +1769,45 @@ fn render_table_row(
 fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool, is_hovered: bool) {
     let is_remote = path.starts_with("http://") || path.starts_with("https://");
     let is_pending = is_remote && app.is_image_pending(path);
-    let is_cached = app.image_cache.contains_key(path);
+
+    let resolved_path = app.resolve_image_path(path);
+    let resolved_path_str = resolved_path.as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    let is_cached = app.image_cache.contains_key(&resolved_path_str);
 
     // Check if we need to load a new image
     let need_load = match &app.current_image {
-        Some(state) => state.path != path,
+        Some(state) => state.path != resolved_path_str,
         None => true,
     };
 
     if need_load {
         // Load image from cache, disk, or trigger async fetch for remote
-        let img = if let Some(img) = app.image_cache.get(path) {
+        let img = if let Some(img) = app.image_cache.get(&resolved_path_str) {
             Some(img.clone())
         } else if is_remote {
             if !is_pending {
                 app.start_remote_image_fetch(path);
             }
             None
-        } else {
-            let path_buf = PathBuf::from(path);
-            if path_buf.exists() {
-                if let Ok(img) = image::open(&path_buf) {
-                    app.image_cache.insert(path.to_string(), img.clone());
-                    Some(img)
-                } else {
-                    None
-                }
+        } else if let Some(ref resolved) = resolved_path {
+            if let Ok(img) = image::open(resolved) {
+                app.image_cache.insert(resolved_path_str.clone(), img.clone());
+                Some(img)
             } else {
                 None
             }
+        } else {
+            None
         };
 
         if let (Some(img), Some(picker)) = (img, &mut app.picker) {
             let protocol = picker.new_resize_protocol(img);
             app.current_image = Some(ImageState {
                 image: protocol,
-                path: path.to_string(),
+                path: resolved_path_str.clone(),
             });
         }
     }
@@ -1526,7 +1848,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     f.render_widget(block, area);
 
-    if is_pending || (is_remote && !is_cached && app.current_image.as_ref().map(|s| s.path != path).unwrap_or(true)) {
+    if is_pending || (is_remote && !is_cached && app.current_image.as_ref().map(|s| s.path != resolved_path_str).unwrap_or(true)) {
         let loading = Paragraph::new("  Loading remote image...")
             .style(Style::default().fg(theme.secondary).add_modifier(Modifier::ITALIC));
         f.render_widget(loading, inner_area);
@@ -1534,7 +1856,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
     }
 
     if let Some(state) = &mut app.current_image {
-        if state.path == path {
+        if state.path == resolved_path_str {
             let image_widget = StatefulImage::new(None);
             f.render_stateful_widget(image_widget, inner_area, &mut state.image);
         }
@@ -1543,6 +1865,81 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             .style(Style::default().fg(theme.error).add_modifier(Modifier::ITALIC));
         f.render_widget(placeholder, inner_area);
     }
+}
+
+/// Render inline image thumbnails below text content
+/// Returns the number of thumbnail rows rendered
+fn render_inline_thumbnails(
+    f: &mut Frame,
+    app: &mut App,
+    images: &[String],
+    area: Rect,
+    text_height: u16,
+) -> u16 {
+    if images.is_empty() || app.picker.is_none() {
+        return 0;
+    }
+    let secondary_color = app.theme.secondary;
+    let error_color = app.theme.error;
+    let mut y_offset = text_height;
+
+    for path in images {
+        if y_offset + INLINE_THUMBNAIL_HEIGHT > area.height {
+            break;
+        }
+
+        let thumb_area = Rect {
+            x: area.x + 2,
+            y: area.y + y_offset,
+            width: area.width.saturating_sub(4).min(40), 
+            height: INLINE_THUMBNAIL_HEIGHT,
+        };
+        let is_remote = path.starts_with("http://") || path.starts_with("https://");
+        let resolved_path = app.resolve_image_path(path);
+        let resolved_path_str = resolved_path.as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+
+        let is_pending = is_remote && app.is_image_pending(path);
+        let img = if let Some(img) = app.image_cache.get(&resolved_path_str) {
+            Some(img.clone())
+        } else if is_remote {
+            if !is_pending {
+                app.start_remote_image_fetch(path);
+            }
+            None
+        } else if let Some(ref resolved) = resolved_path {
+            if let Ok(img) = image::open(resolved) {
+                app.image_cache.insert(resolved_path_str.clone(), img.clone());
+                Some(img)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let (Some(img), Some(picker)) = (img, &mut app.picker) {
+            let protocol = picker.new_resize_protocol(img);
+            let mut thumb_state = ImageState {
+                image: protocol,
+                path: resolved_path_str.clone(),
+            };
+            let image_widget = StatefulImage::new(None);
+            f.render_stateful_widget(image_widget, thumb_area, &mut thumb_state.image);
+        } else if is_pending {
+            let loading = Paragraph::new("  ⏳ Loading...")
+                .style(Style::default().fg(secondary_color).add_modifier(Modifier::ITALIC));
+            f.render_widget(loading, thumb_area);
+        } else if !is_remote && resolved_path.is_none() {
+            let not_found = Paragraph::new("  ❌ Not found")
+                .style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
+            f.render_widget(not_found, thumb_area);
+        }
+
+        y_offset += INLINE_THUMBNAIL_HEIGHT;
+    }
+
+    y_offset - text_height
 }
 
 fn render_details(

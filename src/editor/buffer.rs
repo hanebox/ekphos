@@ -166,11 +166,11 @@ impl TextBuffer {
         if row >= self.line_count() {
             return None;
         }
+        self.move_gap_to(row + 1);
         if self.line_count() == 1 {
             let content = std::mem::take(&mut self.before[0]);
             return Some(content);
         }
-        self.move_gap_to(row + 1);
         self.before.pop()
     }
 

@@ -838,7 +838,7 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
             Span::styled("Find in buffer", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" z         ", key_style),
+            Span::styled(" Ctrl+z    ", key_style),
             Span::styled("Toggle zen mode", desc_style),
         ]),
         Line::from(vec![
@@ -904,6 +904,18 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
         Line::from(vec![
             Span::styled(" ]/[       ", key_style),
             Span::styled("Next/Previous link", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" za        ", key_style),
+            Span::styled("Toggle heading fold", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" zM        ", key_style),
+            Span::styled("Fold all headings", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" zR        ", key_style),
+            Span::styled("Unfold all headings", desc_style),
         ]),
         Line::from(""),
         Line::from(Span::styled(

@@ -48,9 +48,11 @@ pub fn render_search_dialog(f: &mut Frame, app: &App, content_area: Rect) {
 
     let available_width = (dialog_width as usize).saturating_sub(4 + count_text.len() + 2);
 
-    let display_query = if query.len() > available_width {
-        let start = query.len().saturating_sub(available_width);
-        format!("...{}", &query[start..])
+    let query_char_count = query.chars().count();
+    let display_query = if query_char_count > available_width {
+        let skip_count = query_char_count.saturating_sub(available_width);
+        let truncated: String = query.chars().skip(skip_count).collect();
+        format!("...{}", truncated)
     } else {
         query.clone()
     };

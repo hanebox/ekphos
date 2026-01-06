@@ -3,9 +3,9 @@ use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteState};
+use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
-use crate::editor::CursorMove;
+use crate::editor::{CursorMove, Position};
 use crate::ui;
 use crate::vim::{FindState, PendingFind, PendingMacro, PendingMark, TextObject, TextObjectScope, VimMode as VimModeNew};
 use crate::vim::command::{parse_command, Command};
@@ -50,9 +50,11 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
                 if process_events(terminal, app, &mut needs_render)? {
                     return Ok(());
                 }
-            } else if app.mouse_button_held && app.mode == Mode::Edit && app.vim_mode == VimMode::Visual {
-                handle_continuous_auto_scroll(app);
-                needs_render = true;
+            } else {
+                if app.mouse_button_held && app.mode == Mode::Edit && app.vim_mode == VimMode::Visual {
+                    handle_continuous_auto_scroll(app);
+                    needs_render = true;
+                }
             }
         } else {
             // idle block until event to avoid unnecessary cpu usage
@@ -192,19 +194,24 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
 
                     if clicked_index < app.sidebar_items.len() {
                         app.selected_sidebar_index = clicked_index;
-                        if let Some(item) = app.sidebar_items.get(clicked_index) {
+                        let item_info = app.sidebar_items.get(clicked_index).map(|item| {
                             match &item.kind {
-                                SidebarItemKind::Folder { path, .. } => {
-                                    app.focus = Focus::Sidebar;
-                                    let path = path.clone();
-                                    app.toggle_folder(path);
-                                }
-                                SidebarItemKind::Note { .. } => {
-                                    app.focus = Focus::Content;
-                                    app.sync_selected_note_from_sidebar();
-                                    app.update_content_items();
-                                    app.update_outline();
-                                }
+                                SidebarItemKind::Folder { path, .. } => Some((true, path.clone(), 0)),
+                                SidebarItemKind::Note { note_index } => Some((false, std::path::PathBuf::new(), *note_index)),
+                            }
+                        }).flatten();
+
+                        if let Some((is_folder, path, note_index)) = item_info {
+                            if is_folder {
+                                app.focus = Focus::Sidebar;
+                                app.toggle_folder(path);
+                            } else {
+                                app.focus = Focus::Content;
+                                app.sync_selected_note_from_sidebar();
+                                app.update_content_items();
+                                app.update_outline();
+                                // Push to navigation history
+                                app.push_navigation_history(note_index);
                             }
                         }
                     }
@@ -223,7 +230,10 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }).map(|(idx, _)| *idx);
 
                     if let Some(idx) = clicked_item {
-                        if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
+                        if app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x) {
+                            app.toggle_task_at(idx);
+                        }
+                        else if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
                             #[cfg(target_os = "macos")]
                             let _ = std::process::Command::new("open").arg(&url).spawn();
                             #[cfg(target_os = "linux")]
@@ -233,7 +243,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         }
                         else if let Some(wiki_link) = app.find_clicked_wiki_link(idx, mouse_x, app.content_area.x) {
                             if wiki_link.is_valid {
-                                app.navigate_to_wiki_link(&wiki_link.target);
+                                app.navigate_to_wiki_link_with_heading(&wiki_link.target, wiki_link.heading.as_deref());
                             } else {
                                 app.pending_wiki_target = Some(wiki_link.target);
                                 app.dialog = DialogState::CreateWikiNote;
@@ -241,18 +251,25 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         }
                         else if let Some(path) = app.item_is_image_at(idx) {
                             let is_url = path.starts_with("http://") || path.starts_with("https://");
-                            let should_open = is_url || std::path::PathBuf::from(path).exists();
-                            if should_open {
+                            let open_path = if is_url {
+                                Some(path.to_string())
+                            } else {
+                                app.resolve_image_path(path).map(|p| p.to_string_lossy().to_string())
+                            };
+                            if let Some(open_path) = open_path {
                                 #[cfg(target_os = "macos")]
-                                let _ = std::process::Command::new("open").arg(path).spawn();
+                                let _ = std::process::Command::new("open").arg(&open_path).spawn();
                                 #[cfg(target_os = "linux")]
-                                let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+                                let _ = std::process::Command::new("xdg-open").arg(&open_path).spawn();
                                 #[cfg(target_os = "windows")]
-                                let _ = std::process::Command::new("cmd").args(["/c", "start", "", path]).spawn();
+                                let _ = std::process::Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
                             }
                         }
                         else if app.item_is_details_at(idx) {
                             app.toggle_details_at(idx);
+                        }
+                        else if app.is_heading_at(idx) {
+                            app.toggle_heading_fold_at(idx);
                         }
                     }
                 }
@@ -829,13 +846,15 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
         return false;
     }
 
-    let (query, suggestions_len) = if let WikiAutocompleteState::Open {
+    let (query, suggestions_len, mode, target_note) = if let WikiAutocompleteState::Open {
         ref query,
         ref suggestions,
+        ref mode,
+        ref target_note,
         ..
     } = app.wiki_autocomplete
     {
-        (query.clone(), suggestions.len())
+        (query.clone(), suggestions.len(), mode.clone(), target_note.clone())
     } else {
         return false;
     };
@@ -846,6 +865,24 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Enter | KeyCode::Tab => {
+            if mode == WikiAutocompleteMode::Alias {
+                let (row, col) = app.editor.cursor();
+                let lines = app.editor.lines();
+                let already_closed = if let Some(line) = lines.get(row) {
+                    let chars: Vec<char> = line.chars().collect();
+                    chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                } else {
+                    false
+                };
+
+                if !already_closed {
+                    app.editor.insert_str("]]");
+                }
+                app.wiki_autocomplete = WikiAutocompleteState::None;
+                app.update_editor_highlights();
+                return true;
+            }
+
             let suggestion = if let WikiAutocompleteState::Open { ref suggestions, selected_index, .. } = app.wiki_autocomplete {
                 suggestions.get(selected_index).cloned()
             } else {
@@ -853,10 +890,36 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             };
 
             if let Some(suggestion) = suggestion {
-                for _ in 0..query.len() {
+                let chars_to_delete = match mode {
+                    WikiAutocompleteMode::Note => query.chars().count(),
+                    WikiAutocompleteMode::Heading => {
+                        query.chars().count()
+                    }
+                    WikiAutocompleteMode::Alias => 0,
+                };
+
+                for _ in 0..chars_to_delete {
                     app.editor.delete_newline();
                 }
-                if suggestion.is_folder {
+
+                if mode == WikiAutocompleteMode::Heading {
+                    app.editor.insert_str(&suggestion.insert_text);
+                    let already_closed = {
+                        let (row, col) = app.editor.cursor();
+                        let lines = app.editor.lines();
+                        if let Some(line) = lines.get(row) {
+                            let chars: Vec<char> = line.chars().collect();
+                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                        } else {
+                            false
+                        }
+                    };
+                    if !already_closed {
+                        app.editor.insert_str("]]");
+                    }
+                    app.wiki_autocomplete = WikiAutocompleteState::None;
+                    app.update_editor_highlights();
+                } else if suggestion.is_folder {
                     app.editor.insert_str(&suggestion.insert_text);
                     let new_query = suggestion.insert_text.clone();
                     let new_suggestions = app.build_wiki_suggestions(&new_query);
@@ -865,10 +928,24 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
                         query: new_query,
                         suggestions: new_suggestions,
                         selected_index: 0,
+                        mode: WikiAutocompleteMode::Note,
+                        target_note: None,
                     };
                 } else {
                     app.editor.insert_str(&suggestion.insert_text);
-                    app.editor.insert_str("]]");
+                    let already_closed = {
+                        let (row, col) = app.editor.cursor();
+                        let lines = app.editor.lines();
+                        if let Some(line) = lines.get(row) {
+                            let chars: Vec<char> = line.chars().collect();
+                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
+                        } else {
+                            false
+                        }
+                    };
+                    if !already_closed {
+                        app.editor.insert_str("]]");
+                    }
                     app.wiki_autocomplete = WikiAutocompleteState::None;
                     app.update_editor_highlights();
                 }
@@ -876,7 +953,7 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Down => {
-            if suggestions_len > 0 {
+            if mode != WikiAutocompleteMode::Alias && suggestions_len > 0 {
                 if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
                     *selected_index = (*selected_index + 1) % suggestions_len;
                 }
@@ -884,7 +961,7 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             return true;
         }
         KeyCode::Up => {
-            if suggestions_len > 0 {
+            if mode != WikiAutocompleteMode::Alias && suggestions_len > 0 {
                 if let WikiAutocompleteState::Open { ref mut selected_index, .. } = app.wiki_autocomplete {
                     *selected_index = if *selected_index == 0 {
                         suggestions_len - 1
@@ -897,21 +974,86 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
         }
         KeyCode::Backspace => {
             if query.is_empty() {
-                // Close autocomplete and delete the [[
-                app.editor.delete_newline(); // Delete first [
-                app.editor.delete_newline(); // Delete second [
-                app.wiki_autocomplete = WikiAutocompleteState::None;
+                match mode {
+                    WikiAutocompleteMode::Note => {
+                        // Close autocomplete and delete the [[
+                        app.editor.delete_newline(); // Delete first [
+                        app.editor.delete_newline(); // Delete second [
+                        app.wiki_autocomplete = WikiAutocompleteState::None;
+                    }
+                    WikiAutocompleteMode::Heading => {
+                        app.editor.delete_newline();
+                        if let Some(ref target) = target_note {
+                            let new_suggestions = app.build_wiki_suggestions(target);
+                            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                trigger_pos: (0, 0),
+                                query: target.clone(),
+                                suggestions: new_suggestions,
+                                selected_index: 0,
+                                mode: WikiAutocompleteMode::Note,
+                                target_note: None,
+                            };
+                        } else {
+                            app.wiki_autocomplete = WikiAutocompleteState::None;
+                        }
+                    }
+                    WikiAutocompleteMode::Alias => {
+                        app.editor.delete_newline();
+                        if let Some(ref target) = target_note {
+                            if target.contains('#') {
+                                let parts: Vec<&str> = target.splitn(2, '#').collect();
+                                let note_part = parts[0];
+                                let heading_part = parts.get(1).unwrap_or(&"");
+                                let heading_suggestions = app.build_heading_suggestions(note_part, heading_part);
+                                app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                    trigger_pos: (0, 0),
+                                    query: heading_part.to_string(),
+                                    suggestions: heading_suggestions,
+                                    selected_index: 0,
+                                    mode: WikiAutocompleteMode::Heading,
+                                    target_note: Some(note_part.to_string()),
+                                };
+                            } else {
+                                let new_suggestions = app.build_wiki_suggestions(target);
+                                app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                    trigger_pos: (0, 0),
+                                    query: target.clone(),
+                                    suggestions: new_suggestions,
+                                    selected_index: 0,
+                                    mode: WikiAutocompleteMode::Note,
+                                    target_note: None,
+                                };
+                            }
+                        } else {
+                            app.wiki_autocomplete = WikiAutocompleteState::None;
+                        }
+                    }
+                }
             } else {
                 // Delete character from query and editor
                 let mut new_query = query.clone();
                 new_query.pop();
                 app.editor.delete_newline();
-                let new_suggestions = app.build_wiki_suggestions(&new_query);
+
+                let new_suggestions = match mode {
+                    WikiAutocompleteMode::Note => app.build_wiki_suggestions(&new_query),
+                    WikiAutocompleteMode::Heading => {
+                        if let Some(ref target) = target_note {
+                            app.build_heading_suggestions(target, &new_query)
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    WikiAutocompleteMode::Alias => Vec::new(), // No suggestions in alias mode
+                };
+
                 app.wiki_autocomplete = WikiAutocompleteState::Open {
                     trigger_pos: (0, 0),
                     query: new_query,
                     suggestions: new_suggestions,
                     selected_index: 0,
+                    mode: mode.clone(),
+                    target_note: target_note.clone(),
                 };
             }
             return true;
@@ -938,17 +1080,70 @@ fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::KeyEvent) -> b
             }
             return true;
         }
+        KeyCode::Char('#') if mode == WikiAutocompleteMode::Note => {
+            let note_target = query.clone();
+
+            app.editor.insert_char('#');
+
+            let heading_suggestions = app.build_heading_suggestions(&note_target, "");
+
+            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                trigger_pos: (0, 0),
+                query: String::new(),
+                suggestions: heading_suggestions,
+                selected_index: 0,
+                mode: WikiAutocompleteMode::Heading,
+                target_note: Some(note_target),
+            };
+            return true;
+        }
+        KeyCode::Char('|') if mode == WikiAutocompleteMode::Note || mode == WikiAutocompleteMode::Heading => {
+            app.editor.insert_char('|');
+            let full_target = if mode == WikiAutocompleteMode::Heading {
+                if let Some(ref target) = target_note {
+                    format!("{}#{}", target, query)
+                } else {
+                    query.clone()
+                }
+            } else {
+                query.clone()
+            };
+
+            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                trigger_pos: (0, 0),
+                query: String::new(),
+                suggestions: Vec::new(), 
+                selected_index: 0,
+                mode: WikiAutocompleteMode::Alias,
+                target_note: Some(full_target),
+            };
+            return true;
+        }
         KeyCode::Char(c) => {
             // Add character to query and editor
             let mut new_query = query.clone();
             new_query.push(c);
             app.editor.insert_char(c);
-            let new_suggestions = app.build_wiki_suggestions(&new_query);
+
+            let new_suggestions = match mode {
+                WikiAutocompleteMode::Note => app.build_wiki_suggestions(&new_query),
+                WikiAutocompleteMode::Heading => {
+                    if let Some(ref target) = target_note {
+                        app.build_heading_suggestions(target, &new_query)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                WikiAutocompleteMode::Alias => Vec::new(), 
+            };
+
             app.wiki_autocomplete = WikiAutocompleteState::Open {
                 trigger_pos: (0, 0),
                 query: new_query,
                 suggestions: new_suggestions,
                 selected_index: 0,
+                mode: mode.clone(),
+                target_note: target_note.clone(),
             };
             return true;
         }
@@ -1039,6 +1234,177 @@ fn handle_help_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+/// Zoom the graph view, anchoring on the selected node or graph center
+fn zoom_graph(app: &mut App, factor: f32) {
+    let old_zoom = app.graph_view.zoom;
+
+    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
+    let new_zoom = (old_zoom * factor).clamp(min_zoom, 3.0);
+    let (anchor_x, anchor_y) = if let Some(idx) = app.graph_view.selected_node {
+        if idx < app.graph_view.nodes.len() {
+            let node = &app.graph_view.nodes[idx];
+            (node.x + 1.5, node.y + 1.0)
+        } else {
+            graph_center(app)
+        }
+    } else {
+        graph_center(app)
+    };
+
+    let screen_anchor_x = (anchor_x - app.graph_view.viewport_x) * old_zoom;
+    let screen_anchor_y = (anchor_y - app.graph_view.viewport_y) * old_zoom;
+
+    app.graph_view.zoom = new_zoom;
+
+    app.graph_view.viewport_x = anchor_x - screen_anchor_x / new_zoom;
+    app.graph_view.viewport_y = anchor_y - screen_anchor_y / new_zoom;
+}
+
+/// Calculate minimum zoom level to keep graph filling a percentage of viewport
+fn calculate_min_zoom_for_viewport_fill(app: &App, fill_ratio: f32) -> f32 {
+    if app.graph_view.nodes.is_empty() {
+        return 0.1;
+    }
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+
+    for node in &app.graph_view.nodes {
+        min_x = min_x.min(node.x);
+        min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x + 3.0);
+        max_y = max_y.max(node.y + 4.0);
+    }
+
+    let graph_width = (max_x - min_x).max(10.0);
+    let graph_height = (max_y - min_y).max(5.0);
+
+    let view_width = app.graph_view.view_width;
+    let view_height = app.graph_view.view_height;
+
+    if view_width <= 0.0 || view_height <= 0.0 {
+        return 0.1;
+    }
+
+    let zoom_x = (view_width * fill_ratio) / graph_width;
+    let zoom_y = (view_height * fill_ratio) / graph_height;
+    zoom_x.min(zoom_y).max(0.05)
+}
+
+/// Calculate center of all nodes
+fn graph_center(app: &App) -> (f32, f32) {
+    if app.graph_view.nodes.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sum_x = 0.0f32;
+    let mut sum_y = 0.0f32;
+    for node in &app.graph_view.nodes {
+        sum_x += node.x;
+        sum_y += node.y;
+    }
+    let n = app.graph_view.nodes.len() as f32;
+    (sum_x / n, sum_y / n)
+}
+
+/// Fit all nodes in the viewport (targets 80% fill for comfortable view)
+fn fit_graph_to_screen(app: &mut App) {
+    if app.graph_view.nodes.is_empty() {
+        return;
+    }
+
+    // Calculate graph bounds
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+
+    for node in &app.graph_view.nodes {
+        min_x = min_x.min(node.x);
+        min_y = min_y.min(node.y);
+        max_x = max_x.max(node.x + 3.0);
+        max_y = max_y.max(node.y + 4.0);
+    }
+
+    let graph_width = (max_x - min_x).max(10.0);
+    let graph_height = (max_y - min_y).max(5.0);
+
+    let view_width = app.graph_view.view_width;
+    let view_height = app.graph_view.view_height;
+
+    if view_width <= 0.0 || view_height <= 0.0 {
+        return;
+    }
+
+    // Target 80% of viewport for comfortable fit
+    let target_fill = 0.8;
+    let zoom_x = (view_width * target_fill) / graph_width;
+    let zoom_y = (view_height * target_fill) / graph_height;
+
+    // Clamp to reasonable range, minimum is 40% fill
+    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
+    let fit_zoom = zoom_x.min(zoom_y).min(2.0).max(min_zoom);
+
+    app.graph_view.zoom = fit_zoom;
+
+    // Center viewport on graph center
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+
+    app.graph_view.viewport_x = center_x - (view_width / fit_zoom / 2.0);
+    app.graph_view.viewport_y = center_y - (view_height / fit_zoom / 2.0);
+}
+
+/// Repel other nodes away from the dragged node, with snap-back to home positions
+fn repel_nodes_from(app: &mut App, node_idx: usize) {
+    if node_idx >= app.graph_view.nodes.len() {
+        return;
+    }
+
+    app.graph_view.nodes[node_idx].home_x = app.graph_view.nodes[node_idx].x;
+    app.graph_view.nodes[node_idx].home_y = app.graph_view.nodes[node_idx].y;
+
+    let dragged_x = app.graph_view.nodes[node_idx].x;
+    let dragged_y = app.graph_view.nodes[node_idx].y;
+
+    let repel_radius: f32 = 30.0;  
+    let repel_strength: f32 = 10.0; 
+    let snap_back_strength: f32 = 0.12; 
+    for i in 0..app.graph_view.nodes.len() {
+        if i == node_idx {
+            continue;
+        }
+
+        let other = &app.graph_view.nodes[i];
+        let other_x = other.x;
+        let other_y = other.y;
+        let home_x = other.home_x;
+        let home_y = other.home_y;
+
+        let dist_x = other_x - dragged_x;
+        let dist_y = other_y - dragged_y;
+        let dist = (dist_x * dist_x + dist_y * dist_y).sqrt();
+
+        if dist < repel_radius && dist > 0.1 {
+            let force = ((repel_radius - dist) / repel_radius) * repel_strength;
+            let push_x = (dist_x / dist) * force;
+            let push_y = (dist_y / dist) * force;
+            app.graph_view.nodes[i].x += push_x;
+            app.graph_view.nodes[i].y += push_y;
+        } else {
+            let to_home_x = home_x - other_x;
+            let to_home_y = home_y - other_y;
+            let home_dist = (to_home_x * to_home_x + to_home_y * to_home_y).sqrt();
+            if home_dist > 0.5 {
+                let snap_x = to_home_x * snap_back_strength;
+                let snap_y = to_home_y * snap_back_strength;
+                app.graph_view.nodes[i].x += snap_x;
+                app.graph_view.nodes[i].y += snap_y;
+            }
+        }
+    }
+}
+
 fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
         if let Some(node_idx) = app.graph_view.selected_node {
@@ -1047,18 +1413,22 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                 match key.code {
                     KeyCode::Char('h') => {
                         app.graph_view.nodes[node_idx].x -= move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('j') => {
                         app.graph_view.nodes[node_idx].y += move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('k') => {
                         app.graph_view.nodes[node_idx].y -= move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('l') => {
                         app.graph_view.nodes[node_idx].x += move_amount;
+                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     _ => {}
@@ -1098,6 +1468,7 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                                 app.update_outline();
                                 app.dialog = DialogState::None;
                                 app.focus = Focus::Content;
+                                app.push_navigation_history(note_idx);
                                 return;
                             }
                         }
@@ -1118,16 +1489,17 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
             app.graph_view.viewport_x += 10.0;
         }
         KeyCode::Char('+') | KeyCode::Char('=') => {
-            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+            zoom_graph(app, 1.25); 
         }
-        KeyCode::Char('-') => {
-            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+        KeyCode::Char('-') | KeyCode::Char('_') => {
+            zoom_graph(app, 1.0 / 1.25); 
+        }
+        KeyCode::Char('f') => {
+            fit_graph_to_screen(app);
         }
         KeyCode::Char('0') => {
             app.graph_view.zoom = 1.0;
-            app.graph_view.viewport_x = 0.0;
-            app.graph_view.viewport_y = 0.0;
-            app.graph_view.dirty = true;
+            center_on_selected_node(app);
         }
         KeyCode::Char('g') => {
             if !app.graph_view.nodes.is_empty() {
@@ -1140,6 +1512,10 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.graph_view.selected_node = Some(app.graph_view.nodes.len() - 1);
                 center_on_selected_node(app);
             }
+        }
+        KeyCode::Char('u') => {
+            // Unselect current node
+            app.graph_view.selected_node = None;
         }
         _ => {}
     }
@@ -1202,14 +1578,7 @@ fn navigate_graph_node(app: &mut App, direction: GraphDirection) {
 }
 
 fn center_on_selected_node(app: &mut App) {
-    if let Some(selected) = app.graph_view.selected_node {
-        if let Some(node) = app.graph_view.nodes.get(selected) {
-            let target_x = node.x - 50.0;
-            let target_y = node.y - 15.0;
-            app.graph_view.viewport_x = target_x;
-            app.graph_view.viewport_y = target_y;
-        }
-    }
+    app.graph_view.needs_center = true;
 }
 
 fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
@@ -1224,6 +1593,7 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 app.graph_view.drag_start = Some((mouse_x, mouse_y));
                 app.graph_view.is_panning = false;
             } else {
+                // Clicking on empty area starts panning (use 'u' to unselect)
                 app.graph_view.dragging_node = None;
                 app.graph_view.is_panning = true;
                 app.graph_view.drag_start = Some((mouse_x, mouse_y));
@@ -1244,6 +1614,7 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     if node_idx < app.graph_view.nodes.len() {
                         app.graph_view.nodes[node_idx].x += dx / app.graph_view.zoom;
                         app.graph_view.nodes[node_idx].y += dy / app.graph_view.zoom;
+                        repel_nodes_from(app, node_idx);
                     }
                 } else if app.graph_view.is_panning {
                     // Panning the viewport
@@ -1255,17 +1626,18 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             }
         }
         MouseEventKind::ScrollUp => {
-            app.graph_view.zoom = (app.graph_view.zoom * 1.1).min(3.0);
+            zoom_graph(app, 1.15);
         }
         MouseEventKind::ScrollDown => {
-            app.graph_view.zoom = (app.graph_view.zoom / 1.1).max(0.3);
+            zoom_graph(app, 1.0 / 1.15);
         }
         _ => {}
     }
 }
 
 fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize> {
-    const NODE_HEIGHT: u16 = 3;
+    const NODE_WIDTH: i32 = 3;
+    const NODE_HEIGHT: i32 = 2;
 
     let vx = app.graph_view.viewport_x;
     let vy = app.graph_view.viewport_y;
@@ -1277,12 +1649,11 @@ fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize>
     for (idx, node) in app.graph_view.nodes.iter().enumerate() {
         let screen_x = ((node.x - vx) * zoom + inner_x as f32) as i32;
         let screen_y = ((node.y - vy) * zoom + inner_y as f32) as i32;
-        let node_width = node.width as i32;
 
-        if mouse_x as i32 >= screen_x
-            && (mouse_x as i32) < (screen_x + node_width)
-            && mouse_y as i32 >= screen_y
-            && (mouse_y as i32) < (screen_y + NODE_HEIGHT as i32)
+        if mouse_x as i32 >= screen_x - 1
+            && mouse_x as i32 <= screen_x + NODE_WIDTH
+            && mouse_y as i32 >= screen_y - 1
+            && mouse_y as i32 <= screen_y + NODE_HEIGHT
         {
             return Some(idx);
         }
@@ -1476,13 +1847,19 @@ fn update_editor_search_highlights(app: &mut App) {
 /// Returns true if the app should quit
 fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     let was_pending_g = app.pending_g;
+    let was_pending_z = app.pending_z;
     app.pending_g = false;
+    app.pending_z = false;
+    app.status_message = None;  // Clear old status message on new keystroke
 
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Tab if !app.zen_mode => app.toggle_focus(false),
         KeyCode::BackTab if !app.zen_mode => app.toggle_focus(true),
-        KeyCode::Char('e') => app.enter_edit_mode(),
+        KeyCode::Char('e') => {
+            app.push_navigation_history(app.selected_note);
+            app.enter_edit_mode();
+        }
         KeyCode::Char('n') if !app.zen_mode => {
             app.input_buffer.clear();
             app.dialog_error = None;
@@ -1505,7 +1882,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateFolder;
         }
-        KeyCode::Char('d') if !app.zen_mode => {
+        KeyCode::Char('d') if !app.zen_mode && key.modifiers.is_empty() => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { .. } => {
@@ -1540,8 +1917,12 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.needs_full_clear = true;
         }
         KeyCode::Char('R') => {
-            app.reload_on_focus();
-            app.needs_full_clear = true;
+            if was_pending_z && app.focus == Focus::Content {
+                app.unfold_all_headings();
+            } else {
+                app.reload_on_focus();
+                app.needs_full_clear = true;
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
@@ -1581,6 +1962,12 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_outline_collapsed();
         }
+        KeyCode::Char('-') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+            app.navigate_back();
+        }
+        KeyCode::Char('=') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+            app.navigate_forward();
+        }
         KeyCode::Char('o') => {
             if app.focus == Focus::Content {
                 app.open_current_image();
@@ -1598,25 +1985,47 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.search_query.clear();
             }
         }
+        KeyCode::Char('s') => {
+            if app.focus == Focus::Sidebar {
+                app.cycle_sort_mode();
+            }
+        }
         KeyCode::Char(' ') => {
             if app.focus == Focus::Content {
+                // task items: toggle if checkbox selected, otherwise follow link
                 if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
-                    app.toggle_current_task();
+                    if app.is_task_checkbox_selected() {
+                        app.toggle_current_task();
+                    } else if let Some(link) = app.current_selected_link() {
+                        match link {
+                            crate::app::LinkInfo::Markdown { url, .. } => {
+                                app.open_path_or_url(&url);
+                            }
+                            crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
+                                if is_valid {
+                                    app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
+                                } else {
+                                    app.pending_wiki_target = Some(target);
+                                    app.dialog = DialogState::CreateWikiNote;
+                                }
+                            }
+                        }
+                    } else {
+                        // No links in task, just toggle
+                        app.toggle_current_task();
+                    }
                 } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
                     app.toggle_current_details();
+                } else if app.is_heading_at(app.content_cursor) {
+                    app.toggle_current_heading_fold();
                 } else if let Some(link) = app.current_selected_link() {
                     match link {
                         crate::app::LinkInfo::Markdown { url, .. } => {
-                            #[cfg(target_os = "macos")]
-                            let _ = std::process::Command::new("open").arg(&url).spawn();
-                            #[cfg(target_os = "linux")]
-                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-                            #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+                            app.open_path_or_url(&url);
                         }
-                        crate::app::LinkInfo::Wiki { target, is_valid, .. } => {
+                        crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
                             if is_valid {
-                                app.navigate_to_wiki_link(&target);
+                                app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
                             } else {
                                 app.pending_wiki_target = Some(target);
                                 app.dialog = DialogState::CreateWikiNote;
@@ -1644,6 +2053,18 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_sidebar_collapsed();
         }
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.half_page_down_content();
+                app.sync_outline_to_content();
+            }
+        }
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.half_page_up_content();
+                app.sync_outline_to_content();
+            }
+        }
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
             app.start_buffer_search();
         }
@@ -1651,8 +2072,21 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.build_graph();
             app.dialog = DialogState::GraphView;
         }
-        KeyCode::Char('z') => {
+        KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_zen_mode();
+        }
+        KeyCode::Char('z') => {
+            app.pending_z = true;
+        }
+        KeyCode::Char('M') => {
+            if was_pending_z && app.focus == Focus::Content {
+                app.fold_all_headings();
+            }
+        }
+        KeyCode::Char('a') => {
+            if was_pending_z && app.focus == Focus::Content {
+                app.toggle_current_heading_fold();
+            }
         }
         KeyCode::Char('g') => {
             if was_pending_g {
@@ -1734,6 +2168,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 match app.vim_mode {
                     VimMode::Normal => handle_vim_normal_mode(app, key),
                     VimMode::Insert => handle_vim_insert_mode(app, key),
+                    VimMode::Replace => handle_vim_replace_mode(app, key),
                     VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
                         handle_vim_visual_mode(app, key)
                     }
@@ -1764,6 +2199,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     match app.vim_mode {
         VimMode::Normal => handle_vim_normal_mode(app, key),
         VimMode::Insert => handle_vim_insert_mode(app, key),
+        VimMode::Replace => handle_vim_replace_mode(app, key),
         VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
             handle_vim_visual_mode(app, key)
         }
@@ -1844,7 +2280,15 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                             let count = app.vim.get_count();
                             for _ in 0..count {
                                 for k in &keys {
-                                    handle_vim_normal_mode(app, *k);
+                                    // Dispatch to correct handler based on current mode
+                                    match app.vim_mode {
+                                        VimMode::Insert => handle_vim_insert_mode(app, *k),
+                                        VimMode::Replace => handle_vim_replace_mode(app, *k),
+                                        VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock => {
+                                            handle_vim_visual_mode(app, *k)
+                                        }
+                                        _ => handle_vim_normal_mode(app, *k),
+                                    }
                                 }
                             }
                         }
@@ -1889,10 +2333,52 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         app.vim.pending_g = false;
         match key.code {
             KeyCode::Char('g') => {
-                if let Some(count) = app.vim.count.take() {
-                    app.editor.move_cursor(CursorMove::GoToLine(count));
+                // Handle operator + gg (linewise motion to start of file or specific line)
+                if let Some(op) = app.pending_operator.take() {
+                    let target_line = if let Some(count) = app.vim.count.take() {
+                        count.saturating_sub(1)
+                    } else {
+                        0
+                    };
+
+                    let (current_row, _) = app.editor.cursor();
+                    let (start_row, end_row) = if target_line <= current_row {
+                        (target_line, current_row)
+                    } else {
+                        (current_row, target_line)
+                    };
+
+                    app.editor.set_cursor(start_row, 0);
+                    app.editor.start_selection();
+                    app.editor.set_cursor(end_row, 0);
+                    app.editor.move_cursor(CursorMove::End);
+
+                    match op {
+                        'd' => {
+                            app.editor.cut();
+                            if start_row < app.editor.lines().len() {
+                                app.editor.set_cursor(start_row, 0);
+                            }
+                        }
+                        'c' => {
+                            app.editor.cut();
+                            app.vim_mode = VimMode::Insert;
+                        }
+                        'y' => {
+                            app.editor.copy();
+                            app.editor.cancel_selection();
+                            app.editor.set_cursor(current_row, 0);
+                        }
+                        _ => {
+                            app.editor.cancel_selection();
+                        }
+                    }
                 } else {
-                    app.editor.move_cursor(CursorMove::Top);
+                    if let Some(count) = app.vim.count.take() {
+                        app.editor.move_cursor(CursorMove::GoToLine(count));
+                    } else {
+                        app.editor.move_cursor(CursorMove::Top);
+                    }
                 }
             }
             KeyCode::Char('e') => {
@@ -2001,7 +2487,10 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.reset_pending();
             app.vim_mode = VimMode::VisualBlock;
             app.editor.cancel_selection();
-            app.editor.start_selection();
+            let (row, col) = app.editor.cursor();
+            let anchor = Position { row, col };
+            app.visual_block_anchor = Some(anchor);
+            app.editor.set_visual_block_selection(anchor, anchor);
         }
         KeyCode::Char('v') => {
             app.vim.reset_pending();
@@ -2018,9 +2507,9 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.set_visual_line_selection(row, row);
         }
         KeyCode::Char('R') => {
-            // Replace mode
+            // Replace mode - overwrite characters instead of inserting
             app.vim.reset_pending();
-            app.vim_mode = VimMode::Insert; // Use insert mode behavior, overwrite on char
+            app.vim_mode = VimMode::Replace;
             app.editor.cancel_selection();
         }
         KeyCode::Char(':') => {
@@ -2080,10 +2569,54 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.pending_g = true;
         }
         KeyCode::Char('G') => {
-            if let Some(count) = app.vim.count.take() {
-                app.editor.move_cursor(CursorMove::GoToLine(count));
+            // Handle operator + G (linewise motion to end of file or specific line)
+            if let Some(op) = app.pending_operator.take() {
+                let target_line = if let Some(count) = app.vim.count.take() {
+                    count.saturating_sub(1) // Convert to 0-indexed
+                } else {
+                    app.editor.lines().len().saturating_sub(1)
+                };
+
+                // Select from current line to target line (linewise)
+                let (current_row, _) = app.editor.cursor();
+                let (start_row, end_row) = if target_line >= current_row {
+                    (current_row, target_line)
+                } else {
+                    (target_line, current_row)
+                };
+
+                app.editor.set_cursor(start_row, 0);
+                app.editor.start_selection();
+                app.editor.set_cursor(end_row, 0);
+                app.editor.move_cursor(CursorMove::End);
+
+                match op {
+                    'd' => {
+                        app.editor.cut();
+                        // Delete from start line to end line (inclusive)
+                        if start_row < app.editor.lines().len() {
+                            app.editor.set_cursor(start_row, 0);
+                        }
+                    }
+                    'c' => {
+                        app.editor.cut();
+                        app.vim_mode = VimMode::Insert;
+                    }
+                    'y' => {
+                        app.editor.copy();
+                        app.editor.cancel_selection();
+                        app.editor.set_cursor(current_row, 0);
+                    }
+                    _ => {
+                        app.editor.cancel_selection();
+                    }
+                }
             } else {
-                app.editor.move_cursor(CursorMove::Bottom);
+                if let Some(count) = app.vim.count.take() {
+                    app.editor.move_cursor(CursorMove::GoToLine(count));
+                } else {
+                    app.editor.move_cursor(CursorMove::Bottom);
+                }
             }
             app.vim.reset_pending();
         }
@@ -2242,8 +2775,20 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         // Quick actions
         KeyCode::Char('x') => {
             let count = app.vim.get_count();
-            for _ in 0..count { app.editor.delete_char(); }
-            app.vim.last_change = Some(crate::vim::LastChange::DeleteCharForward(count));
+            let mut deleted = 0;
+            for _ in 0..count {
+                let (row, col) = app.editor.cursor();
+                let line_len = app.editor.lines().get(row).map_or(0, |l| l.chars().count());
+                if col < line_len {
+                    app.editor.delete_char();
+                    deleted += 1;
+                } else {
+                    break;
+                }
+            }
+            if deleted > 0 {
+                app.vim.last_change = Some(crate::vim::LastChange::DeleteCharForward(deleted));
+            }
             app.vim.reset_pending();
         }
         KeyCode::Char('X') => {
@@ -2315,12 +2860,11 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // Paste
         KeyCode::Char('p') => {
-            app.editor.move_cursor(CursorMove::Forward);
-            app.editor.paste();
+            app.editor.paste_after();
             app.vim.reset_pending();
         }
         KeyCode::Char('P') => {
-            app.editor.paste();
+            app.editor.paste_before();
             app.vim.reset_pending();
         }
 
@@ -2481,14 +3025,84 @@ fn execute_motion_n(app: &mut App, movement: CursorMove) {
 }
 
 fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
+    use crate::vim::LastChange;
+
     let count = app.vim.get_count();
     if let Some(op) = app.pending_operator.take() {
+        let start_pos = app.editor.cursor();
+        let start_row = start_pos.0;
+
         app.editor.cancel_selection();
         app.editor.start_selection();
-        for _ in 0..count { app.editor.move_cursor(movement); }
+
+        let is_word_forward = matches!(movement, CursorMove::WordForward | CursorMove::BigWordForward);
+
+        if is_word_forward {
+            // For word forward motions with operators, we need special handling:
+            // 1. dw should delete to end of line if word motion would cross lines
+            // 2. cw should behave like ce (change to end of word, not including trailing space)
+            for _ in 0..count {
+                let (row, _) = app.editor.cursor();
+                let line = app.editor.lines().get(row).map(|s| s.to_string());
+                let line_len = line.as_ref().map_or(0, |l| l.chars().count());
+                app.editor.move_cursor(movement);
+
+                let (new_row, _) = app.editor.cursor();
+                if new_row > row {
+                    app.editor.set_cursor(row, line_len);
+                    break;
+                }
+            }
+
+            if op == 'c' {
+                let (end_row, end_col) = app.editor.cursor();
+                if end_row == start_row {
+                    if let Some(line) = app.editor.lines().get(end_row) {
+                        let chars: Vec<char> = line.chars().collect();
+                        let mut adjusted_col = end_col;
+                        while adjusted_col > start_pos.1 && adjusted_col > 0 {
+                            if let Some(&c) = chars.get(adjusted_col.saturating_sub(1)) {
+                                if c.is_whitespace() {
+                                    adjusted_col -= 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        if adjusted_col > start_pos.1 {
+                            app.editor.set_cursor(end_row, adjusted_col);
+                        }
+                    }
+                }
+            }
+        } else {
+            for _ in 0..count { app.editor.move_cursor(movement); }
+        }
+
         match op {
-            'd' => { app.editor.cut(); }
-            'c' => { app.editor.cut(); app.vim_mode = VimMode::Insert; }
+            'd' => {
+                app.editor.cut();
+                // Record last_change for dot command
+                match movement {
+                    CursorMove::WordForward | CursorMove::BigWordForward => {
+                        app.vim.last_change = Some(LastChange::DeleteWordForward(count));
+                    }
+                    CursorMove::WordBack | CursorMove::BigWordBack => {
+                        app.vim.last_change = Some(LastChange::DeleteWordBackward(count));
+                    }
+                    CursorMove::End => {
+                        app.vim.last_change = Some(LastChange::DeleteToEnd);
+                    }
+                    _ => {}
+                }
+            }
+            'c' => {
+                app.editor.cut();
+                app.vim_mode = VimMode::Insert;
+                // Note: Change operations need insert text to be recorded on exit from insert mode
+            }
             'y' => { app.editor.copy(); app.editor.cancel_selection(); }
             '>' => {
                 if let Some((start, _)) = app.editor.selection_range() {
@@ -2524,7 +3138,31 @@ fn execute_find(app: &mut App, find: FindState) {
     let pos = app.editor.cursor();
     if let Some(line) = app.editor.lines().get(pos.0) {
         if let Some(new_col) = find.find_in_line(line, pos.1) {
-            app.editor.set_cursor(pos.0, new_col);
+            // Check for pending operator (d, c, y, etc.)
+            if let Some(op) = app.pending_operator.take() {
+                app.editor.start_selection();
+                app.editor.set_cursor(pos.0, new_col);
+                match op {
+                    'd' => {
+                        app.editor.cut();
+                    }
+                    'c' => {
+                        app.editor.cut();
+                        app.vim_mode = VimMode::Insert;
+                    }
+                    'y' => {
+                        app.editor.copy();
+                        app.editor.cancel_selection();
+                        // Return to start position for yank
+                        app.editor.set_cursor(pos.0, pos.1);
+                    }
+                    _ => {
+                        app.editor.cancel_selection();
+                    }
+                }
+            } else {
+                app.editor.set_cursor(pos.0, new_col);
+            }
         }
     }
 }
@@ -2550,14 +3188,71 @@ fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: TextObject) {
     }
 }
 
+/// apply block insert/append text to all lines in the visual block selection
+fn apply_block_insert(app: &mut App, state: BlockInsertState) {
+    let (current_row, current_col) = app.editor.cursor();
+    let lines = app.editor.lines();
+    if let Some(line) = lines.get(state.active_row) {
+        let chars: Vec<char> = line.chars().collect();
+        let insert_start = state.start_col;
+        let insert_end = current_col;
+
+        if insert_end > insert_start {
+            let inserted_text: String = chars
+                .iter()
+                .skip(insert_start)
+                .take(insert_end - insert_start)
+                .collect();
+            let (start_row, end_row) = state.rows;
+            for row in start_row..=end_row {
+                if row == state.active_row {
+                    continue; 
+                }
+
+                let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                let insert_pos = match state.mode {
+                    BlockInsertMode::Insert => state.insert_col.min(line_len),
+                    BlockInsertMode::Append => {
+                        state.insert_col
+                    }
+                };
+
+                app.editor.set_cursor(row, insert_pos);
+                if state.mode == BlockInsertMode::Append && insert_pos > line_len {
+                    let padding: String = " ".repeat(insert_pos - line_len);
+                    for c in padding.chars() {
+                        app.editor.insert_char(c);
+                    }
+                }
+
+                for c in inserted_text.chars() {
+                    app.editor.insert_char(c);
+                }
+            }
+
+            app.editor.set_cursor(current_row, current_col);
+        }
+    }
+}
+
 fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
     match key.code {
         KeyCode::Esc => {
+            if let Some(state) = app.block_insert_state.take() {
+                apply_block_insert(app, state);
+            }
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            if let Some(state) = app.block_insert_state.take() {
+                apply_block_insert(app, state);
+            }
             app.save_edit();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
@@ -2586,6 +3281,8 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                                 query: String::new(),
                                 suggestions,
                                 selected_index: 0,
+                                mode: WikiAutocompleteMode::Note,
+                                target_note: None,
                             };
                         }
                     }
@@ -2596,12 +3293,105 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.input(key);
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
                 app.update_editor_highlights();
+
+                if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                    let (row, col) = app.editor.cursor();
+                    if !app.is_cursor_in_code(row, col) {
+                        if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
+                            let (query, suggestions, target_note) = match mode {
+                                WikiAutocompleteMode::Note => {
+                                    let suggestions = app.build_wiki_suggestions(&note_query);
+                                    (note_query, suggestions, None)
+                                }
+                                WikiAutocompleteMode::Heading => {
+                                    let heading_q = heading_query.unwrap_or_default();
+                                    let suggestions = app.build_heading_suggestions(&note_query, &heading_q);
+                                    (heading_q, suggestions, Some(note_query))
+                                }
+                                WikiAutocompleteMode::Alias => {
+                                    let full_target = if let Some(ref h) = heading_query {
+                                        format!("{}#{}", note_query, h)
+                                    } else {
+                                        note_query
+                                    };
+                                    (alias_query.unwrap_or_default(), Vec::new(), Some(full_target))
+                                }
+                            };
+
+                            app.wiki_autocomplete = WikiAutocompleteState::Open {
+                                trigger_pos: (row, 0),
+                                query,
+                                suggestions,
+                                selected_index: 0,
+                                mode,
+                                target_note,
+                            };
+                        }
+                    }
+                }
             }
         }
     }
 }
 
+fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.vim_mode = VimMode::Normal;
+            app.vim.mode = VimModeNew::Normal;
+            app.vim.reset_pending();
+        }
+        KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            app.save_edit();
+            app.vim_mode = VimMode::Normal;
+            app.vim.mode = VimModeNew::Normal;
+            app.vim.reset_pending();
+        }
+        KeyCode::Backspace => {
+            // In Replace mode, backspace just moves cursor back
+            app.editor.move_cursor(CursorMove::Back);
+        }
+        KeyCode::Left => {
+            app.editor.move_cursor(CursorMove::Back);
+        }
+        KeyCode::Right => {
+            app.editor.move_cursor(CursorMove::Forward);
+        }
+        KeyCode::Up => {
+            app.editor.move_cursor(CursorMove::Up);
+        }
+        KeyCode::Down => {
+            app.editor.move_cursor(CursorMove::Down);
+        }
+        KeyCode::Enter => {
+            // Enter creates a new line in replace mode
+            app.editor.insert_newline();
+            app.update_editor_highlights();
+        }
+        KeyCode::Char(c) => {
+            // Overwrite: delete current char (if not at end of line) then insert new char
+            let (row, col) = app.editor.cursor();
+            if let Some(line) = app.editor.lines().get(row) {
+                if col < line.chars().count() {
+                    app.editor.delete_char();
+                }
+            }
+            app.editor.insert_char(c);
+            app.update_editor_highlights();
+        }
+        _ => {}
+    }
+}
+
 fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
     // Helper to update visual line selection in VisualLine mode
     // target_row is where the cursor logically should be (determines selection extent)
     let reselect_lines_at = |app: &mut App, target_row: usize| {
@@ -2617,15 +3407,28 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         }
     };
 
+    // Helper to update visual block selection in VisualBlock mode
+    let update_block_selection = |app: &mut App| {
+        if app.vim_mode == VimMode::VisualBlock {
+            if let Some(anchor) = app.visual_block_anchor {
+                let (row, col) = app.editor.cursor();
+                let current = Position { row, col };
+                app.editor.set_visual_block_selection(anchor, current);
+            }
+        }
+    };
+
     match key.code {
         KeyCode::Esc => {
             app.editor.cancel_selection();
             app.editor.clear_visual_line_selection();
+            app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
             app.visual_line_current = None;
+            app.visual_block_anchor = None;
         }
         KeyCode::Char('h') | KeyCode::Left => {
             if app.vim_mode == VimMode::VisualLine {
@@ -2637,6 +3440,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::Back);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -2650,6 +3454,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::Down);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
@@ -2662,6 +3467,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::Up);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
@@ -2674,6 +3480,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::Forward);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('w') => {
@@ -2688,6 +3495,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::WordForward);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('b') => {
@@ -2702,16 +3510,19 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             } else {
                 app.editor.move_cursor(CursorMove::WordBack);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('0') => {
             if app.vim_mode != VimMode::VisualLine {
                 app.editor.move_cursor(CursorMove::Head);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('$') => {
             if app.vim_mode != VimMode::VisualLine {
                 app.editor.move_cursor(CursorMove::End);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('g') => {
@@ -2719,6 +3530,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 reselect_lines_at(app, 0);
             } else {
                 app.editor.move_cursor(CursorMove::Top);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('G') => {
@@ -2727,56 +3539,120 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 reselect_lines_at(app, line_count.saturating_sub(1));
             } else {
                 app.editor.move_cursor(CursorMove::Bottom);
+                update_block_selection(app);
             }
         }
         KeyCode::Char('y') => {
             if app.vim_mode == VimMode::VisualLine {
                 app.editor.copy_visual_lines();
+            } else if app.vim_mode == VimMode::VisualBlock {
+                app.editor.copy_visual_block();
             } else {
                 app.editor.copy();
             }
             app.editor.cancel_selection();
             app.editor.clear_visual_line_selection();
+            app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
             app.visual_line_current = None;
+            app.visual_block_anchor = None;
         }
         KeyCode::Char('d') | KeyCode::Char('x') => {
             if app.vim_mode == VimMode::VisualLine {
                 app.editor.cut_visual_lines();
+            } else if app.vim_mode == VimMode::VisualBlock {
+                app.editor.cut_visual_block();
             } else {
                 app.editor.cut();
             }
             app.editor.cancel_selection();
             app.editor.clear_visual_line_selection();
+            app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
             app.visual_line_current = None;
+            app.visual_block_anchor = None;
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
             app.editor.cancel_selection();
             app.editor.clear_visual_line_selection();
+            app.editor.clear_visual_block_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
             app.visual_line_current = None;
+            app.visual_block_anchor = None;
         }
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
             // Open buffer search (cancel selection first)
             app.editor.cancel_selection();
             app.editor.clear_visual_line_selection();
+            app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
             app.visual_line_current = None;
+            app.visual_block_anchor = None;
             app.start_buffer_search();
+        }
+        KeyCode::Char('I') if app.vim_mode == VimMode::VisualBlock => {
+            if let Some(anchor) = app.visual_block_anchor {
+                let (current_row, current_col) = app.editor.cursor();
+                let current = Position { row: current_row, col: current_col };
+
+                let (start_row, end_row) = if anchor.row <= current.row {
+                    (anchor.row, current.row)
+                } else {
+                    (current.row, anchor.row)
+                };
+                let insert_col = anchor.col.min(current.col);
+                app.block_insert_state = Some(BlockInsertState {
+                    mode: BlockInsertMode::Insert,
+                    rows: (start_row, end_row),
+                    insert_col,
+                    active_row: start_row,
+                    start_col: insert_col,
+                });
+                app.editor.clear_visual_block_selection();
+                app.visual_block_anchor = None;
+                app.editor.set_cursor(start_row, insert_col);
+                app.vim_mode = VimMode::Insert;
+                app.vim.mode = VimModeNew::Insert;
+            }
+        }
+        KeyCode::Char('A') if app.vim_mode == VimMode::VisualBlock => {
+            if let Some(anchor) = app.visual_block_anchor {
+                let (current_row, current_col) = app.editor.cursor();
+                let current = Position { row: current_row, col: current_col };
+                let (start_row, end_row) = if anchor.row <= current.row {
+                    (anchor.row, current.row)
+                } else {
+                    (current.row, anchor.row)
+                };
+                let right_col = anchor.col.max(current.col);
+                let insert_col = right_col + 1;
+                app.block_insert_state = Some(BlockInsertState {
+                    mode: BlockInsertMode::Append,
+                    rows: (start_row, end_row),
+                    insert_col,
+                    active_row: start_row,
+                    start_col: insert_col,
+                });
+
+                app.editor.clear_visual_block_selection();
+                app.visual_block_anchor = None;
+                app.editor.set_cursor(start_row, insert_col);
+                app.vim_mode = VimMode::Insert;
+                app.vim.mode = VimModeNew::Insert;
+            }
         }
         _ => {}
     }
@@ -2957,8 +3833,11 @@ fn execute_vim_command(app: &mut App, command: Command) {
             app.save_edit();
         }
         Command::Quit => {
-            // Exit edit mode without saving
-            app.cancel_edit();
+            if app.has_unsaved_changes() {
+                app.dialog = DialogState::UnsavedChanges;
+            } else {
+                app.cancel_edit();
+            }
         }
         Command::WriteQuit => {
             app.save_edit();

@@ -28,6 +28,7 @@ pub enum ClipboardContent {
     Empty,
 }
 
+#[allow(dead_code)]
 pub fn has_html() -> bool {
     ClipboardContext::new()
         .map(|ctx| ctx.has(ContentFormat::Html))
@@ -134,6 +135,7 @@ pub fn get_content_as_markdown() -> ClipboardResult<ClipboardContent> {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_content_plain() -> ClipboardResult<ClipboardContent> {
     match get_text() {
         Ok(Some(text)) if !text.is_empty() => Ok(ClipboardContent::PlainText(text)),
