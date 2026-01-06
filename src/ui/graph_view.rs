@@ -39,21 +39,30 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
             inner.width as f32,
             inner.height as f32,
         );
-        if let Some(selected_idx) = app.graph_view.selected_node {
-            if selected_idx < app.graph_view.nodes.len() {
-                let node = &app.graph_view.nodes[selected_idx];
-                let node_center_x = node.x + (node.width as f32 / 2.0);
-                let node_center_y = node.y + (NODE_HEIGHT as f32 / 2.0);
-                app.graph_view.viewport_x = node_center_x - (inner.width as f32 / 2.0);
-                app.graph_view.viewport_y = node_center_y - (inner.height as f32 / 2.0);
-            } else {
-                app.graph_view.viewport_x = 0.0;
-                app.graph_view.viewport_y = 0.0;
-            }
-        } else {
-            app.graph_view.viewport_x = 0.0;
-            app.graph_view.viewport_y = 0.0;
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for node in &app.graph_view.nodes {
+            min_x = min_x.min(node.x);
+            min_y = min_y.min(node.y);
+            max_x = max_x.max(node.x + node.width as f32);
+            max_y = max_y.max(node.y + NODE_HEIGHT as f32);
         }
+        let graph_width = max_x - min_x;
+        let graph_height = max_y - min_y;
+        let padding = 10.0;
+
+        let zoom_x = (inner.width as f32 - padding * 2.0) / graph_width.max(1.0);
+        let zoom_y = (inner.height as f32 - padding * 2.0) / graph_height.max(1.0);
+        let fit_zoom = zoom_x.min(zoom_y).min(0.7).max(0.3); // Clamp between 0.3 and 0.7
+        app.graph_view.zoom = fit_zoom;
+
+        let graph_center_x = (min_x + max_x) / 2.0;
+        let graph_center_y = (min_y + max_y) / 2.0;
+        app.graph_view.viewport_x = graph_center_x - (inner.width as f32 / fit_zoom / 2.0);
+        app.graph_view.viewport_y = graph_center_y - (inner.height as f32 / fit_zoom / 2.0);
+
         app.graph_view.dirty = false;
     }
 
@@ -61,10 +70,11 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         if let Some(selected_idx) = app.graph_view.selected_node {
             if selected_idx < app.graph_view.nodes.len() {
                 let node = &app.graph_view.nodes[selected_idx];
+                let zoom = app.graph_view.zoom;
                 let node_center_x = node.x + (node.width as f32 / 2.0);
                 let node_center_y = node.y + (NODE_HEIGHT as f32 / 2.0);
-                app.graph_view.viewport_x = node_center_x - (inner.width as f32 / 2.0);
-                app.graph_view.viewport_y = node_center_y - (inner.height as f32 / 2.0);
+                app.graph_view.viewport_x = node_center_x - (inner.width as f32 / zoom / 2.0);
+                app.graph_view.viewport_y = node_center_y - (inner.height as f32 / zoom / 2.0);
             }
         }
         app.graph_view.needs_center = false;
@@ -90,6 +100,7 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
     let zoom = app.graph_view.zoom;
     let buf = f.buffer_mut();
 
+    // Build set of connected nodes for dimming effect
     let connected_nodes: std::collections::HashSet<usize> = if let Some(selected) = app.graph_view.selected_node {
         let mut connected = std::collections::HashSet::new();
         connected.insert(selected);
@@ -104,7 +115,6 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
     } else {
         std::collections::HashSet::new()
     };
-
     let has_selection = app.graph_view.selected_node.is_some();
 
     // Draw edges first (below nodes) using straight lines from node centers
@@ -116,10 +126,14 @@ pub fn render_graph_view(f: &mut Frame, app: &mut App) {
         let from_node = &app.graph_view.nodes[edge.from];
         let to_node = &app.graph_view.nodes[edge.to];
 
-        let from_center_x = ((from_node.x + from_node.width as f32 / 2.0 - vx) * zoom + inner.x as f32) as i32;
-        let from_center_y = ((from_node.y + NODE_HEIGHT as f32 / 2.0 - vy) * zoom + inner.y as f32) as i32;
-        let to_center_x = ((to_node.x + to_node.width as f32 / 2.0 - vx) * zoom + inner.x as f32) as i32;
-        let to_center_y = ((to_node.y + NODE_HEIGHT as f32 / 2.0 - vy) * zoom + inner.y as f32) as i32;
+        let from_screen_x = ((from_node.x - vx) * zoom + inner.x as f32) as i32;
+        let from_screen_y = ((from_node.y - vy) * zoom + inner.y as f32) as i32;
+        let to_screen_x = ((to_node.x - vx) * zoom + inner.x as f32) as i32;
+        let to_screen_y = ((to_node.y - vy) * zoom + inner.y as f32) as i32;
+        let from_center_x = from_screen_x + from_node.width as i32 / 2;
+        let from_center_y = from_screen_y + NODE_HEIGHT as i32 / 2;
+        let to_center_x = to_screen_x + to_node.width as i32 / 2;
+        let to_center_y = to_screen_y + NODE_HEIGHT as i32 / 2;
 
         let is_selected_edge = app.graph_view.selected_node
             .map(|sel| edge.from == sel || edge.to == sel)
