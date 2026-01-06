@@ -2554,8 +2554,20 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         // Quick actions
         KeyCode::Char('x') => {
             let count = app.vim.get_count();
-            for _ in 0..count { app.editor.delete_char(); }
-            app.vim.last_change = Some(crate::vim::LastChange::DeleteCharForward(count));
+            let mut deleted = 0;
+            for _ in 0..count {
+                let (row, col) = app.editor.cursor();
+                let line_len = app.editor.lines().get(row).map_or(0, |l| l.chars().count());
+                if col < line_len {
+                    app.editor.delete_char();
+                    deleted += 1;
+                } else {
+                    break;
+                }
+            }
+            if deleted > 0 {
+                app.vim.last_change = Some(crate::vim::LastChange::DeleteCharForward(deleted));
+            }
             app.vim.reset_pending();
         }
         KeyCode::Char('X') => {
@@ -2796,9 +2808,58 @@ fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
 
     let count = app.vim.get_count();
     if let Some(op) = app.pending_operator.take() {
+        let start_pos = app.editor.cursor();
+        let start_row = start_pos.0;
+
         app.editor.cancel_selection();
         app.editor.start_selection();
-        for _ in 0..count { app.editor.move_cursor(movement); }
+
+        let is_word_forward = matches!(movement, CursorMove::WordForward | CursorMove::BigWordForward);
+
+        if is_word_forward {
+            // For word forward motions with operators, we need special handling:
+            // 1. dw should delete to end of line if word motion would cross lines
+            // 2. cw should behave like ce (change to end of word, not including trailing space)
+            for _ in 0..count {
+                let (row, _) = app.editor.cursor();
+                let line = app.editor.lines().get(row).map(|s| s.to_string());
+                let line_len = line.as_ref().map_or(0, |l| l.chars().count());
+                app.editor.move_cursor(movement);
+
+                let (new_row, _) = app.editor.cursor();
+                if new_row > row {
+                    app.editor.set_cursor(row, line_len);
+                    break;
+                }
+            }
+
+            if op == 'c' {
+                let (end_row, end_col) = app.editor.cursor();
+                if end_row == start_row {
+                    if let Some(line) = app.editor.lines().get(end_row) {
+                        let chars: Vec<char> = line.chars().collect();
+                        let mut adjusted_col = end_col;
+                        while adjusted_col > start_pos.1 && adjusted_col > 0 {
+                            if let Some(&c) = chars.get(adjusted_col.saturating_sub(1)) {
+                                if c.is_whitespace() {
+                                    adjusted_col -= 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        if adjusted_col > start_pos.1 {
+                            app.editor.set_cursor(end_row, adjusted_col);
+                        }
+                    }
+                }
+            }
+        } else {
+            for _ in 0..count { app.editor.move_cursor(movement); }
+        }
+
         match op {
             'd' => {
                 app.editor.cut();
