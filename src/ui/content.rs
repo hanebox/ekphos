@@ -7,7 +7,7 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 
-use crate::app::{App, ContentItem, Focus, ImageState, Mode};
+use crate::app::{App, ContentItem, DialogState, Focus, ImageState, Mode};
 use crate::config::Theme;
 
 const INLINE_THUMBNAIL_HEIGHT: u16 = 4;
@@ -51,6 +51,8 @@ fn extract_inline_images(text: &str) -> Vec<String> {
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.focus == Focus::Content && app.mode == Mode::Normal;
+    // Skip rendering images when dialog is active to prevent terminal graphics artifacts
+    let skip_images = app.dialog != DialogState::None || app.show_welcome;
     let theme = &app.theme;
 
     let border_style = if app.floating_cursor_mode {
@@ -316,14 +318,18 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 render_content_line(f, &app.theme, line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator));
-                let inline_images = extract_inline_images(line);
-                if !inline_images.is_empty() {
-                    let text_height = calc_wrapped_height(line, 4);
-                    render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                if !skip_images {
+                    let inline_images = extract_inline_images(line);
+                    if !inline_images.is_empty() {
+                        let text_height = calc_wrapped_height(line, 4);
+                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                    }
                 }
             }
             ContentItem::Image(path) => {
-                render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
+                if !skip_images {
+                    render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
+                }
             }
             ContentItem::CodeLine(line) => {
                 app.ensure_highlighter();
@@ -338,10 +344,12 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let has_links = !app.item_wiki_links_at(item_idx).is_empty() || !app.item_links_at(item_idx).is_empty();
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 render_task_item(f, &app.theme, text, checked, chunks[chunk_idx], is_cursor_line, selected_link, has_links, Some(wiki_validator));
-                let inline_images = extract_inline_images(text);
-                if !inline_images.is_empty() {
-                    let text_height = calc_wrapped_height(text, 6);
-                    render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                if !skip_images {
+                    let inline_images = extract_inline_images(text);
+                    if !inline_images.is_empty() {
+                        let text_height = calc_wrapped_height(text, 6);
+                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                    }
                 }
             }
             ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
