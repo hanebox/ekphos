@@ -2907,6 +2907,10 @@ fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: TextObject) {
 }
 
 fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.vim_mode = VimMode::Normal;
@@ -2996,6 +3000,10 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
 }
 
 fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.vim_mode = VimMode::Normal;
@@ -3045,6 +3053,10 @@ fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyEvent) {
 }
 
 fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.vim.macros.is_recording() {
+        app.vim.macros.record_key(key);
+    }
+
     // Helper to update visual line selection in VisualLine mode
     // target_row is where the cursor logically should be (determines selection extent)
     let reselect_lines_at = |app: &mut App, target_row: usize| {
