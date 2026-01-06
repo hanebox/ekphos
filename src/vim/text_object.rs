@@ -678,6 +678,62 @@ mod tests {
     }
 
     #[test]
+    fn test_find_bracket_bounds_seek_forward_parentheses() {
+        let lines = vec!["foo (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_braces() {
+        let lines = vec!["foo {bar}"];
+        let bounds = TextObject::Braces.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_brackets() {
+        let lines = vec!["foo [bar]"];
+        let bounds = TextObject::Brackets.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_angle() {
+        let lines = vec!["foo <bar>"];
+        let bounds = TextObject::AngleBrackets.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 5), Position::new(0, 8))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_forward_around() {
+        let lines = vec!["foo (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Around, &lines, Position::new(0, 0));
+        assert_eq!(bounds, Some((Position::new(0, 4), Position::new(0, 9))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_seek_mid_line() {
+        let lines = vec!["foo bar (baz)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 2));
+        assert_eq!(bounds, Some((Position::new(0, 9), Position::new(0, 12))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_cursor_after_closed_pair() {
+        let lines = vec!["(foo) (bar)"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 5));
+        assert_eq!(bounds, Some((Position::new(0, 7), Position::new(0, 10))));
+    }
+
+    #[test]
+    fn test_find_bracket_bounds_cursor_after_only_pair() {
+        let lines = vec!["(foo) bar"];
+        let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 6));
+        assert_eq!(bounds, None);
+    }
+
+    #[test]
     fn test_find_bracket_bounds_complex_code() {
         let lines = vec!["fn test(a: (i32, i32)) {"];
         let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 12));

@@ -3,7 +3,7 @@ use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
+use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
 use crate::editor::{CursorMove, Position};
 use crate::ui;
@@ -2967,6 +2967,53 @@ fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: TextObject) {
     }
 }
 
+/// apply block insert/append text to all lines in the visual block selection
+fn apply_block_insert(app: &mut App, state: BlockInsertState) {
+    let (current_row, current_col) = app.editor.cursor();
+    let lines = app.editor.lines();
+    if let Some(line) = lines.get(state.active_row) {
+        let chars: Vec<char> = line.chars().collect();
+        let insert_start = state.start_col;
+        let insert_end = current_col;
+
+        if insert_end > insert_start {
+            let inserted_text: String = chars
+                .iter()
+                .skip(insert_start)
+                .take(insert_end - insert_start)
+                .collect();
+            let (start_row, end_row) = state.rows;
+            for row in start_row..=end_row {
+                if row == state.active_row {
+                    continue; 
+                }
+
+                let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                let insert_pos = match state.mode {
+                    BlockInsertMode::Insert => state.insert_col.min(line_len),
+                    BlockInsertMode::Append => {
+                        state.insert_col
+                    }
+                };
+
+                app.editor.set_cursor(row, insert_pos);
+                if state.mode == BlockInsertMode::Append && insert_pos > line_len {
+                    let padding: String = " ".repeat(insert_pos - line_len);
+                    for c in padding.chars() {
+                        app.editor.insert_char(c);
+                    }
+                }
+
+                for c in inserted_text.chars() {
+                    app.editor.insert_char(c);
+                }
+            }
+
+            app.editor.set_cursor(current_row, current_col);
+        }
+    }
+}
+
 fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     if app.vim.macros.is_recording() {
         app.vim.macros.record_key(key);
@@ -2974,11 +3021,17 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
 
     match key.code {
         KeyCode::Esc => {
+            if let Some(state) = app.block_insert_state.take() {
+                apply_block_insert(app, state);
+            }
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+            if let Some(state) = app.block_insert_state.take() {
+                apply_block_insert(app, state);
+            }
             app.save_edit();
             app.vim_mode = VimMode::Normal;
             app.vim.mode = VimModeNew::Normal;
@@ -3328,6 +3381,57 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.visual_line_current = None;
             app.visual_block_anchor = None;
             app.start_buffer_search();
+        }
+        KeyCode::Char('I') if app.vim_mode == VimMode::VisualBlock => {
+            if let Some(anchor) = app.visual_block_anchor {
+                let (current_row, current_col) = app.editor.cursor();
+                let current = Position { row: current_row, col: current_col };
+
+                let (start_row, end_row) = if anchor.row <= current.row {
+                    (anchor.row, current.row)
+                } else {
+                    (current.row, anchor.row)
+                };
+                let insert_col = anchor.col.min(current.col);
+                app.block_insert_state = Some(BlockInsertState {
+                    mode: BlockInsertMode::Insert,
+                    rows: (start_row, end_row),
+                    insert_col,
+                    active_row: start_row,
+                    start_col: insert_col,
+                });
+                app.editor.clear_visual_block_selection();
+                app.visual_block_anchor = None;
+                app.editor.set_cursor(start_row, insert_col);
+                app.vim_mode = VimMode::Insert;
+                app.vim.mode = VimModeNew::Insert;
+            }
+        }
+        KeyCode::Char('A') if app.vim_mode == VimMode::VisualBlock => {
+            if let Some(anchor) = app.visual_block_anchor {
+                let (current_row, current_col) = app.editor.cursor();
+                let current = Position { row: current_row, col: current_col };
+                let (start_row, end_row) = if anchor.row <= current.row {
+                    (anchor.row, current.row)
+                } else {
+                    (current.row, anchor.row)
+                };
+                let right_col = anchor.col.max(current.col);
+                let insert_col = right_col + 1;
+                app.block_insert_state = Some(BlockInsertState {
+                    mode: BlockInsertMode::Append,
+                    rows: (start_row, end_row),
+                    insert_col,
+                    active_row: start_row,
+                    start_col: insert_col,
+                });
+
+                app.editor.clear_visual_block_selection();
+                app.visual_block_anchor = None;
+                app.editor.set_cursor(start_row, insert_col);
+                app.vim_mode = VimMode::Insert;
+                app.vim.mode = VimModeNew::Insert;
+            }
         }
         _ => {}
     }

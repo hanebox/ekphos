@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, VimMode};
+use crate::app::{App, BlockInsertMode, VimMode};
 
 pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
     // Store editor area for mouse coordinate translation
@@ -91,6 +91,11 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
 
     let mode_str = if is_command_mode {
         "COMMAND"
+    } else if let Some(ref block_state) = app.block_insert_state {
+        match block_state.mode {
+            BlockInsertMode::Insert => "V-BLK INSERT",
+            BlockInsertMode::Append => "V-BLK APPEND",
+        }
     } else {
         match app.vim_mode {
             VimMode::Normal => "NORMAL",
@@ -125,6 +130,8 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
 
     let hint = if is_command_mode {
         "Enter: Execute, Esc: Cancel"
+    } else if app.block_insert_state.is_some() {
+        "Type text, Esc: Apply to all lines"
     } else {
         match (&app.pending_delete, app.vim_mode) {
             (Some(_), _) => "d: Confirm, Esc: Cancel",

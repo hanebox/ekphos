@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, Mode};
+use crate::app::{App, BlockInsertMode, Focus, Mode};
 use crate::vim::VimMode as VimModeNew;
 
 pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -73,13 +73,20 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 VimModeNew::Command => "command".to_string(),
                 VimModeNew::OperatorPending { .. } => "normal".to_string(),
                 _ => {
-                    match app.vim_mode {
-                        crate::app::VimMode::Normal => "normal".to_string(),
-                        crate::app::VimMode::Insert => "insert".to_string(),
-                        crate::app::VimMode::Replace => "replace".to_string(),
-                        crate::app::VimMode::Visual => "visual".to_string(),
-                        crate::app::VimMode::VisualLine => "v-line".to_string(),
-                        crate::app::VimMode::VisualBlock => "v-block".to_string(),
+                    if let Some(ref block_state) = app.block_insert_state {
+                        match block_state.mode {
+                            BlockInsertMode::Insert => "v-blk insert".to_string(),
+                            BlockInsertMode::Append => "v-blk append".to_string(),
+                        }
+                    } else {
+                        match app.vim_mode {
+                            crate::app::VimMode::Normal => "normal".to_string(),
+                            crate::app::VimMode::Insert => "insert".to_string(),
+                            crate::app::VimMode::Replace => "replace".to_string(),
+                            crate::app::VimMode::Visual => "visual".to_string(),
+                            crate::app::VimMode::VisualLine => "v-line".to_string(),
+                            crate::app::VimMode::VisualBlock => "v-block".to_string(),
+                        }
                     }
                 }
             };

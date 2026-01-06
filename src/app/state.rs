@@ -17,6 +17,21 @@ use crate::highlight::Highlighter;
 use crate::config::{Config, Theme};
 use crate::vim::VimState;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockInsertMode {
+    Insert,
+    Append,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockInsertState {
+    pub mode: BlockInsertMode,
+    pub rows: (usize, usize),
+    pub insert_col: usize,
+    pub active_row: usize,
+    pub start_col: usize,
+}
+
 const GETTING_STARTED_CONTENT: &str = r#"# Getting Started
 
 A lightweight, fast, terminal-based markdown research tool built with Rust.
@@ -569,6 +584,7 @@ pub struct App {
     pub visual_line_anchor: Option<usize>,
     pub visual_line_current: Option<usize>,
     pub visual_block_anchor: Option<Position>,
+    pub block_insert_state: Option<BlockInsertState>,
     pub content_cursor: usize,
     pub content_scroll_offset: usize,
     pub floating_cursor_mode: bool,
@@ -721,6 +737,7 @@ impl App {
             visual_line_anchor: None,
             visual_line_current: None,
             visual_block_anchor: None,
+            block_insert_state: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
@@ -874,6 +891,7 @@ impl App {
             visual_line_anchor: None,
             visual_line_current: None,
             visual_block_anchor: None,
+            block_insert_state: None,
             content_cursor: 0,
             content_scroll_offset: 0,
             floating_cursor_mode: false,
@@ -3779,6 +3797,11 @@ impl App {
 
         let mode_str = if is_command_mode {
             "COMMAND"
+        } else if let Some(ref block_state) = self.block_insert_state {
+            match block_state.mode {
+                BlockInsertMode::Insert => "V-BLK INSERT",
+                BlockInsertMode::Append => "V-BLK APPEND",
+            }
         } else {
             match self.vim_mode {
                 VimMode::Normal => "NORMAL",
@@ -3796,6 +3819,8 @@ impl App {
         };
         let color = if is_command_mode {
             self.theme.info
+        } else if self.block_insert_state.is_some() {
+            self.theme.secondary // Use secondary color for block insert mode
         } else {
             match (&self.pending_delete, self.vim_mode) {
                 (Some(_), _) => self.theme.error,
@@ -3810,6 +3835,8 @@ impl App {
         };
         let hint = if is_command_mode {
             "Enter: Execute, Esc: Cancel"
+        } else if self.block_insert_state.is_some() {
+            "Type text, Esc: Apply to all lines"
         } else {
             match (&self.pending_delete, self.vim_mode) {
                 (Some(_), _) => "d: Confirm, Esc: Cancel",
