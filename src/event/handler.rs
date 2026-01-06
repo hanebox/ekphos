@@ -3704,8 +3704,11 @@ fn execute_vim_command(app: &mut App, command: Command) {
             app.save_edit();
         }
         Command::Quit => {
-            // Exit edit mode without saving
-            app.cancel_edit();
+            if app.has_unsaved_changes() {
+                app.dialog = DialogState::UnsavedChanges;
+            } else {
+                app.cancel_edit();
+            }
         }
         Command::WriteQuit => {
             app.save_edit();
