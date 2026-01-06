@@ -678,6 +678,7 @@ impl App {
         editor.set_tab_width(config.editor.tab_width);
         editor.set_padding(config.editor.left_padding, config.editor.right_padding);
         editor.set_line_number_mode(config.editor.line_numbers);
+        editor.set_scrolloff(config.editor.scrolloff as usize);
         editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -841,6 +842,7 @@ impl App {
         editor.set_tab_width(config.editor.tab_width);
         editor.set_padding(config.editor.left_padding, config.editor.right_padding);
         editor.set_line_number_mode(config.editor.line_numbers);
+        editor.set_scrolloff(config.editor.scrolloff as usize);
         editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1045,6 +1047,7 @@ impl App {
         self.editor.set_tab_width(self.config.editor.tab_width);
         self.editor.set_padding(self.config.editor.left_padding, self.config.editor.right_padding);
         self.editor.set_line_number_mode(self.config.editor.line_numbers);
+        self.editor.set_scrolloff(self.config.editor.scrolloff as usize);
         self.editor.set_block(
             Block::default()
                 .borders(Borders::ALL)
@@ -3918,6 +3921,7 @@ impl App {
             self.editor.set_tab_width(self.config.editor.tab_width);
             self.editor.set_padding(self.config.editor.left_padding, self.config.editor.right_padding);
             self.editor.set_line_number_mode(self.config.editor.line_numbers);
+            self.editor.set_scrolloff(self.config.editor.scrolloff as usize);
 
             self.vim_mode = VimMode::Normal;
             self.vim.mode = crate::vim::VimMode::Normal;

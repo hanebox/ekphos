@@ -202,6 +202,8 @@ pub struct Editor {
     line_number_mode: LineNumberMode,
     line_number_style: Style,
     line_number_width: u16,
+    // scrolloff, minimum lines above/below cursor
+    scrolloff: usize,
 }
 
 impl Default for Editor {
@@ -246,6 +248,7 @@ impl Editor {
             line_number_mode: LineNumberMode::Absolute,
             line_number_style: Style::default().fg(Color::DarkGray),
             line_number_width: 4, // Default width for line numbers
+            scrolloff: 0,
         }
     }
 
@@ -307,6 +310,10 @@ impl Editor {
     pub fn set_padding(&mut self, left: u16, right: u16) {
         self.left_padding = left;
         self.right_padding = right;
+    }
+
+    pub fn set_scrolloff(&mut self, scrolloff: usize) {
+        self.scrolloff = scrolloff;
     }
 
     pub fn line_wrap_enabled(&self) -> bool {
@@ -2020,21 +2027,25 @@ impl Editor {
         let (cursor_row, cursor_col) = self.cursor();
         let line_count = self.buffer.line_count();
 
-        if cursor_row < self.scroll_offset {
-            self.scroll_offset = cursor_row;
+        let effective_scrolloff = self.scrolloff.min(view_height / 2);
+
+        if cursor_row < self.scroll_offset + effective_scrolloff {
+            self.scroll_offset = cursor_row.saturating_sub(effective_scrolloff);
         }
 
         if self.line_wrap_enabled && self.view_width > 0 {
             while self.scroll_offset < cursor_row {
                 let visual_lines = self.visual_lines_in_range(self.scroll_offset, cursor_row);
-                if visual_lines <= view_height {
+                if visual_lines <= view_height.saturating_sub(effective_scrolloff) {
                     break;
                 }
                 self.scroll_offset += 1;
             }
         } else {
-            if cursor_row >= self.scroll_offset + view_height {
-                self.scroll_offset = cursor_row.saturating_sub(view_height.saturating_sub(1));
+            if cursor_row + effective_scrolloff >= self.scroll_offset + view_height {
+                self.scroll_offset = cursor_row
+                    .saturating_add(effective_scrolloff)
+                    .saturating_sub(view_height.saturating_sub(1));
             }
         }
 
