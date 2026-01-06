@@ -1874,7 +1874,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateFolder;
         }
-        KeyCode::Char('d') if !app.zen_mode => {
+        KeyCode::Char('d') if !app.zen_mode && key.modifiers.is_empty() => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { .. } => {
@@ -2038,6 +2038,18 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_sidebar_collapsed();
+        }
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.half_page_down_content();
+                app.sync_outline_to_content();
+            }
+        }
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.half_page_up_content();
+                app.sync_outline_to_content();
+            }
         }
         KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
             app.start_buffer_search();

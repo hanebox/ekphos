@@ -1881,6 +1881,27 @@ impl App {
         }
     }
 
+    pub fn half_page_down_content(&mut self) {
+        if self.content_items.is_empty() {
+            return;
+        }
+        let content_height = self.content_area.height.saturating_sub(2) as usize;
+        let half = content_height / 2;
+        let max_cursor = self.content_items.len().saturating_sub(1);
+        self.content_cursor = (self.content_cursor + half).min(max_cursor);
+        self.selected_link_index = 0;
+    }
+
+    pub fn half_page_up_content(&mut self) {
+        if self.content_items.is_empty() {
+            return;
+        }
+        let content_height = self.content_area.height.saturating_sub(2) as usize;
+        let half = content_height / 2;
+        self.content_cursor = self.content_cursor.saturating_sub(half);
+        self.selected_link_index = 0;
+    }
+
     pub fn toggle_floating_cursor(&mut self) {
         self.floating_cursor_mode = !self.floating_cursor_mode;
     }
