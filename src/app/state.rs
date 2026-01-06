@@ -59,7 +59,7 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - `/`: Search notes
 - `?`: Show help dialog
 - `Ctrl+g`: Open graph view
-- `z`: Toggle zen mode
+- `Ctrl+z`: Toggle zen mode
 
 Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
 
@@ -618,6 +618,7 @@ pub struct App {
     pub content_item_rects: Vec<(usize, Rect)>,
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
+    pub heading_fold_states: HashMap<usize, bool>,  // content_item index -> is_folded
     pub highlighter: Option<Highlighter>,
     pub highlighter_loading: bool,
     pub highlighter_sender: Sender<Highlighter>,
@@ -636,6 +637,8 @@ pub struct App {
     pub pending_wiki_target: Option<String>,
     pub needs_full_clear: bool,
     pub pending_g: bool,
+    pub pending_z: bool,  // For z-prefixed commands like zM, zR
+    pub status_message: Option<String>,  // Status message shown next to path
     pub buffer_search: BufferSearchState,
     pub help_scroll: usize,
     // Graph view state
@@ -771,6 +774,7 @@ impl App {
             content_item_rects: Vec::new(),
             selected_link_index: 0,
             details_open_states: HashMap::new(),
+            heading_fold_states: HashMap::new(),
             highlighter: None,
             highlighter_loading: false,
             highlighter_sender,
@@ -788,6 +792,8 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            pending_z: false,
+            status_message: None,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
@@ -925,6 +931,7 @@ impl App {
             content_item_rects: Vec::new(),
             selected_link_index: 0,
             details_open_states: HashMap::new(),
+            heading_fold_states: HashMap::new(),
             highlighter: None,
             highlighter_loading: false,
             highlighter_sender,
@@ -941,6 +948,8 @@ impl App {
             pending_wiki_target: None,
             needs_full_clear: false,
             pending_g: false,
+            pending_z: false,
+            status_message: None,
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
@@ -1681,6 +1690,7 @@ impl App {
         self.content_items.clear();
         self.content_item_source_lines.clear();
         self.details_open_states.clear();
+        self.heading_fold_states.clear();
         let content = self.current_note().map(|n| n.content.clone());
         if let Some(content) = content {
             let mut in_code_block = false;
@@ -1856,27 +1866,49 @@ impl App {
         if self.content_items.is_empty() {
             return;
         }
-        if self.content_cursor < self.content_items.len() - 1 {
-            self.content_cursor += 1;
+        // Find next visible content item
+        let mut next = self.content_cursor + 1;
+        while next < self.content_items.len() && !self.is_content_item_visible(next) {
+            next += 1;
+        }
+        if next < self.content_items.len() {
+            self.content_cursor = next;
             self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
     pub fn previous_content_line(&mut self) {
-        if self.content_cursor > 0 {
-            self.content_cursor -= 1;
+        if self.content_cursor == 0 {
+            return;
+        }
+        // Find previous visible content item
+        let mut prev = self.content_cursor.saturating_sub(1);
+        while prev > 0 && !self.is_content_item_visible(prev) {
+            prev = prev.saturating_sub(1);
+        }
+        // Only move if the target is visible
+        if self.is_content_item_visible(prev) {
+            self.content_cursor = prev;
             self.selected_link_index = 0; // Reset link selection when moving lines
         }
     }
 
     pub fn goto_first_content_line(&mut self) {
+        // Find first visible item
         self.content_cursor = 0;
+        while self.content_cursor < self.content_items.len() && !self.is_content_item_visible(self.content_cursor) {
+            self.content_cursor += 1;
+        }
         self.selected_link_index = 0;
     }
 
     pub fn goto_last_content_line(&mut self) {
         if !self.content_items.is_empty() {
+            // Find last visible item
             self.content_cursor = self.content_items.len() - 1;
+            while self.content_cursor > 0 && !self.is_content_item_visible(self.content_cursor) {
+                self.content_cursor -= 1;
+            }
             self.selected_link_index = 0;
         }
     }
@@ -1888,7 +1920,17 @@ impl App {
         let content_height = self.content_area.height.saturating_sub(2) as usize;
         let half = content_height / 2;
         let max_cursor = self.content_items.len().saturating_sub(1);
-        self.content_cursor = (self.content_cursor + half).min(max_cursor);
+
+        // Count visible items to move by half page
+        let mut moved = 0;
+        let mut new_cursor = self.content_cursor;
+        while moved < half && new_cursor < max_cursor {
+            new_cursor += 1;
+            if self.is_content_item_visible(new_cursor) {
+                moved += 1;
+            }
+        }
+        self.content_cursor = new_cursor;
         self.selected_link_index = 0;
     }
 
@@ -1898,7 +1940,17 @@ impl App {
         }
         let content_height = self.content_area.height.saturating_sub(2) as usize;
         let half = content_height / 2;
-        self.content_cursor = self.content_cursor.saturating_sub(half);
+
+        // Count visible items to move by half page
+        let mut moved = 0;
+        let mut new_cursor = self.content_cursor;
+        while moved < half && new_cursor > 0 {
+            new_cursor -= 1;
+            if self.is_content_item_visible(new_cursor) {
+                moved += 1;
+            }
+        }
+        self.content_cursor = new_cursor;
         self.selected_link_index = 0;
     }
 
@@ -1911,8 +1963,13 @@ impl App {
             return;
         }
 
-        if self.content_cursor < self.content_items.len() - 1 {
-            self.content_cursor += 1;
+        // Find next visible content item
+        let mut next = self.content_cursor + 1;
+        while next < self.content_items.len() && !self.is_content_item_visible(next) {
+            next += 1;
+        }
+        if next < self.content_items.len() {
+            self.content_cursor = next;
             self.selected_link_index = 0;
         }
     }
@@ -1922,8 +1979,16 @@ impl App {
             return;
         }
 
-        if self.content_cursor > 0 {
-            self.content_cursor -= 1;
+        if self.content_cursor == 0 {
+            return;
+        }
+        // Find previous visible content item
+        let mut prev = self.content_cursor.saturating_sub(1);
+        while prev > 0 && !self.is_content_item_visible(prev) {
+            prev = prev.saturating_sub(1);
+        }
+        if self.is_content_item_visible(prev) {
+            self.content_cursor = prev;
             self.selected_link_index = 0;
         }
     }
@@ -1970,6 +2035,97 @@ impl App {
                 let current = self.details_open_states.get(&id).copied().unwrap_or(false);
                 self.details_open_states.insert(id, !current);
             }
+        }
+    }
+    pub fn heading_level(line: &str) -> Option<usize> {
+        if line.starts_with("### ") {
+            Some(3)
+        } else if line.starts_with("## ") {
+            Some(2)
+        } else if line.starts_with("# ") {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    pub fn is_heading_at(&self, idx: usize) -> bool {
+        if let Some(ContentItem::TextLine(line)) = self.content_items.get(idx) {
+            Self::heading_level(line).is_some()
+        } else {
+            false
+        }
+    }
+    pub fn is_heading_folded(&self, idx: usize) -> bool {
+        self.heading_fold_states.get(&idx).copied().unwrap_or(false)
+    }
+    pub fn toggle_current_heading_fold(&mut self) {
+        if self.is_heading_at(self.content_cursor) {
+            let idx = self.content_cursor;
+            let current = self.heading_fold_states.get(&idx).copied().unwrap_or(false);
+            let new_state = !current;
+            self.heading_fold_states.insert(idx, new_state);
+            let msg = if new_state { "Folded" } else { "Unfolded" };
+            self.status_message = Some(msg.to_string());
+        }
+    }
+    pub fn toggle_heading_fold_at(&mut self, idx: usize) {
+        if self.is_heading_at(idx) {
+            let current = self.heading_fold_states.get(&idx).copied().unwrap_or(false);
+            let new_state = !current;
+            self.heading_fold_states.insert(idx, new_state);
+            let msg = if new_state { "Folded" } else { "Unfolded" };
+            self.status_message = Some(msg.to_string());
+        }
+    }
+    pub fn get_heading_children_range(&self, heading_idx: usize) -> std::ops::Range<usize> {
+        let heading_level = if let Some(ContentItem::TextLine(line)) = self.content_items.get(heading_idx) {
+            Self::heading_level(line).unwrap_or(0)
+        } else {
+            return heading_idx..heading_idx;
+        };
+
+        let mut end_idx = heading_idx + 1;
+        while end_idx < self.content_items.len() {
+            if let ContentItem::TextLine(line) = &self.content_items[end_idx] {
+                if let Some(level) = Self::heading_level(line) {
+                    if level <= heading_level {
+                        break;
+                    }
+                }
+            }
+            end_idx += 1;
+        }
+        (heading_idx + 1)..end_idx
+    }
+    pub fn is_content_item_visible(&self, idx: usize) -> bool {
+        for (heading_idx, is_folded) in &self.heading_fold_states {
+            if *is_folded && *heading_idx < idx {
+                let children_range = self.get_heading_children_range(*heading_idx);
+                if children_range.contains(&idx) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub fn fold_all_headings(&mut self) {
+        let mut count = 0;
+        for idx in 0..self.content_items.len() {
+            if self.is_heading_at(idx) {
+                self.heading_fold_states.insert(idx, true);
+                count += 1;
+            }
+        }
+        self.status_message = Some(format!("Folded {} headings", count));
+    }
+    pub fn unfold_all_headings(&mut self) {
+        let count = self.heading_fold_states.len();
+        self.heading_fold_states.clear();
+        self.status_message = Some(format!("Unfolded {} headings", count));
+    }
+    pub fn unfold_heading_at(&mut self, idx: usize) {
+        if self.is_heading_at(idx) && self.is_heading_folded(idx) {
+            self.heading_fold_states.insert(idx, false);
         }
     }
 
@@ -3677,6 +3833,7 @@ impl App {
                 let target_line = outline_item.line;
                 // Set content cursor to the target line
                 if target_line < self.content_items.len() {
+                    self.unfold_heading_at(target_line);
                     self.content_cursor = target_line;
                 }
                 // Switch focus to content

@@ -50,9 +50,11 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
                 if process_events(terminal, app, &mut needs_render)? {
                     return Ok(());
                 }
-            } else if app.mouse_button_held && app.mode == Mode::Edit && app.vim_mode == VimMode::Visual {
-                handle_continuous_auto_scroll(app);
-                needs_render = true;
+            } else {
+                if app.mouse_button_held && app.mode == Mode::Edit && app.vim_mode == VimMode::Visual {
+                    handle_continuous_auto_scroll(app);
+                    needs_render = true;
+                }
             }
         } else {
             // idle block until event to avoid unnecessary cpu usage
@@ -265,6 +267,9 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         }
                         else if app.item_is_details_at(idx) {
                             app.toggle_details_at(idx);
+                        }
+                        else if app.is_heading_at(idx) {
+                            app.toggle_heading_fold_at(idx);
                         }
                     }
                 }
@@ -1842,7 +1847,10 @@ fn update_editor_search_highlights(app: &mut App) {
 /// Returns true if the app should quit
 fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     let was_pending_g = app.pending_g;
+    let was_pending_z = app.pending_z;
     app.pending_g = false;
+    app.pending_z = false;
+    app.status_message = None;  // Clear old status message on new keystroke
 
     match key.code {
         KeyCode::Char('q') => return true,
@@ -1909,8 +1917,12 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.needs_full_clear = true;
         }
         KeyCode::Char('R') => {
-            app.reload_on_focus();
-            app.needs_full_clear = true;
+            if was_pending_z && app.focus == Focus::Content {
+                app.unfold_all_headings();
+            } else {
+                app.reload_on_focus();
+                app.needs_full_clear = true;
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
@@ -2004,6 +2016,8 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                     }
                 } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
                     app.toggle_current_details();
+                } else if app.is_heading_at(app.content_cursor) {
+                    app.toggle_current_heading_fold();
                 } else if let Some(link) = app.current_selected_link() {
                     match link {
                         crate::app::LinkInfo::Markdown { url, .. } => {
@@ -2058,8 +2072,21 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.build_graph();
             app.dialog = DialogState::GraphView;
         }
-        KeyCode::Char('z') => {
+        KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_zen_mode();
+        }
+        KeyCode::Char('z') => {
+            app.pending_z = true;
+        }
+        KeyCode::Char('M') => {
+            if was_pending_z && app.focus == Focus::Content {
+                app.fold_all_headings();
+            }
+        }
+        KeyCode::Char('a') => {
+            if was_pending_z && app.focus == Focus::Content {
+                app.toggle_current_heading_fold();
+            }
         }
         KeyCode::Char('g') => {
             if was_pending_g {

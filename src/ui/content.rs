@@ -181,6 +181,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let mut height_from_offset = 0u16;
         let mut last_visible_idx = base_offset;
         for (i, item) in app.content_items.iter().enumerate().skip(base_offset) {
+            if !app.is_content_item_visible(i) {
+                continue;
+            }
             let item_height = get_item_height(item);
             if height_from_offset + item_height > inner_area.height {
                 break;
@@ -195,6 +198,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         } else if cursor > last_visible_idx {
             let mut cumulative_height = 0u16;
             for (i, item) in app.content_items.iter().enumerate() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 if i <= cursor {
                     cumulative_height += get_item_height(item);
                 }
@@ -206,6 +212,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             let mut new_offset = 0;
             let mut height_so_far = 0u16;
             for (i, item) in app.content_items.iter().enumerate() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 if i > cursor {
                     break;
                 }
@@ -226,6 +235,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let mut first_page_height = 0u16;
         let mut first_page_last_idx = 0;
         for (i, item) in app.content_items.iter().enumerate() {
+            if !app.is_content_item_visible(i) {
+                continue;
+            }
             let item_height = get_item_height(item);
             if first_page_height + item_height > inner_area.height {
                 break;
@@ -242,6 +254,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             let mut first_visible_idx = cursor;
 
             for i in (0..=cursor).rev() {
+                if !app.is_content_item_visible(i) {
+                    continue;
+                }
                 let item_height = get_item_height(&app.content_items[i]);
                 if height_from_cursor + item_height > inner_area.height {
                     break;
@@ -260,6 +275,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let mut total_height = 0u16;
 
     for (i, item) in app.content_items.iter().enumerate().skip(scroll_offset) {
+        // Skip items hidden by folded headings
+        if !app.is_content_item_visible(i) {
+            continue;
+        }
         if total_height >= inner_area.height {
             break;
         }
@@ -317,7 +336,13 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let has_link = (is_cursor_line || is_hovered) && (has_regular_link || has_wiki_link);
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
-                render_content_line(f, &app.theme, line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator));
+                // Get fold state for H1-H3 headings
+                let fold_state = if app.is_heading_at(item_idx) {
+                    Some(app.is_heading_folded(item_idx))
+                } else {
+                    None
+                };
+                render_content_line(f, &app.theme, line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator), fold_state);
                 if !skip_images {
                     let inline_images = extract_inline_images(line);
                     if !inline_images.is_empty() {
@@ -1345,6 +1370,7 @@ fn render_content_line<F>(
     has_link: bool,
     selected_link: usize,
     wiki_link_validator: Option<F>,
+    fold_state: Option<bool>,  // None = not foldable, Some(true) = folded, Some(false) = expanded
 ) where
     F: Fn(&str) -> bool,
 {
@@ -1352,10 +1378,19 @@ fn render_content_line<F>(
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let available_width = (area.width as usize).saturating_sub(1); // 1 char right padding
 
+    // Fold indicator for H1-H3 headings
+    let fold_indicator = |is_folded: Option<bool>, color: ratatui::style::Color| -> Span {
+        match is_folded {
+            Some(true) => Span::styled("▶ ", Style::default().fg(color)),   // Folded
+            Some(false) => Span::styled("▼ ", Style::default().fg(color)),  // Expanded
+            None => Span::styled("  ", Style::default()),                    // Not foldable
+        }
+    };
+
     // Check headings from most specific (######) to least specific (#)
     let content_theme = &theme.content;
     let styled_line = if line.starts_with("###### ") {
-        // H6: Smallest, italic, subtle
+        // H6: Smallest, italic, subtle (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled(
@@ -1366,7 +1401,7 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("##### ") {
-        // H5: Small, muted color
+        // H5: Small, muted color (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled(
@@ -1377,7 +1412,7 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("#### ") {
-        // H4: Small prefix
+        // H4: Small prefix (not foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
             Span::styled("› ", Style::default().fg(content_theme.heading4)),
@@ -1389,10 +1424,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("### ") {
-        // H3: Medium prefix
+        // H3: Medium prefix (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("▸ ", Style::default().fg(content_theme.heading3)),
+            fold_indicator(fold_state, content_theme.heading3),
             Span::styled(
                 line.trim_start_matches("### "),
                 Style::default()
@@ -1401,10 +1436,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("## ") {
-        // H2: Larger prefix
+        // H2: Larger prefix (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("■ ", Style::default().fg(content_theme.heading2)),
+            fold_indicator(fold_state, content_theme.heading2),
             Span::styled(
                 line.trim_start_matches("## "),
                 Style::default()
@@ -1413,10 +1448,10 @@ fn render_content_line<F>(
             ),
         ])
     } else if line.starts_with("# ") {
-        // H1: Largest, most prominent
+        // H1: Largest, most prominent (foldable)
         Line::from(vec![
             Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-            Span::styled("◆ ", Style::default().fg(content_theme.heading1)),
+            fold_indicator(fold_state, content_theme.heading1),
             Span::styled(
                 line.trim_start_matches("# ").to_uppercase(),
                 Style::default()

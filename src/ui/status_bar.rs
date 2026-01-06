@@ -55,14 +55,15 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     // Get mode indicator and command info for edit mode
-    let (mode_text, pending_info, command_input) = match app.mode {
+    let (mode_text, pending_info, command_input, normal_status) = match app.mode {
         Mode::Normal => {
             let mode = match app.focus {
                 Focus::Sidebar => "sidebar",
                 Focus::Content => "content",
                 Focus::Outline => "outline",
             };
-            (mode.to_string(), String::new(), None)
+            let status = app.status_message.clone();
+            (mode.to_string(), String::new(), None, status)
         }
         Mode::Edit => {
             // Get detailed vim mode info
@@ -187,7 +188,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 None
             };
 
-            (mode_name, pending, cmd_input)
+            (mode_name, pending, cmd_input, None)
         }
     };
 
@@ -231,18 +232,25 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(statusbar.separator),
     );
 
-    // Command input, status message, or file path
-    let path_or_command = if let Some((cmd, is_warning)) = command_input {
+    // Command input or file path (with optional status message for Normal mode)
+    let (path_or_command, status_span) = if let Some((cmd, is_warning)) = command_input {
         let color = if is_warning { theme.warning } else { theme.primary };
-        Span::styled(
+        (Span::styled(
             format!(" {}", cmd),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )
+        ), None)
     } else {
-        Span::styled(
+        let path = Span::styled(
             format!(" {}", note_path),
             Style::default().fg(statusbar.foreground),
-        )
+        );
+        let status = normal_status.map(|msg| {
+            vec![
+                Span::styled(" › ", Style::default().fg(statusbar.separator)),
+                Span::styled(msg, Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+            ]
+        });
+        (path, status)
     };
 
     // Right side content
@@ -289,6 +297,9 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     left_content.extend(pending);
     left_content.push(separator2);
     left_content.push(path_or_command);
+    if let Some(status_spans) = status_span {
+        left_content.extend(status_spans);
+    }
 
     let mut right_content = recording_indicator;
     right_content.extend(zen_indicator);
