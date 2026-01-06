@@ -15,7 +15,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "ekphos";
-          version = "0.10.0";
+          version = "0.15.0";
 
           src = ./.;
 
