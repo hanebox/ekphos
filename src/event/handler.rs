@@ -1854,10 +1854,8 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 
     match key.code {
         KeyCode::Char('q') => return true,
-        KeyCode::Tab if !app.zen_mode => app.toggle_focus(false),
-        KeyCode::Char('l') if !app.zen_mode => app.toggle_focus(false),
-        KeyCode::BackTab if !app.zen_mode => app.toggle_focus(true),
-        KeyCode::Char('h') if !app.zen_mode => app.toggle_focus(true),
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if !app.zen_mode => app.toggle_focus(false),
+        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left if !app.zen_mode => app.toggle_focus(true),
         KeyCode::Char('e') => {
             app.push_navigation_history(app.selected_note);
             app.enter_edit_mode();
