@@ -14,11 +14,19 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 
 ## Quick Start
 
+To install with [Cargo](https://doc.rust-lang.org/cargo/):
+
 ```bash
 cargo install ekphos
 ```
 
-> **Note:** Always update to the latest version. If you encounter config issues after updating, run `ekphos --reset` to reset your configuration.
+Alternatively, you can install Ekphos using [Homebrew](https://brew.sh):
+
+```bash
+brew install ekphos
+```
+
+*Note: Always update to the latest version. If you encounter config issues after updating, run `ekphos --reset` to reset your configuration.*
 
 ## Requirements
 
