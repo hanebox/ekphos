@@ -26,6 +26,12 @@ Alternatively, you can install Ekphos using [Homebrew](https://brew.sh):
 brew install ekphos
 ```
 
+Or using [AUR](https://aur.archlinux.org/packages/ekphos):
+
+```bash
+yay -S ekphos
+```
+
 *Note: Always update to the latest version. If you encounter config issues after updating, run `ekphos --reset` to reset your configuration.*
 
 ## Requirements
