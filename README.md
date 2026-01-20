@@ -10,7 +10,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 
 ## Documentation
 
-**Full documentation has moved to [docs.ekphos.xyz](https://docs.ekphos.xyz)**
+**Go to [docs.ekphos.xyz](https://docs.ekphos.xyz)**
 
 ## Quick Start
 
@@ -32,19 +32,26 @@ Or using [AUR](https://aur.archlinux.org/packages/ekphos):
 yay -S ekphos
 ```
 
-*Note: Always update to the latest version. If you encounter config issues after updating, run `ekphos --reset` to reset your configuration.*
+_Note: Always update to the latest version. If you encounter config issues after updating, run `ekphos --reset` to reset your configuration._
 
 ## Requirements
 
 - Rust 1.70+
 - For inline images: iTerm2, Kitty, WezTerm, Ghostty, or Sixel-compatible terminal
 
+## Discussion
+
+- Open a discussion in the [repository](https://github.com/hanebox/ekphos/discussions)
+
+## Disclaimer
+
+This project is in early development. There may be breaking changes and bugs in pre-releases.
+
 ## Contributing
 
 ```bash
 git clone https://github.com/hanebox/ekphos.git
 cd ekphos
-make run
 ```
 
 1. Fork the repository
@@ -54,9 +61,7 @@ make run
 
 To contribute to the documentation, see [ekphos-docs](https://github.com/hanebox/ekphos-docs).
 
-## Disclaimer
-
-This project is in early development. There may be breaking changes and bugs in pre-releases.
+[![Packaging status](https://repology.org/badge/vertical-allrepos/ekphos.svg)](https://repology.org/project/ekphos/versions)
 
 ## License
 
