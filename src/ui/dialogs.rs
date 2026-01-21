@@ -842,6 +842,10 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
             Span::styled("Toggle zen mode", desc_style),
         ]),
         Line::from(vec![
+            Span::styled(" Ctrl+m    ", key_style),
+            Span::styled("Toggle frontmatter", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled(" R         ", key_style),
             Span::styled("Reload files from disk", desc_style),
         ]),

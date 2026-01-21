@@ -47,6 +47,7 @@ pub enum HighlightType {
     HorizontalRule,
     SearchMatch,
     SearchMatchCurrent,
+    Frontmatter,
     Custom(u8),
 }
 
@@ -198,6 +199,7 @@ pub struct Editor {
     list_marker_color: Color,
     bold_color: Option<Color>,
     italic_color: Option<Color>,
+    frontmatter_color: Color,
     // Line number display
     line_number_mode: LineNumberMode,
     line_number_style: Style,
@@ -245,6 +247,7 @@ impl Editor {
             list_marker_color: Color::Yellow,
             bold_color: None,
             italic_color: None,
+            frontmatter_color: Color::DarkGray,
             line_number_mode: LineNumberMode::Absolute,
             line_number_style: Style::default().fg(Color::DarkGray),
             line_number_width: 4, // Default width for line numbers
@@ -573,6 +576,10 @@ impl Editor {
         self.italic_color = italic_color;
     }
 
+    pub fn set_frontmatter_color(&mut self, color: Color) {
+        self.frontmatter_color = color;
+    }
+
     pub fn update_wiki_links<F>(&mut self, validator: F)
     where
         F: Fn(&str) -> bool,
@@ -735,9 +742,23 @@ impl Editor {
 
         let line_count = self.buffer.line_count();
         let mut in_code_block = false;
+        let frontmatter_end = self.detect_frontmatter_end();
 
         for row in 0..line_count {
             let line = self.buffer.line(row).unwrap_or("").to_string();
+
+            if let Some(fm_end) = frontmatter_end {
+                if row <= fm_end {
+                    self.highlights.push(HighlightRange::new(
+                        row,
+                        0,
+                        line.chars().count(),
+                        Style::default().fg(self.frontmatter_color),
+                        HighlightType::Frontmatter,
+                    ));
+                    continue;
+                }
+            }
 
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
@@ -765,6 +786,27 @@ impl Editor {
 
             self.highlight_line_markdown(row, &line);
         }
+    }
+
+    /// detect the line index where frontmatter ends, returns None if no valid frontmatter is found.
+    fn detect_frontmatter_end(&self) -> Option<usize> {
+        let line_count = self.buffer.line_count();
+        if line_count == 0 {
+            return None;
+        }
+
+        let first_line = self.buffer.line(0).unwrap_or("");
+        if first_line.trim() != "---" {
+            return None;
+        }
+        for row in 1..line_count {
+            let line = self.buffer.line(row).unwrap_or("");
+            if line.trim() == "---" {
+                return Some(row);
+            }
+        }
+
+        None
     }
 
     fn highlight_line_markdown(&mut self, row: usize, line: &str) {

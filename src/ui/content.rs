@@ -184,6 +184,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     1u16
                 }
             }
+            ContentItem::FrontmatterLine { .. } => 1u16,
+            ContentItem::FrontmatterDelimiter { .. } => 1u16,
+            ContentItem::TagBadges { .. } => 2u16, // 1 line padding + 1 line for tags
         }
     };
 
@@ -400,6 +403,15 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::Details { summary, content_lines, id } => {
                 let is_open = app.details_open_states.get(&id).copied().unwrap_or(false);
                 render_details(f, &app.theme, &summary, &content_lines, is_open, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::FrontmatterDelimiter { .. } => {
+                render_frontmatter_delimiter(f, &app.theme, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::FrontmatterLine { ref key, ref value, .. } => {
+                render_frontmatter_line(f, &app.theme, key, value, chunks[chunk_idx], is_cursor_line);
+            }
+            ContentItem::TagBadges { ref tags } => {
+                render_tag_badges_inline(f, &app.theme, tags, chunks[chunk_idx]);
             }
         }
     }
@@ -2038,5 +2050,98 @@ fn render_details(
     let paragraph = Paragraph::new(lines)
         .style(style)
         .wrap(Wrap { trim: false });
+    f.render_widget(paragraph, area);
+}
+
+fn render_frontmatter_delimiter(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    is_cursor: bool,
+) {
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+
+    let spans = vec![
+        Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
+        Span::styled("---", Style::default().fg(theme.content.frontmatter)),
+    ];
+
+    let style = if is_cursor {
+        Style::default().bg(theme.selection)
+    } else {
+        Style::default()
+    };
+
+    let paragraph = Paragraph::new(Line::from(spans)).style(style);
+    f.render_widget(paragraph, area);
+}
+
+/// Render tag badges as part of scrollable content (not fixed at top)
+fn render_tag_badges_inline(
+    f: &mut Frame,
+    theme: &Theme,
+    tags: &[String],
+    area: Rect,
+) {
+    if area.height < 2 {
+        return;
+    }
+
+    let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
+
+    for (i, tag) in tags.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ", Style::default()));
+        }
+        spans.push(Span::styled(
+            format!(" {} ", tag),
+            Style::default()
+                .fg(theme.content.tag)
+                .bg(theme.content.tag_background),
+        ));
+    }
+
+    // Render on second line (first line is padding)
+    let tag_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+    let paragraph = Paragraph::new(Line::from(spans));
+    f.render_widget(paragraph, tag_area);
+}
+
+fn render_frontmatter_line(
+    f: &mut Frame,
+    theme: &Theme,
+    key: &str,
+    value: &str,
+    area: Rect,
+    is_cursor: bool,
+) {
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+
+    let spans = if key.is_empty() {
+        // Continuation line (no key)
+        vec![
+            Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
+            Span::styled(value, Style::default().fg(theme.content.frontmatter)),
+        ]
+    } else {
+        vec![
+            Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
+            Span::styled(format!("{}: ", key), Style::default().fg(theme.info)),
+            Span::styled(value, Style::default().fg(theme.content.frontmatter)),
+        ]
+    };
+
+    let style = if is_cursor {
+        Style::default().bg(theme.selection)
+    } else {
+        Style::default()
+    };
+
+    let paragraph = Paragraph::new(Line::from(spans)).style(style);
     f.render_widget(paragraph, area);
 }

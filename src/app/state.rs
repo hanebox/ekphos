@@ -32,169 +32,7 @@ pub struct BlockInsertState {
     pub start_col: usize,
 }
 
-const GETTING_STARTED_CONTENT: &str = r#"# Getting Started
-
-A lightweight, fast, terminal-based markdown research tool built with Rust.
-
-## Layout
-
-Ekphos has three panels:
-
-- **Sidebar** (left): Collapsible folder tree with notes
-- **Content** (center): Note content with markdown rendering
-- **Outline** (right): Auto-generated headings for quick navigation
-
-Use `Tab` or `Shift+Tab` to switch between panels.
-
-**Collapsible Panels:**
-
-- `Ctrl+b` to collapse/expand the sidebar
-- `Ctrl+o` to collapse/expand the outline
-
-## Quick Start
-
-- `j/k`: Navigate up/down
-- `e`: Enter edit mode
-- `n`: Create new note
-- `/`: Search notes
-- `?`: Show help dialog
-- `Ctrl+g`: Open graph view
-- `Ctrl+z`: Toggle zen mode
-
-Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
-
-## Interactive Demo
-
-Try these interactive elements! Press `Space` or click to interact:
-
-### Task Lists
-
-- [ ] Try pressing Space on this checkbox
-- [ ] Or click on a task to toggle it
-- [x] This one is already completed
-
-### Wikilinks
-
-Navigate between notes using wikilinks:
-
-- [[02-Demo Note]] - Press `Space` or click to visit
-- Use `]` and `[` to jump between links on a line
-- In edit mode, type `[[` for autocomplete suggestions
-- [[Non-existent Note]] - Opens a dialog to create it!
-
-### Collapsible Sections
-
-<details>
-<summary>Click or press Space to expand this section</summary>
-
-This content is hidden by default! Great for:
-- FAQs and documentation
-- Optional information
-- Keeping notes organized
-</details>
-
-<details>
-<summary>Another collapsible section</summary>
-
-You can have multiple collapsible sections in one note.
-Each maintains its own open/closed state.
-</details>
-
-## Graph View
-
-Press `Ctrl+g` to open the interactive graph view and visualize connections between your notes.
-
-- See how your notes link together
-- Click on nodes to navigate
-- Drag to pan, scroll to zoom
-
-## Markdown Features
-
-### Text Formatting
-
-- **Bold text** with double asterisks
-- *Italic text* with single asterisks
-- `Inline code` with backticks
-- ~~Strikethrough~~ in task items
-
-### Code Blocks
-
-```rust
-fn main() {
-    println!("Hello, Ekphos!");
-}
-```
-
-### Blockquotes
-
-> Blockquotes are rendered with a colored border.
-> Great for highlighting important information.
-
-### Images
-
-Embed images with `![alt](path/to/image.png)`. Press `Enter`, `o`, or click to open in system viewer.
-
-![Ekphos Screenshot](https://raw.githubusercontent.com/hanebox/ekphos/release/examples/ekphos-screenshot.png)
-
-Inline preview works in terminals with image support (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
-
----
-
-Read the docs at [docs.ekphos.xyz](https://docs.ekphos.xyz) for full documentation, vim keybindings, themes, and configuration.
-
-Press `q` to quit. Happy note-taking!"#;
-
-const DEMO_NOTE_CONTENT: &str = r#"# Demo Note
-
-This is a demo note to showcase wikilinks and interactive markdown features!
-
-## Wikilinks
-
-Wikilinks let you connect your notes together, creating a personal knowledge base.
-
-- [[Getting Started]] - Link back to the main documentation
-- [[Getting Started#Graph View]] - Link to a specific heading
-- [[Getting Started|Main Guide]] - Custom display text with `|`
-
-### Creating Wikilinks
-
-1. Press `e` to enter edit mode
-2. Type `[[` to see autocomplete suggestions
-3. Add `#` to link to specific headings
-4. Add `|` to customize the display text
-5. Press `Ctrl+s` or `:w` to save
-
-### Navigation
-
-- Press `Space` or click on any wikilink to navigate
-- Use `]` to jump to next link, `[` for previous
-- Links to non-existent notes will prompt to create them
-
-## Interactive Elements
-
-### Tasks with Links
-
-- [ ] Check out the [[Getting Started]] guide
-- [ ] Try pressing `Space` on this checkbox
-- [x] Complete the tutorial
-
-### Collapsible Content
-
-<details>
-<summary>Wikilink Ideas</summary>
-
-Here are some ways to use wikilinks:
-- Create a **daily notes** system with links between days
-- Build a **zettelkasten** for research and learning
-- Organize **project notes** with interconnected topics
-- Make a **personal wiki** for anything you want to remember
-</details>
-
-## Graph View
-
-Press `Ctrl+g` to see how this note connects to [[Getting Started]] in the graph visualization!
-
-Happy linking!"#;
+use super::welcome_notes::{GETTING_STARTED_CONTENT, DEMO_NOTE_CONTENT};
 
 #[derive(Debug, Clone)]
 pub struct Note {
@@ -203,6 +41,8 @@ pub struct Note {
     pub file_path: Option<PathBuf>,
     pub modified_time: Option<std::time::SystemTime>,
     pub created_time: Option<std::time::SystemTime>,
+    pub frontmatter: Option<super::frontmatter::Frontmatter>,
+    pub content_start_line: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -349,6 +189,9 @@ pub enum ContentItem {
     TaskItem { text: String, checked: bool, line_index: usize },
     TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
     Details { summary: String, content_lines: Vec<String>, id: usize },
+    FrontmatterLine { key: String, value: String },
+    FrontmatterDelimiter,
+    TagBadges { tags: Vec<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -646,8 +489,10 @@ pub struct App {
     // Sidebar sorting
     pub sort_mode: SortMode,
     // Navigation history (like browser back/forward)
-    pub navigation_history: Vec<usize>,  
-    pub navigation_index: usize,         
+    pub navigation_history: Vec<usize>,
+    pub navigation_index: usize,
+    // Frontmatter visibility
+    pub frontmatter_hidden: bool,
 }
 
 #[allow(dead_code)]
@@ -719,6 +564,7 @@ impl App {
         let input_buffer = config.notes_dir.clone();
         let sidebar_collapsed = config.sidebar_collapsed;
         let outline_collapsed = config.outline_collapsed;
+        let frontmatter_hidden = config.frontmatter_hidden;
 
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
@@ -801,6 +647,7 @@ impl App {
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
+            frontmatter_hidden,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -877,6 +724,7 @@ impl App {
         let input_buffer = config.notes_dir.clone();
         let sidebar_collapsed = config.sidebar_collapsed;
         let outline_collapsed = config.outline_collapsed;
+        let frontmatter_hidden = config.frontmatter_hidden;
 
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
@@ -958,6 +806,7 @@ impl App {
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
+            frontmatter_hidden,
         };
 
         if notes_dir_exists {
@@ -1162,6 +1011,9 @@ impl App {
                             .map(|m| (m.modified().ok(), m.created().ok()))
                             .unwrap_or((None, None));
 
+                        // Parse frontmatter
+                        let (frontmatter, content_start_line) = super::frontmatter::Frontmatter::parse(&content);
+
                         let note_index = self.notes.len();
                         self.notes.push(Note {
                             title,
@@ -1169,6 +1021,8 @@ impl App {
                             file_path: Some(path),
                             modified_time,
                             created_time,
+                            frontmatter,
+                            content_start_line,
                         });
 
                         items.push(FileTreeItem::Note {
@@ -1694,11 +1548,63 @@ impl App {
         self.content_item_source_lines.clear();
         self.details_open_states.clear();
         self.heading_fold_states.clear();
-        let content = self.current_note().map(|n| n.content.clone());
-        if let Some(content) = content {
+
+        // Get note data to extract frontmatter info
+        let note_data = self.current_note().map(|n| {
+            (n.content.clone(), n.frontmatter.clone(), n.content_start_line)
+        });
+
+        if let Some((content, frontmatter, content_start_line)) = note_data {
             let mut in_code_block = false;
             let lines: Vec<&str> = content.lines().collect();
             let mut i = 0;
+
+            // Handle frontmatter display
+            let has_frontmatter = frontmatter.is_some() && content_start_line > 0;
+            if has_frontmatter && !self.frontmatter_hidden {
+                self.content_items.push(ContentItem::FrontmatterDelimiter);
+                self.content_item_source_lines.push(0);
+
+                // Parse and show frontmatter lines as key-value pairs
+                for line_idx in 1..content_start_line.saturating_sub(1) {
+                    if line_idx < lines.len() {
+                        let line = lines[line_idx];
+                        if let Some(colon_pos) = line.find(':') {
+                            let key = line[..colon_pos].trim().to_string();
+                            let value = line[colon_pos + 1..].trim().to_string();
+                            self.content_items.push(ContentItem::FrontmatterLine {
+                                key,
+                                value,
+                            });
+                        } else {
+                            self.content_items.push(ContentItem::FrontmatterLine {
+                                key: String::new(),
+                                value: line.to_string(),
+                            });
+                        }
+                        self.content_item_source_lines.push(line_idx);
+                    }
+                }
+
+                // Closing delimiter
+                if content_start_line > 0 {
+                    let closing_idx = content_start_line.saturating_sub(1);
+                    self.content_items.push(ContentItem::FrontmatterDelimiter);
+                    self.content_item_source_lines.push(closing_idx);
+                }
+
+                i = content_start_line;
+            } else if has_frontmatter {
+                if self.config.show_tags {
+                    if let Some(ref fm) = frontmatter {
+                        if !fm.tags.is_empty() {
+                            self.content_items.push(ContentItem::TagBadges { tags: fm.tags.clone() });
+                            self.content_item_source_lines.push(0);
+                        }
+                    }
+                }
+                i = content_start_line;
+            }
 
             while i < lines.len() {
                 let line = lines[i];
@@ -3587,6 +3493,11 @@ impl App {
         }
     }
 
+    pub fn toggle_frontmatter_hidden(&mut self) {
+        self.frontmatter_hidden = !self.frontmatter_hidden;
+        self.update_content_items();
+    }
+
     pub fn update_filtered_indices(&mut self) {
         if self.search_query.is_empty() {
             self.search_matched_notes.clear();
@@ -3906,15 +3817,13 @@ impl App {
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
             let line_count = lines.len();
+            let content_start_line = note.content_start_line;
 
             let target_row = self.content_item_source_lines
                 .get(self.content_cursor)
                 .copied()
                 .unwrap_or(0)
                 .min(line_count.saturating_sub(1));
-
-            let preview_scroll_top = self.content_scroll_offset.saturating_sub(1);
-            let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
 
             self.editor = Editor::new(lines);
             self.editor.set_line_wrap(self.config.editor.line_wrap);
@@ -3951,13 +3860,34 @@ impl App {
                 Some(self.theme.editor.bold),
                 Some(self.theme.editor.italic),
             );
+            self.editor.set_frontmatter_color(self.theme.content.frontmatter);
 
             // Update all editor syntax highlighting
             self.update_editor_highlights();
 
             self.editor.set_cursor(target_row, 0);
 
-            let editor_scroll = target_row.saturating_sub(cursor_offset_from_top);
+            // Calculate scroll position:
+            // - If frontmatter was hidden and we're near the top, start from line 0
+            //   to show frontmatter in edit mode (unless it would push cursor off screen)
+            // - Otherwise, try to maintain similar viewport position
+            let view_height = self.editor_view_height.max(10);
+            // content_scroll_offset is 1-indexed, so <= 1 means at the top
+            let editor_scroll = if self.frontmatter_hidden && content_start_line > 0 && self.content_scroll_offset <= 1 {
+                // Frontmatter was hidden, user was at/near top of content
+                // Start from line 0 unless cursor would be off screen
+                if target_row < view_height {
+                    0
+                } else {
+                    target_row.saturating_sub(view_height / 2)
+                }
+            } else {
+                // Normal case: try to preserve relative cursor position
+                let preview_scroll_top = self.content_scroll_offset.saturating_sub(1);
+                let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
+                target_row.saturating_sub(cursor_offset_from_top)
+            };
+
             self.editor.set_scroll_offset(editor_scroll.min(line_count.saturating_sub(1)));
             self.editor_scroll_top = self.editor.scroll_offset();
 
@@ -4096,6 +4026,10 @@ impl App {
 
         if let Some(note) = self.notes.get_mut(self.selected_note) {
             note.content = self.editor.lines().join("\n");
+            // Re-parse frontmatter after content change
+            let (frontmatter, content_start_line) = super::frontmatter::Frontmatter::parse(&note.content);
+            note.frontmatter = frontmatter;
+            note.content_start_line = content_start_line;
             // Save to file
             if let Some(ref path) = note.file_path {
                 let _ = fs::write(path, &note.content);

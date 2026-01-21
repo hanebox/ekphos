@@ -2088,6 +2088,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_zen_mode();
         }
+        KeyCode::Char('m') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.toggle_frontmatter_hidden();
+            }
+        }
         KeyCode::Char('z') => {
             app.pending_z = true;
         }
