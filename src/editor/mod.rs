@@ -165,6 +165,14 @@ impl ListPrefix {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
 pub struct Editor {
     buffer: TextBuffer,
     cursor: Cursor,
@@ -206,6 +214,8 @@ pub struct Editor {
     line_number_width: u16,
     // scrolloff, minimum lines above/below cursor
     scrolloff: usize,
+    // Cursor shape for visual mode feedback
+    cursor_shape: CursorShape,
 }
 
 impl Default for Editor {
@@ -252,6 +262,7 @@ impl Editor {
             line_number_style: Style::default().fg(Color::DarkGray),
             line_number_width: 4, // Default width for line numbers
             scrolloff: 0,
+            cursor_shape: CursorShape::Block,
         }
     }
 
@@ -334,6 +345,10 @@ impl Editor {
 
     pub fn set_selection_style(&mut self, style: Style) {
         self.selection_style = style;
+    }
+
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.cursor_shape = shape;
     }
 
     pub fn set_visual_line_selection(&mut self, anchor_row: usize, current_row: usize) {
@@ -2170,6 +2185,111 @@ impl Editor {
         self.h_scroll_offset
     }
 
+    /// Returns the horizontal scroll offset in display units (accounting for Unicode widths).
+    /// This calculates the display width of characters from 0 to h_scroll_offset on the cursor line.
+    pub fn h_scroll_display_offset(&self) -> usize {
+        if self.h_scroll_offset == 0 {
+            return 0;
+        }
+
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_offset: usize = 0;
+        for (i, ch) in chars.iter().enumerate() {
+            if i >= self.h_scroll_offset {
+                break;
+            }
+            display_offset += char_display_width(*ch, self.tab_width) as usize;
+        }
+        display_offset
+    }
+
+    pub fn line_number_gutter_width(&self) -> u16 {
+        if self.line_number_mode != LineNumberMode::None {
+            self.line_number_width
+        } else {
+            0
+        }
+    }
+    pub fn content_left_offset(&self) -> u16 {
+        self.left_padding + self.line_number_gutter_width()
+    }
+
+    /// Returns the cursor's display column position, accounting for Unicode character widths and tabs.
+    pub fn cursor_display_col(&self) -> usize {
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_col: usize = 0;
+        for (i, ch) in chars.iter().enumerate() {
+            if i >= pos.col {
+                break;
+            }
+            display_col += char_display_width(*ch, self.tab_width) as usize;
+        }
+        display_col
+    }
+
+    /// Returns the cursor screen position info for native cursor positioning.
+    pub fn cursor_screen_info(&self) -> (usize, bool, usize) {
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_col: usize = 0;
+        let mut line_display_width: usize = 0;
+
+        for (i, ch) in chars.iter().enumerate() {
+            let ch_width = char_display_width(*ch, self.tab_width) as usize;
+            if i < pos.col {
+                display_col += ch_width;
+            }
+            line_display_width += ch_width;
+        }
+
+        let is_at_line_end = pos.col >= chars.len();
+        (display_col, is_at_line_end, line_display_width)
+    }
+
+    /// Returns the cursor's screen position accounting for line wrapping.
+    pub fn cursor_wrapped_position(&self, content_width: usize) -> (usize, usize) {
+        if content_width == 0 {
+            return (0, 0);
+        }
+
+        let display_col = self.cursor_display_col();
+
+        if !self.line_wrap_enabled {
+            // No wrapping, just use display column
+            return (0, display_col);
+        }
+
+        // Calculate which wrapped line the cursor is on
+        let wrapped_row = display_col / content_width;
+        let wrapped_col = display_col % content_width;
+
+        (wrapped_row, wrapped_col)
+    }
+    pub fn line_wrapped_height(&self, row: usize, content_width: usize) -> usize {
+        if content_width == 0 {
+            return 1;
+        }
+
+        let line = self.buffer.line(row).unwrap_or("");
+        if line.is_empty() {
+            return 1;
+        }
+
+        let mut display_width: usize = 0;
+        for ch in line.chars() {
+            display_width += char_display_width(ch, self.tab_width) as usize;
+        }
+        ((display_width + content_width - 1) / content_width).max(1)
+    }
+
     /// Center the cursor line on screen (zz command)
     pub fn center_cursor(&mut self) {
         let (cursor_row, _) = self.cursor();
@@ -2277,6 +2397,35 @@ impl Widget for &Editor {
 }
 
 impl Editor {
+    /// Renders a cursor at the given position in the buffer
+    fn render_cursor_at(&self, buf: &mut RatatuiBuffer, x: u16, y: u16, ch: char, base_style: Style) {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            match self.cursor_shape {
+                CursorShape::Block => {
+                    // Full reversed block for Normal mode
+                    cell.set_char(ch);
+                    cell.set_style(base_style.add_modifier(Modifier::REVERSED));
+                }
+                CursorShape::Bar => {
+                    // For bar cursor, don't render custom cursor - use terminal's native cursor
+                    // Just render the character normally, terminal cursor will be positioned here
+                    cell.set_char(ch);
+                    cell.set_style(base_style);
+                }
+                CursorShape::Underline => {
+                    // Underline + Reversed for Replace mode - more visible than underline alone
+                    cell.set_char(ch);
+                    cell.set_style(base_style.add_modifier(Modifier::UNDERLINED | Modifier::REVERSED));
+                }
+            }
+        }
+    }
+
+    /// Returns true if the cursor shape uses the terminal's native cursor (not rendered by editor)
+    pub fn uses_native_cursor(&self) -> bool {
+        matches!(self.cursor_shape, CursorShape::Bar)
+    }
+
     fn render_wrapped(&self, area: Rect, buf: &mut RatatuiBuffer) {
         // Account for line number gutter
         let gutter_width = if self.line_number_mode != LineNumberMode::None { self.line_number_width } else { 0 };
@@ -2333,10 +2482,7 @@ impl Editor {
 
             if chars.is_empty() {
                 if is_cursor_line {
-                    if let Some(cell) = buf.cell_mut((content_start_x, screen_y)) {
-                        cell.set_char(' ');
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
+                    self.render_cursor_at(buf, content_start_x, screen_y, ' ', Style::default());
                 }
                 screen_y += 1;
                 continue;
@@ -2358,10 +2504,7 @@ impl Editor {
                         col += 1;
                         if col >= chars.len() {
                             if is_cursor_line && cursor_pos.col >= chars.len() {
-                                if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                                    cell.set_char(' ');
-                                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                                }
+                                self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                             }
                             screen_y += 1;
                             break;
@@ -2371,11 +2514,8 @@ impl Editor {
 
                 while col < chars.len() && x < content_end_x {
                     let ch = chars[col];
-                    let mut style = self.get_char_style(row, col, selection, block_selection);
+                    let base_style = self.get_char_style(row, col, selection, block_selection);
                     let is_cursor = is_cursor_line && col == cursor_pos.col;
-                    if is_cursor {
-                        style = style.add_modifier(Modifier::REVERSED);
-                    }
 
                     let ch_width = char_display_width(ch, self.tab_width);
                     if ch == '\t' {
@@ -2383,20 +2523,20 @@ impl Editor {
                             if x >= content_end_x {
                                 break;
                             }
-                            if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                            if i == 0 && is_cursor {
+                                self.render_cursor_at(buf, x, screen_y, ' ', base_style);
+                            } else if let Some(cell) = buf.cell_mut((x, screen_y)) {
                                 cell.set_char(' ');
-                                if i == 0 && is_cursor {
-                                    cell.set_style(style);
-                                } else {
-                                    cell.set_style(self.get_char_style(row, col, selection, block_selection));
-                                }
+                                cell.set_style(base_style);
                             }
                             x += 1;
                         }
                     } else {
-                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                        if is_cursor {
+                            self.render_cursor_at(buf, x, screen_y, ch, base_style);
+                        } else if let Some(cell) = buf.cell_mut((x, screen_y)) {
                             cell.set_char(ch);
-                            cell.set_style(style);
+                            cell.set_style(base_style);
                         }
                         x += ch_width;
                     }
@@ -2407,10 +2547,7 @@ impl Editor {
                 // Use full area width to allow cursor in right padding
                 if is_cursor_line && cursor_pos.col >= chars.len() && col == chars.len() {
                     if x < area.x + area.width {
-                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                            cell.set_char(' ');
-                            cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                        }
+                        self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                     }
                 }
 
@@ -2420,10 +2557,7 @@ impl Editor {
         }
 
         if self.buffer.is_empty() {
-            if let Some(cell) = buf.cell_mut((content_start_x, area.y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
+            self.render_cursor_at(buf, content_start_x, area.y, ' ', Style::default());
         }
     }
 
@@ -2483,11 +2617,8 @@ impl Editor {
                 }
 
                 let ch = chars[col];
-                let mut style = self.get_char_style(row, col, selection, block_selection);
+                let base_style = self.get_char_style(row, col, selection, block_selection);
                 let is_cursor = is_cursor_line && col == cursor_pos.col;
-                if is_cursor {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
 
                 let ch_width = char_display_width(ch, self.tab_width);
                 if ch == '\t' {
@@ -2495,20 +2626,20 @@ impl Editor {
                         if x >= content_end_x {
                             break;
                         }
-                        if let Some(cell) = buf.cell_mut((x, y)) {
+                        if i == 0 && is_cursor {
+                            self.render_cursor_at(buf, x, y, ' ', base_style);
+                        } else if let Some(cell) = buf.cell_mut((x, y)) {
                             cell.set_char(' ');
-                            if i == 0 && is_cursor {
-                                cell.set_style(style);
-                            } else {
-                                cell.set_style(self.get_char_style(row, col, selection, block_selection));
-                            }
+                            cell.set_style(base_style);
                         }
                         x += 1;
                     }
                 } else {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
+                    if is_cursor {
+                        self.render_cursor_at(buf, x, y, ch, base_style);
+                    } else if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(ch);
-                        cell.set_style(style);
+                        cell.set_style(base_style);
                     }
                     x += ch_width;
                 }
@@ -2516,10 +2647,7 @@ impl Editor {
 
             if is_cursor_line && cursor_pos.col >= chars.len() {
                 if x < area.x + area.width {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_char(' ');
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
+                    self.render_cursor_at(buf, x, y, ' ', Style::default());
                 }
             }
 
@@ -2527,10 +2655,7 @@ impl Editor {
         }
 
         if self.buffer.line_count() <= self.scroll_offset {
-            if let Some(cell) = buf.cell_mut((content_start_x, area.y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
+            self.render_cursor_at(buf, content_start_x, area.y, ' ', Style::default());
         }
     }
 
