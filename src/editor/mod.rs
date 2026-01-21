@@ -2158,6 +2158,15 @@ impl Editor {
         (self.h_scroll_offset > 0, line_len > self.h_scroll_offset + self.view_width)
     }
 
+    pub fn content_x_offset(&self) -> u16 {
+        let gutter_width = if self.line_number_mode != LineNumberMode::None {
+            self.line_number_width
+        } else {
+            0
+        };
+        self.left_padding + gutter_width
+    }
+
     pub fn visual_to_logical_coords(&self, visual_y: usize, visual_x: usize) -> (usize, usize) {
         if !self.line_wrap_enabled || self.view_width == 0 {
             let row = visual_y + self.scroll_offset;

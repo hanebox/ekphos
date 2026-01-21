@@ -4220,14 +4220,11 @@ impl App {
     /// Returns None if mouse is outside the editor area.
     pub fn screen_to_editor_coords(&self, mouse_x: u16, mouse_y: u16) -> Option<(usize, usize)> {
         let (inner_x, inner_y, inner_width, inner_height) = if self.zen_mode {
-            const ZEN_MAX_WIDTH: u16 = 95;
-            let content_width = self.editor_area.width.min(ZEN_MAX_WIDTH);
-            let x_offset = (self.editor_area.width.saturating_sub(content_width)) / 2;
             (
-                self.editor_area.x + x_offset,
-                self.editor_area.y + 2, 
-                content_width,
-                self.editor_area.height.saturating_sub(2),
+                self.editor_area.x,
+                self.editor_area.y,
+                self.editor_area.width,
+                self.editor_area.height,
             )
         } else {
             (
@@ -4243,7 +4240,13 @@ impl App {
             return None;
         }
 
-        let rel_x = (mouse_x - inner_x) as usize;
+        let content_x_offset = self.editor.content_x_offset();
+        let content_start_x = inner_x + content_x_offset;
+        let rel_x = if mouse_x >= content_start_x {
+            (mouse_x - content_start_x) as usize
+        } else {
+            0
+        };
         let rel_y = (mouse_y - inner_y) as usize;
 
         let (row, col) = self.editor.visual_to_logical_coords(rel_y, rel_x);
@@ -4258,8 +4261,8 @@ impl App {
 
         let (inner_y, inner_height) = if self.zen_mode {
             (
-                self.editor_area.y + 2, 
-                self.editor_area.height.saturating_sub(2),
+                self.editor_area.y,
+                self.editor_area.height,
             )
         } else {
             (
