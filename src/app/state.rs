@@ -454,6 +454,8 @@ pub struct App {
     pub target_folder: Option<PathBuf>,
     pub dialog_error: Option<String>,
     pub search_matched_notes: Vec<usize>,
+    pub pre_search_folder_states: Option<HashMap<PathBuf, bool>>,
+    pub pre_search_sidebar_index: Option<usize>,
     pub content_area: Rect,
     pub sidebar_area: Rect,
     pub outline_area: Rect,
@@ -614,6 +616,8 @@ impl App {
             target_folder: None,
             dialog_error: None,
             search_matched_notes: Vec::new(),
+            pre_search_folder_states: None,
+            pre_search_sidebar_index: None,
             content_area: Rect::default(),
             sidebar_area: Rect::default(),
             outline_area: Rect::default(),
@@ -774,6 +778,8 @@ impl App {
             target_folder: None,
             dialog_error: None,
             search_matched_notes: Vec::new(),
+            pre_search_folder_states: None,
+            pre_search_sidebar_index: None,
             content_area: Rect::default(),
             sidebar_area: Rect::default(),
             outline_area: Rect::default(),
@@ -3566,11 +3572,26 @@ impl App {
         }
     }
 
+    pub fn activate_sidebar_search(&mut self) {
+        self.pre_search_folder_states = Some(self.folder_states.clone());
+        self.pre_search_sidebar_index = Some(self.selected_sidebar_index);
+        self.search_active = true;
+        self.search_query.clear();
+    }
+
     pub fn clear_search(&mut self) {
         self.search_active = false;
         self.search_query.clear();
         self.filtered_indices.clear();
         self.search_matched_notes.clear();
+        if let Some(saved_states) = self.pre_search_folder_states.take() {
+            self.folder_states = saved_states;
+            Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+            self.rebuild_sidebar_items();
+        }
+        if let Some(saved_index) = self.pre_search_sidebar_index.take() {
+            self.selected_sidebar_index = saved_index.min(self.sidebar_items.len().saturating_sub(1));
+        }
     }
 
     pub fn start_buffer_search(&mut self) {

@@ -1994,8 +1994,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('/') => {
             if app.focus == Focus::Sidebar {
-                app.search_active = true;
-                app.search_query.clear();
+                app.activate_sidebar_search();
             }
         }
         KeyCode::Char('s') => {
