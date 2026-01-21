@@ -425,30 +425,19 @@ fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             if app.editor_scroll_top > 0 {
                 app.editor_scroll_top = app.editor_scroll_top.saturating_sub(3);
                 app.editor.set_scroll_offset(app.editor_scroll_top);
-
-                let (cursor_row, cursor_col) = app.editor.cursor();
-                let line_count = app.editor.line_count();
-                let max_row = line_count.saturating_sub(1);
-                let viewport_bottom = (app.editor_scroll_top + app.editor_view_height.saturating_sub(1)).min(max_row);
-                if cursor_row > viewport_bottom {
-                    move_editor_cursor_to(app, viewport_bottom, cursor_col);
-                }
             }
+            constrain_cursor_to_viewport(app);
         }
 
         MouseEventKind::ScrollDown => {
             let line_count = app.editor.line_count();
-            let max_scroll = line_count.saturating_sub(app.editor_view_height);
+            let max_scroll = line_count.saturating_sub(1);
+
             if app.editor_scroll_top < max_scroll {
                 app.editor_scroll_top = (app.editor_scroll_top + 3).min(max_scroll);
                 app.editor.set_scroll_offset(app.editor_scroll_top);
-
-                let (cursor_row, cursor_col) = app.editor.cursor();
-                let target_row = app.editor_scroll_top.min(line_count.saturating_sub(1));
-                if cursor_row < app.editor_scroll_top {
-                    move_editor_cursor_to(app, target_row, cursor_col);
-                }
             }
+            constrain_cursor_to_viewport(app);
         }
 
         _ => {}
@@ -496,24 +485,48 @@ fn perform_auto_scroll(app: &mut App, direction: i8) {
 
 /// Move editor cursor to specific row/col position
 fn move_editor_cursor_to(app: &mut App, target_row: usize, target_col: usize) {
-    let (current_row, _) = app.editor.cursor();
+    app.editor.set_cursor_no_scroll(target_row, target_col);
+}
 
-    // Move to target row
-    if target_row < current_row {
-        for _ in 0..(current_row - target_row) {
-            app.editor.move_cursor(CursorMove::Up);
-        }
-    } else if target_row > current_row {
-        for _ in 0..(target_row - current_row) {
-            app.editor.move_cursor(CursorMove::Down);
-        }
+fn constrain_cursor_to_viewport(app: &mut App) {
+    let view_height = app.editor_view_height;
+    if view_height == 0 {
+        return;
     }
 
-    // Move to start of line, then to target column
-    app.editor.move_cursor(CursorMove::Head);
-    for _ in 0..target_col {
-        app.editor.move_cursor(CursorMove::Forward);
-    }
+    let (cursor_row, cursor_col) = app.editor.cursor();
+    let line_count = app.editor.line_count();
+    let max_row = line_count.saturating_sub(1);
+    let viewport_top = app.editor_scroll_top;
+    let viewport_bottom = (app.editor_scroll_top + view_height.saturating_sub(2)).min(max_row);
+
+    let clamped_row = if cursor_row < viewport_top {
+        viewport_top
+    } else if cursor_row > viewport_bottom {
+        viewport_bottom
+    } else {
+        cursor_row
+    };
+
+    let scrolloff = app.config.editor.scrolloff as usize;
+    let effective_scrolloff = scrolloff.min(view_height / 2);
+
+    let final_row = if effective_scrolloff > 0 && clamped_row == cursor_row {
+        let scrolloff_top = viewport_top + effective_scrolloff;
+        let scrolloff_bottom = viewport_bottom.saturating_sub(effective_scrolloff);
+
+        if cursor_row < scrolloff_top {
+            scrolloff_top.min(max_row).min(viewport_bottom)
+        } else if cursor_row > scrolloff_bottom {
+            scrolloff_bottom.max(viewport_top)
+        } else {
+            cursor_row
+        }
+    } else {
+        clamped_row
+    };
+
+    app.editor.set_cursor_no_scroll(final_row, cursor_col);
 }
 
 // ==================== Context Menu Helpers ====================

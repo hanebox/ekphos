@@ -1056,6 +1056,14 @@ impl Editor {
         self.ensure_cursor_visible();
     }
 
+    pub fn set_cursor_no_scroll(&mut self, row: usize, col: usize) {
+        let line_count = self.buffer.line_count();
+        let safe_row = row.min(line_count.saturating_sub(1));
+        let line_len = self.buffer.line_len(safe_row);
+        let safe_col = col.min(line_len);
+        self.cursor.move_to(safe_row, safe_col);
+    }
+
     pub fn move_cursor(&mut self, movement: CursorMove) {
         let pos = self.cursor.pos();
         let line_count = self.buffer.line_count();
