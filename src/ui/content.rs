@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 use ratatui_image::StatefulImage;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, ContentItem, DialogState, Focus, ImageState, Mode};
 use crate::config::Theme;
@@ -584,20 +585,26 @@ fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[us
     for (cell_idx, cell) in cells.iter().enumerate() {
         let col_width = column_widths.get(cell_idx).copied().unwrap_or(3);
         if raw_pos == 0 {
-            raw_pos = 1; 
+            raw_pos = 1;
         }
 
         let raw_cell_start = raw_pos;
 
-        let cell_len = cell.chars().count();
-        let raw_cell_end = raw_cell_start + cell_len + 3; // " content |"
+        let cell_char_len = cell.chars().count();
+        let cell_display_width = cell.width();
+        let raw_cell_end = raw_cell_start + cell_char_len + 3; // " content |"
 
         if raw_col >= raw_cell_start && raw_col < raw_cell_end {
-            let offset_in_raw_cell = raw_col.saturating_sub(raw_cell_start + 1); // +1 for leading space
-            let content_padding = (col_width.saturating_sub(cell_len)) / 2;
+            let char_offset_in_raw_cell = raw_col.saturating_sub(raw_cell_start + 1); // +1 for leading space
+            // Convert character offset to display width
+            let display_offset: usize = cell.chars()
+                .take(char_offset_in_raw_cell.min(cell_char_len))
+                .map(|c| c.width().unwrap_or(1))
+                .sum();
+            let content_padding = (col_width.saturating_sub(cell_display_width)) / 2;
             let rendered_content_start = rendered_pos + 1 + content_padding; // +1 for leading space
 
-            return rendered_content_start + offset_in_raw_cell.min(cell_len);
+            return rendered_content_start + display_offset;
         }
 
         raw_pos = raw_cell_end;
@@ -615,6 +622,7 @@ fn apply_content_search_highlights(
 ) {
     let theme = &app.theme;
     let current_match_idx = app.buffer_search.current_match_index;
+    let lines = app.editor.lines();
 
     for (chunk_idx, &item_idx) in visible_indices.iter().enumerate() {
         if chunk_idx >= chunks.len() {
@@ -626,6 +634,8 @@ fn apply_content_search_highlights(
             continue;
         }
 
+        let raw_line = lines.get(source_line).copied().unwrap_or("");
+
         for (match_idx, m) in app.buffer_search.matches.iter().enumerate() {
             if m.row == source_line {
                 let area = chunks[chunk_idx];
@@ -636,12 +646,12 @@ fn apply_content_search_highlights(
                     theme.search.match_highlight
                 };
 
-                // Calculate the rendered position based on content type
-                // Different content types transform the raw text differently
+                // Calculate the rendered column position based on content type
+                // Use display width for CJK character support
                 let adjusted_col = match &app.content_items.get(item_idx) {
                     Some(ContentItem::TableRow { cells, column_widths, is_separator, .. }) => {
                         if *is_separator {
-                            continue; 
+                            continue;
                         }
                         calc_table_adjusted_col(m.start_col, cells, column_widths)
                     }
@@ -679,10 +689,20 @@ fn apply_content_search_highlights(
                         } else {
                             0
                         };
-                        rendered_prefix_len + content_start_col - formatting_shrinkage
+                        // Calculate display width of content before the match
+                        let display_col = content_text.chars()
+                            .take(content_start_col.saturating_sub(formatting_shrinkage))
+                            .map(|c| c.width().unwrap_or(1))
+                            .sum::<usize>();
+                        rendered_prefix_len + display_col
                     }
-                    Some(ContentItem::CodeLine(_)) => {
-                        4 + m.start_col
+                    Some(ContentItem::CodeLine(code)) => {
+                        // Calculate display width of code before the match
+                        let display_col: usize = code.chars()
+                            .take(m.start_col)
+                            .map(|c| c.width().unwrap_or(1))
+                            .sum();
+                        4 + display_col
                     }
                     Some(ContentItem::TaskItem { text, .. }) => {
                         if m.start_col < 6 {
@@ -690,17 +710,31 @@ fn apply_content_search_highlights(
                         }
                         let content_start_col = m.start_col - 6;
                         let formatting_shrinkage = calc_formatting_shrinkage(text, content_start_col);
-                        6 + content_start_col - formatting_shrinkage
+                        let display_col: usize = text.chars()
+                            .take(content_start_col.saturating_sub(formatting_shrinkage))
+                            .map(|c| c.width().unwrap_or(1))
+                            .sum();
+                        6 + display_col
                     }
                     _ => {
-                        2 + m.start_col 
+                        // Calculate display width of raw line before the match
+                        let display_col: usize = raw_line.chars()
+                            .take(m.start_col)
+                            .map(|c| c.width().unwrap_or(1))
+                            .sum();
+                        2 + display_col
                     }
                 };
 
                 let start_x = area.x + adjusted_col as u16;
-                let match_len = m.end_col - m.start_col;
+                // Calculate display width of matched text
+                let match_display_width: usize = raw_line.chars()
+                    .skip(m.start_col)
+                    .take(m.end_col - m.start_col)
+                    .map(|c| c.width().unwrap_or(1))
+                    .sum();
 
-                for offset in 0..match_len {
+                for offset in 0..match_display_width {
                     let x = start_x + offset as u16;
                     if x < area.x + area.width {
                         if let Some(cell) = f.buffer_mut().cell_mut((x, area.y)) {
