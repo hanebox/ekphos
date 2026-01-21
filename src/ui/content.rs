@@ -12,6 +12,17 @@ use crate::config::Theme;
 
 const INLINE_THUMBNAIL_HEIGHT: u16 = 4;
 
+fn is_inside_inline_code(text: &str, position: usize) -> bool {
+    let before = &text[..position];
+    let mut inside_code = false;
+    for c in before.chars() {
+        if c == '`' {
+            inside_code = !inside_code;
+        }
+    }
+    inside_code
+}
+
 fn extract_inline_images(text: &str) -> Vec<String> {
     let mut images = Vec::new();
     let mut search_start = 0;
@@ -23,6 +34,10 @@ fn extract_inline_images(text: &str) -> Vec<String> {
 
             // skip double-bang images they don't get thumbnails
             if abs_img_pos > 0 && text.as_bytes().get(abs_img_pos - 1) == Some(&b'!') {
+                search_start = abs_img_pos + 2;
+                continue;
+            }
+            if is_inside_inline_code(text, abs_img_pos) {
                 search_start = abs_img_pos + 2;
                 continue;
             }
