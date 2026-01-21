@@ -1796,6 +1796,29 @@ impl Editor {
         self.ensure_cursor_visible();
     }
 
+    pub fn open_line_above(&mut self) {
+        let pos = self.cursor.pos();
+        let cursor_before = pos;
+        let indent: String = self.buffer.line(pos.row)
+            .map(|line| line.chars().take_while(|c| c.is_whitespace()).collect())
+            .unwrap_or_default();
+
+        let indent_len = indent.chars().count();
+        self.buffer.insert_line(pos.row, indent.clone());
+        self.wrap_cache.insert_line(pos.row);
+        self.history.record(
+            EditOperation::LineInsert {
+                row: pos.row,
+                lines: vec![indent],
+            },
+            cursor_before,
+            Position::new(pos.row, indent_len),
+        );
+        
+        self.cursor.move_to(pos.row, indent_len);
+        self.ensure_cursor_visible();
+    }
+
     pub fn delete_char(&mut self) {
         let pos = self.cursor.pos();
         let line_len = self.buffer.line_len(pos.row);

@@ -2477,9 +2477,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('O') => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
-            app.editor.move_cursor(CursorMove::Head);
-            app.editor.insert_newline();
-            app.editor.move_cursor(CursorMove::Up);
+            app.editor.open_line_above();
             app.vim_mode = VimMode::Insert;
         }
         KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
