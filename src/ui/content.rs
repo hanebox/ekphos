@@ -106,6 +106,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(block, area);
         inner
     };
+    app.editor_area = if app.zen_mode { inner_area } else { area };
 
     if app.content_items.is_empty() {
         return;
