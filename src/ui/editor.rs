@@ -9,9 +9,6 @@ use ratatui::{
 use crate::app::{App, BlockInsertMode, VimMode};
 
 pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
-    // Store editor area for mouse coordinate translation
-    app.editor_area = area;
-
     const ZEN_MAX_WIDTH: u16 = 95;
 
     let (editor_area, inner_width, inner_height) = if app.zen_mode {
@@ -43,6 +40,8 @@ pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
         let inner_height = area.height.saturating_sub(2) as usize;
         (area, inner_width, inner_height)
     };
+
+    app.editor_area = editor_area;
 
     // Update editor view dimensions and scroll
     app.editor.set_view_size(inner_width, inner_height);

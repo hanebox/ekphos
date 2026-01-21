@@ -27,8 +27,9 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
 
         let (cursor_row, cursor_col) = app.editor.cursor();
         let editor_area = app.editor_area;
-        let cursor_screen_y = editor_area.y + 1 + (cursor_row.saturating_sub(app.editor_scroll_top)) as u16;
-        let cursor_screen_x = editor_area.x + 1 + cursor_col as u16;
+        let border_offset = if app.zen_mode { 0 } else { 1 };
+        let cursor_screen_y = editor_area.y + border_offset + (cursor_row.saturating_sub(app.editor_scroll_top)) as u16;
+        let cursor_screen_x = editor_area.x + border_offset + cursor_col as u16;
 
         let is_alias_mode = *mode == WikiAutocompleteMode::Alias;
 

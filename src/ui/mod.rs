@@ -119,7 +119,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     if app.buffer_search.active {
-        let content_area = chunks[1];
-        search_dialog::render_search_dialog(f, app, content_area);
+        search_dialog::render_search_dialog(f, app, app.editor_area);
     }
 }
