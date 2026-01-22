@@ -2336,7 +2336,10 @@ impl Editor {
             return (row, col);
         }
 
-        let content_width = self.view_width.saturating_sub(self.right_padding as usize);
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
         if content_width == 0 {
             return (self.scroll_offset, 0);
         }
@@ -2346,20 +2349,61 @@ impl Editor {
         let mut row = self.scroll_offset;
 
         while row < line_count {
-            let line_len = self.buffer.line_len(row);
-            let visual_lines_for_row = if line_len == 0 {
-                1
-            } else {
-                (line_len + content_width - 1) / content_width 
-            };
+            let line = self.buffer.line(row).unwrap_or("");
+            let chars: Vec<char> = line.chars().collect();
 
-            if visual_lines_consumed + visual_lines_for_row > visual_y {
-                let visual_offset_in_row = visual_y - visual_lines_consumed;
-                let col = visual_offset_in_row * content_width + visual_x;
-                return (row, col.min(line_len));
+            if chars.is_empty() {
+                if visual_lines_consumed == visual_y {
+                    return (row, 0);
+                }
+                visual_lines_consumed += 1;
+                row += 1;
+                continue;
             }
 
-            visual_lines_consumed += visual_lines_for_row;
+            let mut col_idx = 0;
+            let mut visual_line_of_row = 0;
+
+            while col_idx < chars.len() {
+                let mut visual_line_start = col_idx;
+                let mut x: usize = 0;
+                let is_wrapped_continuation = visual_line_of_row > 0;
+                if is_wrapped_continuation && col_idx < chars.len() && chars[col_idx] == ' ' {
+                    col_idx += 1;
+                    visual_line_start = col_idx;
+                    if col_idx >= chars.len() {
+                        if visual_lines_consumed + visual_line_of_row == visual_y {
+                            return (row, col_idx);
+                        }
+                        visual_line_of_row += 1;
+                        continue;
+                    }
+                }
+
+                while col_idx < chars.len() && x < content_width {
+                    let ch = chars[col_idx];
+                    let ch_width = char_display_width(ch, self.tab_width) as usize;
+                    x += ch_width;
+                    col_idx += 1;
+                }
+
+                if visual_lines_consumed + visual_line_of_row == visual_y {
+                    let mut target_x: usize = 0;
+                    for i in visual_line_start..col_idx {
+                        let ch = chars[i];
+                        let ch_width = char_display_width(ch, self.tab_width) as usize;
+                        if target_x + ch_width > visual_x {
+                            return (row, i);
+                        }
+                        target_x += ch_width;
+                    }
+                    return (row, col_idx);
+                }
+
+                visual_line_of_row += 1;
+            }
+
+            visual_lines_consumed += visual_line_of_row.max(1);
             row += 1;
         }
 
