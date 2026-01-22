@@ -548,7 +548,7 @@ pub struct App {
     // Sidebar sorting
     pub sort_mode: SortMode,
     // Navigation history (like browser back/forward)
-    pub navigation_history: Vec<usize>,
+    pub navigation_history: Vec<NavigationEntry>,
     pub navigation_index: usize,
     // Frontmatter visibility
     pub frontmatter_hidden: bool,
@@ -579,6 +579,14 @@ pub struct App {
 pub enum DeleteType {
     Word,
     Line,
+}
+
+/// Navigation history entry storing note index and cursor/scroll position
+#[derive(Debug, Clone)]
+pub struct NavigationEntry {
+    pub note_idx: usize,
+    pub content_cursor: usize,
+    pub content_scroll_offset: usize,
 }
 
 impl App {
@@ -3414,21 +3422,30 @@ impl App {
 
     // ==================== Navigation History ====================
 
-    /// push a note to navigation history 
+    /// push a note to navigation history
     /// called when navigating to a new note
     pub fn push_navigation_history(&mut self, note_idx: usize) {
-        if let Some(&current) = self.navigation_history.get(self.navigation_index) {
-            if current == note_idx {
+        if let Some(current) = self.navigation_history.get(self.navigation_index) {
+            if current.note_idx == note_idx {
                 return;
             }
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
+
         if self.navigation_index + 1 < self.navigation_history.len() {
             self.navigation_history.truncate(self.navigation_index + 1);
         }
 
-        self.navigation_history.push(note_idx);
+        self.navigation_history.push(NavigationEntry {
+            note_idx,
+            content_cursor: 0,
+            content_scroll_offset: 0,
+        });
         self.navigation_index = self.navigation_history.len().saturating_sub(1);
-        
+
         // limit history size to prevent memory bloat
         const MAX_HISTORY: usize = 100;
         if self.navigation_history.len() > MAX_HISTORY {
@@ -3442,31 +3459,39 @@ impl App {
         if self.navigation_index == 0 || self.navigation_history.is_empty() {
             return false;
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
 
         self.navigation_index -= 1;
-        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
-            self.go_to_note_without_history(note_idx);
+        if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
+            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
             return true;
         }
         false
     }
 
-    /// navigate to next note in history 
+    /// navigate to next note in history
     pub fn navigate_forward(&mut self) -> bool {
         if self.navigation_index + 1 >= self.navigation_history.len() {
             return false;
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
 
         self.navigation_index += 1;
-        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
-            self.go_to_note_without_history(note_idx);
+        if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
+            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
             return true;
         }
         false
     }
 
     /// go to a note without pushing to history used by back/forward to prevent infinite loop
-    fn go_to_note_without_history(&mut self, note_idx: usize) {
+    fn go_to_note_without_history(&mut self, note_idx: usize, cursor: Option<usize>, scroll: Option<usize>) {
         if note_idx >= self.notes.len() {
             return;
         }
@@ -3499,11 +3524,12 @@ impl App {
                     self.end_buffer_search();
                     self.selected_sidebar_index = idx;
                     self.selected_note = note_idx;
-                    self.content_cursor = 0;
-                    self.content_scroll_offset = 0;
                     self.selected_link_index = 0;
                     self.update_content_items();
                     self.update_outline();
+                    let max_cursor = self.content_items.len().saturating_sub(1);
+                    self.content_cursor = cursor.unwrap_or(0).min(max_cursor);
+                    self.content_scroll_offset = scroll.unwrap_or(0).min(max_cursor);
                     return;
                 }
             }
@@ -5283,7 +5309,6 @@ impl App {
             for (idx, item) in self.sidebar_items.iter().enumerate() {
                 if let SidebarItemKind::Note { note_index: idx_note } = &item.kind {
                     if *idx_note == note_index {
-                        self.push_navigation_history(self.selected_note);
                         self.end_buffer_search();
                         self.selected_sidebar_index = idx;
                         self.selected_note = note_index;
@@ -5291,6 +5316,7 @@ impl App {
                         self.content_scroll_offset = 0;
                         self.update_content_items();
                         self.update_outline();
+                        self.push_navigation_history(note_index);
 
                         if let Some(target_line) = line_number {
                             let target_line_0indexed = target_line.saturating_sub(1);
@@ -5321,9 +5347,9 @@ impl App {
                             let visible_height = 20usize; // Approximate visible lines
                             let target_scroll = self.content_cursor.saturating_sub(visible_height / 3);
                             self.content_scroll_offset = target_scroll;
-
-                            self.focus = Focus::Content;
                         }
+
+                        self.focus = Focus::Content;
                         break;
                     }
                 }
