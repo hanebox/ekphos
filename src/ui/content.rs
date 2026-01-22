@@ -410,8 +410,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::FrontmatterLine { ref key, ref value, .. } => {
                 render_frontmatter_line(f, &app.theme, key, value, chunks[chunk_idx], is_cursor_line);
             }
-            ContentItem::TagBadges { ref tags } => {
-                render_tag_badges_inline(f, &app.theme, tags, chunks[chunk_idx]);
+            ContentItem::TagBadges { ref tags, ref date } => {
+                render_tag_badges_inline(f, &app.theme, tags, date.as_deref(), chunks[chunk_idx], is_cursor_line);
             }
         }
     }
@@ -2081,13 +2081,19 @@ fn render_tag_badges_inline(
     f: &mut Frame,
     theme: &Theme,
     tags: &[String],
+    date: Option<&str>,
     area: Rect,
+    is_cursor: bool,
 ) {
     if area.height < 2 {
         return;
     }
 
-    let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
+    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
+    let mut spans: Vec<Span> = vec![Span::styled(
+        cursor_indicator,
+        Style::default().fg(theme.warning),
+    )];
 
     for (i, tag) in tags.iter().enumerate() {
         if i > 0 {
@@ -2100,6 +2106,12 @@ fn render_tag_badges_inline(
                 .bg(theme.content.tag_background),
         ));
     }
+    if let Some(d) = date {
+        if !tags.is_empty() {
+            spans.push(Span::styled("  ", Style::default()));
+        }
+        spans.push(Span::styled(d, Style::default().fg(theme.content.frontmatter)));
+    }
 
     // Render on second line (first line is padding)
     let tag_area = Rect {
@@ -2108,7 +2120,14 @@ fn render_tag_badges_inline(
         width: area.width,
         height: 1,
     };
-    let paragraph = Paragraph::new(Line::from(spans));
+
+    let style = if is_cursor {
+        Style::default().bg(theme.selection)
+    } else {
+        Style::default()
+    };
+
+    let paragraph = Paragraph::new(Line::from(spans)).style(style);
     f.render_widget(paragraph, tag_area);
 }
 

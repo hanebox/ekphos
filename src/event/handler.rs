@@ -290,6 +290,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }).map(|(idx, _)| *idx);
 
                     if let Some(idx) = clicked_item {
+                        if app.is_content_item_visible(idx) {
+                            app.content_cursor = idx;
+                            app.selected_link_index = 0;
+                        }
+
                         if app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x) {
                             app.toggle_task_at(idx);
                         }

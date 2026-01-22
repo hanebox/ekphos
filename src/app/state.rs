@@ -194,7 +194,7 @@ pub enum ContentItem {
     Details { summary: String, content_lines: Vec<String>, id: usize },
     FrontmatterLine { key: String, value: String },
     FrontmatterDelimiter,
-    TagBadges { tags: Vec<String> },
+    TagBadges { tags: Vec<String>, date: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2002,8 +2002,11 @@ impl App {
             } else if has_frontmatter {
                 if self.config.show_tags {
                     if let Some(ref fm) = frontmatter {
-                        if !fm.tags.is_empty() {
-                            self.content_items.push(ContentItem::TagBadges { tags: fm.tags.clone() });
+                        if !fm.tags.is_empty() || fm.date.is_some() {
+                            self.content_items.push(ContentItem::TagBadges {
+                                tags: fm.tags.clone(),
+                                date: fm.date.clone(),
+                            });
                             self.content_item_source_lines.push(0);
                         }
                     }
