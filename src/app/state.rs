@@ -459,6 +459,12 @@ pub enum SidebarItemKind {
     Note { note_index: usize },
 }
 
+#[derive(Debug, Clone)]
+pub enum CutItem {
+    Note { source_path: PathBuf, title: String },
+    Folder { source_path: PathBuf, name: String },
+}
+
 pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
@@ -564,6 +570,8 @@ pub struct App {
     pub index_total: Arc<AtomicUsize>,
     /// Timestamp when indexing started (for timeout detection)
     pub index_started_at: Option<std::time::Instant>,
+    /// Cut buffer for file move/relocation operations
+    pub cut_buffer: Option<CutItem>,
 }
 
 #[allow(dead_code)]
@@ -736,6 +744,7 @@ impl App {
             index_progress: Arc::new(AtomicUsize::new(0)),
             index_total: Arc::new(AtomicUsize::new(0)),
             index_started_at: None,
+            cut_buffer: None,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -913,6 +922,7 @@ impl App {
             index_progress: Arc::new(AtomicUsize::new(0)),
             index_total: Arc::new(AtomicUsize::new(0)),
             index_started_at: None,
+            cut_buffer: None,
         };
 
         if notes_dir_exists {
@@ -1580,6 +1590,294 @@ impl App {
                     self.update_outline();
                 }
             }
+        }
+    }
+
+    // ==================== Cut/Paste/Move Operations ====================
+    pub fn cut_selected_item(&mut self) {
+        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+            match &item.kind {
+                SidebarItemKind::Note { note_index } => {
+                    if let Some(note) = self.notes.get(*note_index) {
+                        if let Some(ref path) = note.file_path {
+                            self.cut_buffer = Some(CutItem::Note {
+                                source_path: path.clone(),
+                                title: note.title.clone(),
+                            });
+                            self.status_message = Some(format!("Cut: {}", note.title));
+                        }
+                    }
+                }
+                SidebarItemKind::Folder { path, .. } => {
+                    let name = item.display_name.clone();
+                    self.cut_buffer = Some(CutItem::Folder {
+                        source_path: path.clone(),
+                        name: name.clone(),
+                    });
+                    self.status_message = Some(format!("Cut: {}/", name));
+                }
+            }
+        }
+    }
+    pub fn clear_cut_buffer(&mut self) {
+        if self.cut_buffer.is_some() {
+            self.cut_buffer = None;
+            self.status_message = Some("Cut cancelled".to_string());
+        }
+    }
+    pub fn paste_cut_item(&mut self) -> Result<(), String> {
+        let cut_item = match self.cut_buffer.take() {
+            Some(item) => item,
+            None => return Err("Nothing to paste".to_string()),
+        };
+        let dest_folder = self.get_paste_destination_folder();
+
+        match cut_item {
+            CutItem::Note { source_path, title } => {
+                self.move_note(&source_path, &dest_folder, &title)
+            }
+            CutItem::Folder { source_path, name } => {
+                self.move_folder(&source_path, &dest_folder, &name)
+            }
+        }
+    }
+    fn get_paste_destination_folder(&self) -> PathBuf {
+        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+            match &item.kind {
+                SidebarItemKind::Folder { path, .. } => {
+                    return path.clone();
+                }
+                SidebarItemKind::Note { note_index } => {
+                    if let Some(note) = self.notes.get(*note_index) {
+                        if let Some(ref file_path) = note.file_path {
+                            if let Some(parent) = file_path.parent() {
+                                return parent.to_path_buf();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.config.notes_path()
+    }
+    fn move_note(&mut self, source: &std::path::Path, dest_folder: &std::path::Path, title: &str) -> Result<(), String> {
+        if !source.exists() {
+            return Err("Source file no longer exists".to_string());
+        }
+        let dest_path = dest_folder.join(format!("{}.md", title));
+        if source == &dest_path {
+            return Err("Already in this location".to_string());
+        }
+        if source.parent() == Some(dest_folder) {
+            return Err("Already in this location".to_string());
+        }
+        if dest_path.exists() {
+            return Err(format!("'{}' already exists in destination", title));
+        }
+        let notes_root = self.config.notes_path();
+        let old_wiki_path = Self::calculate_wiki_path(source, &notes_root);
+        let new_wiki_path = Self::calculate_wiki_path(&dest_path, &notes_root);
+        fs::rename(source, &dest_path)
+            .map_err(|e| format!("Failed to move file: {}", e))?;
+        self.update_wiki_links_after_move(&old_wiki_path, &new_wiki_path, title);
+        self.load_notes_from_dir();
+        self.start_index_build();
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if let Some(note) = self.notes.get(*note_index) {
+                    if note.file_path.as_ref() == Some(&dest_path) {
+                        self.selected_sidebar_index = idx;
+                        self.selected_note = *note_index;
+                        break;
+                    }
+                }
+            }
+        }
+        self.update_content_items();
+        self.update_outline();
+        self.status_message = Some(format!("Moved: {}", title));
+
+        Ok(())
+    }
+    fn move_folder(&mut self, source: &std::path::Path, dest_folder: &std::path::Path, name: &str) -> Result<(), String> {
+        if !source.exists() {
+            return Err("Source folder no longer exists".to_string());
+        }
+        let dest_path = dest_folder.join(name);
+        if dest_folder.starts_with(source) {
+            return Err("Cannot move folder into itself".to_string());
+        }
+        if source == &dest_path {
+            return Err("Already in this location".to_string());
+        }
+        if source.parent() == Some(dest_folder) {
+            return Err("Already in this location".to_string());
+        }
+        if dest_path.exists() {
+            return Err(format!("Folder '{}' already exists in destination", name));
+        }
+
+        let notes_root = self.config.notes_path();
+        let mut old_new_paths: Vec<(String, String, String)> = Vec::new(); // (old_wiki, new_wiki, title)
+
+        for note in &self.notes {
+            if let Some(ref file_path) = note.file_path {
+                if file_path.starts_with(source) {
+                    let old_wiki = Self::calculate_wiki_path(file_path, &notes_root);
+                    // Calculate new path by replacing source prefix with dest
+                    let relative = file_path.strip_prefix(source).unwrap_or(file_path.as_path());
+                    let new_file_path = dest_path.join(relative);
+                    let new_wiki = Self::calculate_wiki_path(&new_file_path, &notes_root);
+                    old_new_paths.push((old_wiki, new_wiki, note.title.clone()));
+                }
+            }
+        }
+
+        fs::rename(source, &dest_path)
+            .map_err(|e| format!("Failed to move folder: {}", e))?;
+
+        let keys_to_update: Vec<PathBuf> = self.folder_states.keys()
+            .filter(|k| k.starts_with(source))
+            .cloned()
+            .collect();
+
+        for old_key in keys_to_update {
+            if let Some(expanded) = self.folder_states.remove(&old_key) {
+                let relative = old_key.strip_prefix(source).unwrap_or(&old_key);
+                let new_key = dest_path.join(relative);
+                self.folder_states.insert(new_key, expanded);
+            }
+        }
+
+        for (old_wiki, new_wiki, title) in old_new_paths {
+            self.update_wiki_links_after_move(&old_wiki, &new_wiki, &title);
+        }
+
+        self.load_notes_from_dir();
+        self.start_index_build();
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Folder { path, .. } = &item.kind {
+                if path == &dest_path {
+                    self.selected_sidebar_index = idx;
+                    break;
+                }
+            }
+        }
+
+        self.update_content_items();
+        self.update_outline();
+        self.status_message = Some(format!("Moved: {}/", name));
+
+        Ok(())
+    }
+
+    fn update_wiki_links_after_move(&mut self, old_path: &str, new_path: &str, title: &str) {
+        let notes_root = self.config.notes_path();
+        let md_files = Self::collect_markdown_files(&notes_root);
+
+        for file_path in md_files {
+            let content = match fs::read_to_string(&file_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let modified_content = self.replace_wiki_links_in_content(
+                &content,
+                old_path,
+                new_path,
+                title,
+            );
+
+            if modified_content != content {
+                let _ = fs::write(&file_path, modified_content);
+            }
+        }
+    }
+    fn collect_markdown_files(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(Self::collect_markdown_files(&path));
+                } else if path.extension().map(|ext| ext == "md").unwrap_or(false) {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    fn replace_wiki_links_in_content(
+        &self,
+        content: &str,
+        old_path: &str,
+        new_path: &str,
+        old_title: &str,
+    ) -> String {
+        let mut result = String::new();
+        let mut remaining = content;
+
+        while let Some(start) = remaining.find("[[") {
+            result.push_str(&remaining[..start]);
+            remaining = &remaining[start + 2..];
+
+            if let Some(end) = remaining.find("]]") {
+                let link_content = &remaining[..end];
+
+                let (target, suffix) = if let Some(hash_pos) = link_content.find('#') {
+                    (&link_content[..hash_pos], &link_content[hash_pos..])
+                } else if let Some(pipe_pos) = link_content.find('|') {
+                    (&link_content[..pipe_pos], &link_content[pipe_pos..])
+                } else {
+                    (link_content, "")
+                };
+
+                let target_lower = target.to_lowercase();
+                let old_path_lower = old_path.to_lowercase();
+                let old_title_lower = old_title.to_lowercase();
+
+                let should_replace = target_lower == old_path_lower
+                    || target_lower == old_title_lower;
+
+                if should_replace {
+                    let new_target = if new_path.contains('/') {
+                        new_path.to_string()
+                    } else {
+                        old_title.to_string()
+                    };
+                    result.push_str("[[");
+                    result.push_str(&new_target);
+                    result.push_str(suffix);
+                    result.push_str("]]");
+                } else {
+                    // Keep original
+                    result.push_str("[[");
+                    result.push_str(link_content);
+                    result.push_str("]]");
+                }
+
+                remaining = &remaining[end + 2..];
+            } else {
+                result.push_str("[[");
+            }
+        }
+
+        result.push_str(remaining);
+        result
+    }
+
+    fn calculate_wiki_path(file_path: &std::path::Path, notes_root: &std::path::Path) -> String {
+        if let Ok(relative) = file_path.strip_prefix(notes_root) {
+            let path_str = relative.to_string_lossy();
+            if let Some(stripped) = path_str.strip_suffix(".md") {
+                return stripped.to_string();
+            }
+            path_str.to_string()
+        } else {
+            file_path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
         }
     }
 

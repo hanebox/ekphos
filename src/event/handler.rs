@@ -2020,6 +2020,18 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
+        KeyCode::Char('x') if !app.zen_mode && key.modifiers.is_empty() => {
+            if app.focus == Focus::Sidebar {
+                app.cut_selected_item();
+            }
+        }
+        KeyCode::Char('p') if !app.zen_mode && key.modifiers.is_empty() => {
+            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
+                if let Err(e) = app.paste_cut_item() {
+                    app.status_message = Some(format!("Move failed: {}", e));
+                }
+            }
+        }
         KeyCode::Char('r') if !app.zen_mode => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
@@ -2243,6 +2255,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                     app.goto_last_content_line();
                     app.sync_outline_to_content();
                 }
+            }
+        }
+        KeyCode::Esc => {
+            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
+                app.clear_cut_buffer();
             }
         }
         _ => {}
