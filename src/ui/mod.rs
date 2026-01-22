@@ -2,6 +2,7 @@ mod content;
 mod context_menu;
 mod dialogs;
 mod editor;
+mod file_picker;
 mod graph_view;
 mod outline;
 mod search_dialog;
@@ -16,7 +17,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, ContextMenuState, DialogState, Mode, WikiAutocompleteState};
+use crate::app::{App, ContextMenuState, DialogState, SearchPickerState, Mode, WikiAutocompleteState};
 
 pub use content::render_content;
 pub use dialogs::{
@@ -120,5 +121,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     if app.buffer_search.active {
         search_dialog::render_search_dialog(f, app, app.editor_area);
+    }
+
+    if !matches!(app.search_picker, SearchPickerState::Closed) {
+        file_picker::render_search_picker(f, app);
     }
 }

@@ -509,6 +509,7 @@ name = "ekphos"
 version = "0.15.0"
 dependencies = [
  "arboard",
+ "bincode",
  "clipboard-rs",
  "crossterm",
  "dirs 5.0.1",

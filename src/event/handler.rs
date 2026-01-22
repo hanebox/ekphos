@@ -4,7 +4,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
+use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, SearchPickerState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
 use crate::editor::{CursorMove, CursorShape, Position};
 use crate::ui;
@@ -32,11 +32,15 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
     loop {
         let pending_before = app.pending_images.len();
         let highlighter_was_loading = app.highlighter_loading;
+        let indexing_was_in_progress = app.indexing_in_progress;
         app.poll_pending_images();
         app.poll_highlighter();
+        app.poll_content_search();
+        app.poll_index_build();
 
         if app.pending_images.len() < pending_before
             || (highlighter_was_loading && !app.highlighter_loading)
+            || (indexing_was_in_progress && !app.indexing_in_progress)
         {
             needs_render = true;
         }
@@ -53,7 +57,9 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
 
         let has_background_work = !app.pending_images.is_empty()
             || app.highlighter_loading
-            || app.mouse_button_held;
+            || app.mouse_button_held
+            || app.is_content_search_in_progress()
+            || app.indexing_in_progress;
 
         if has_background_work {
             let timeout = if app.mouse_button_held {
@@ -151,6 +157,44 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 return;
             }
         }
+    }
+
+    // Handle search picker mouse events
+    if !matches!(app.search_picker, SearchPickerState::Closed) {
+        if app.is_inside_search_picker(mouse_x, mouse_y) {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    app.search_picker_scroll_up();
+                    return;
+                }
+                MouseEventKind::ScrollDown => {
+                    app.search_picker_scroll_down();
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    match app.search_picker_click(mouse_x, mouse_y) {
+                        2 => {
+                            // Double-click: select and confirm
+                            app.select_search_picker_result();
+                        }
+                        1 => {
+                            // Single click: just select
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    return;
+                }
+                _ => {}
+            }
+        } else if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            // Click outside closes the picker
+            app.close_search_picker();
+            return;
+        }
+        return;
     }
 
     if app.dialog == DialogState::GraphView {
@@ -675,6 +719,12 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
     // Handle welcome dialog
     if app.show_welcome {
         handle_welcome_dialog(app, key);
+        return Ok(false);
+    }
+
+    // Handle search picker input (high priority)
+    if !matches!(app.search_picker, SearchPickerState::Closed) {
+        handle_search_picker_input(app, key);
         return Ok(false);
     }
 
@@ -1735,6 +1785,45 @@ fn handle_welcome_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+fn handle_search_picker_input(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_search_picker();
+        }
+        KeyCode::Enter => {
+            app.select_search_picker_result();
+        }
+        KeyCode::Left | KeyCode::Right => {
+            app.toggle_search_picker_mode();
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Backspace => {
+            app.search_picker_pop_char();
+        }
+        KeyCode::Char(c) => {
+            app.search_picker_push_char(c);
+        }
+        _ => {}
+    }
+}
+
 fn handle_search_input(app: &mut App, key: crossterm::event::KeyEvent) {
     let is_nav_down = key.code == KeyCode::Down
         || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL)
@@ -1960,6 +2049,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.reload_on_focus();
                 app.needs_full_clear = true;
             }
+        }
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.open_search_picker();
         }
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
@@ -2460,6 +2552,12 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 
     match key.code {
+        // Global file picker blocked in Edit mode - exit edit mode first
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.vim.status_message = Some("Exit edit mode (Esc) to use search".to_string());
+            return;
+        }
+
         // Count accumulation
         KeyCode::Char(c @ '1'..='9') => {
             let digit = c.to_digit(10).unwrap() as usize;

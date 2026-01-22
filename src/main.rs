@@ -5,6 +5,7 @@ mod editor;
 mod event;
 mod graph;
 mod highlight;
+mod search;
 mod ui;
 mod vim;
 
@@ -44,6 +45,7 @@ fn print_help() {
     println!("    -c, --config     Print config file path");
     println!("    -d, --dir        Print notes directory path");
     println!("    --reset          Reset config and themes to defaults");
+    println!("    --clean-cache    Clear the search index cache");
     println!();
     println!("EXAMPLES:");
     println!("    ekphos ~/notes           Open the ~/notes folder");
@@ -89,6 +91,58 @@ fn reset_config_and_themes() {
     println!("Reset complete! Configuration restored to v{} defaults.", VERSION);
 }
 
+fn clean_cache() {
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache"))
+        .join("ekphos");
+
+    println!("Cleaning ekphos search cache...");
+    println!();
+
+    if cache_dir.exists() {
+        let total_size = get_dir_size(&cache_dir);
+        match fs::remove_dir_all(&cache_dir) {
+            Ok(_) => {
+                let size_str = format_size(total_size);
+                println!("  Deleted: {} ({})", cache_dir.display(), size_str);
+            }
+            Err(e) => eprintln!("  Failed to remove cache: {}", e),
+        }
+    } else {
+        println!("  Cache directory not found (skipped)");
+    }
+
+    println!();
+    println!("Cache cleared! Search index will be rebuilt on next launch.");
+}
+
+fn get_dir_size(path: &PathBuf) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                total += get_dir_size(&entry_path);
+            } else if let Ok(metadata) = entry.metadata() {
+                total += metadata.len();
+            }
+        }
+    }
+    total
+}
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+
+    if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
 fn resolve_path(path_str: &str) -> Option<PathBuf> {
     let expanded = shellexpand::tilde(path_str).to_string();
     let path = PathBuf::from(&expanded);
@@ -127,6 +181,10 @@ fn main() -> io::Result<()> {
             }
             "--reset" => {
                 reset_config_and_themes();
+                return Ok(());
+            }
+            "--clean-cache" => {
+                clean_cache();
                 return Ok(());
             }
             arg if arg.starts_with('-') => {
