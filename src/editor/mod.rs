@@ -1621,7 +1621,10 @@ impl Editor {
     }
 
     pub fn paste(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
+        let text = self.clipboard.clone().or_else(|| {
+            arboard::Clipboard::new().ok()?.get_text().ok()
+        });
+        if let Some(text) = text {
             self.insert_str(&text);
         }
     }
@@ -1630,38 +1633,51 @@ impl Editor {
     /// For line-wise content: paste below current line
     /// For character-wise content: paste after cursor
     pub fn paste_after(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
-            if self.clipboard_linewise {
-                let (row, col) = self.cursor();
-                let cursor_before = Position { row, col };
-
-                let new_row = row + 1;
-
-                let text_to_insert = text.trim_end_matches('\n');
-                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
-
-                for (i, line) in lines.iter().enumerate() {
-                    self.buffer.insert_line(new_row + i, line.clone());
-                    self.wrap_cache.insert_line(new_row + i);
-                }
-
-                self.cursor.move_to(new_row, 0);
-
-                self.history.record(
-                    EditOperation::LineInsert {
-                        row: new_row,
-                        lines,
-                    },
-                    cursor_before,
-                    Position { row: new_row, col: 0 },
-                );
+        // Try internal clipboard first, then fall back to system clipboard
+        let (text, linewise) = if let Some(text) = self.clipboard.clone() {
+            (text, self.clipboard_linewise)
+        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                // For system clipboard, detect linewise by checking if ends with newline
+                let linewise = text.ends_with('\n');
+                (text, linewise)
             } else {
-                let (row, col) = self.cursor();
-                let line_len = self.buffer.line(row).map(|l| l.chars().count()).unwrap_or(0);
-                let new_col = (col + 1).min(line_len);
-                self.cursor.move_to(row, new_col);
-                self.insert_str(&text);
+                return;
             }
+        } else {
+            return;
+        };
+
+        if linewise {
+            let (row, col) = self.cursor();
+            let cursor_before = Position { row, col };
+
+            let new_row = row + 1;
+
+            let text_to_insert = text.trim_end_matches('\n');
+            let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                self.buffer.insert_line(new_row + i, line.clone());
+                self.wrap_cache.insert_line(new_row + i);
+            }
+
+            self.cursor.move_to(new_row, 0);
+
+            self.history.record(
+                EditOperation::LineInsert {
+                    row: new_row,
+                    lines,
+                },
+                cursor_before,
+                Position { row: new_row, col: 0 },
+            );
+        } else {
+            let (row, col) = self.cursor();
+            let line_len = self.buffer.line(row).map(|l| l.chars().count()).unwrap_or(0);
+            let new_col = (col + 1).min(line_len);
+            self.cursor.move_to(row, new_col);
+            self.insert_str(&text);
         }
     }
 
@@ -1669,32 +1685,44 @@ impl Editor {
     /// For line-wise content: paste above current line
     /// For character-wise content: paste before cursor
     pub fn paste_before(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
-            if self.clipboard_linewise {
-                let (row, col) = self.cursor();
-                let cursor_before = Position { row, col };
-
-                let text_to_insert = text.trim_end_matches('\n');
-                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
-
-                for (i, line) in lines.iter().enumerate() {
-                    self.buffer.insert_line(row + i, line.clone());
-                    self.wrap_cache.insert_line(row + i);
-                }
-
-                self.cursor.move_to(row, 0);
-
-                self.history.record(
-                    EditOperation::LineInsert {
-                        row,
-                        lines,
-                    },
-                    cursor_before,
-                    Position { row, col: 0 },
-                );
+        let (text, linewise) = if let Some(text) = self.clipboard.clone() {
+            (text, self.clipboard_linewise)
+        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                // For system clipboard, detect linewise by checking if ends with newline
+                let linewise = text.ends_with('\n');
+                (text, linewise)
             } else {
-                self.insert_str(&text);
+                return;
             }
+        } else {
+            return;
+        };
+
+        if linewise {
+            let (row, col) = self.cursor();
+            let cursor_before = Position { row, col };
+
+            let text_to_insert = text.trim_end_matches('\n');
+            let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                self.buffer.insert_line(row + i, line.clone());
+                self.wrap_cache.insert_line(row + i);
+            }
+
+            self.cursor.move_to(row, 0);
+
+            self.history.record(
+                EditOperation::LineInsert {
+                    row,
+                    lines,
+                },
+                cursor_before,
+                Position { row, col: 0 },
+            );
+        } else {
+            self.insert_str(&text);
         }
     }
 
