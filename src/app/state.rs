@@ -3054,17 +3054,40 @@ impl App {
         // Check for inline code on the current line
         if let Some(line) = lines.get(row) {
             let chars: Vec<char> = line.chars().collect();
-            let mut in_inline_code = false;
-            for (i, &ch) in chars.iter().enumerate() {
-                if i >= col {
-                    break;
+
+            let mut i = 0;
+            while i < col {
+                if chars.get(i) == Some(&'`') {
+                    let mut count = 0;
+                    while i < col && chars.get(i) == Some(&'`') {
+                        count += 1;
+                        i += 1;
+                    }
+
+                    let mut found_closing = false;
+                    let mut j = i;
+                    while j < col {
+                        if chars.get(j) == Some(&'`') {
+                            let mut close_count = 0;
+                            while j < chars.len() && chars.get(j) == Some(&'`') {
+                                close_count += 1;
+                                j += 1;
+                            }
+                            if close_count == count {
+                                found_closing = true;
+                                i = j; 
+                                break;
+                            }
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    if !found_closing {
+                        return true;
+                    }
+                } else {
+                    i += 1;
                 }
-                if ch == '`' {
-                    in_inline_code = !in_inline_code;
-                }
-            }
-            if in_inline_code {
-                return true;
             }
         }
 
@@ -3099,7 +3122,11 @@ impl App {
             }
         }
 
-        let start = open_pos? + 2; 
+        let start = open_pos? + 2;
+
+        if self.is_cursor_in_code(row, start) {
+            return None;
+        } 
 
         for j in start..col.saturating_sub(1) {
             if chars.get(j) == Some(&']') && chars.get(j + 1) == Some(&']') {

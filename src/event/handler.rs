@@ -3475,7 +3475,9 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
                 app.update_editor_highlights();
 
-                if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                let should_detect = matches!(key.code, KeyCode::Char(_))
+                    || (matches!(key.code, KeyCode::Backspace) && matches!(app.wiki_autocomplete, WikiAutocompleteState::Open { .. }));
+                if should_detect {
                     let (row, col) = app.editor.cursor();
                     if !app.is_cursor_in_code(row, col) {
                         if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
