@@ -5,6 +5,7 @@ mod editor;
 mod event;
 mod graph;
 mod highlight;
+mod highlight_worker;
 mod search;
 mod ui;
 mod vim;

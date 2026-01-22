@@ -16,6 +16,7 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
 use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
+use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker};
 use crate::config::{Config, Theme};
 use crate::search::{self, SearchIndex};
 use crate::vim::VimState;
@@ -572,6 +573,13 @@ pub struct App {
     pub index_started_at: Option<std::time::Instant>,
     /// Cut buffer for file move/relocation operations
     pub cut_buffer: Option<CutItem>,
+    // Background highlight worker
+    /// Highlight worker for background syntax highlighting
+    pub highlight_worker: Option<HighlightWorker>,
+    /// Current document version for highlight requests (incremented on edits)
+    pub highlight_version: u64,
+    /// Whether there's a pending highlight request waiting for results
+    pub highlight_pending: bool,
 }
 
 #[allow(dead_code)]
@@ -753,6 +761,9 @@ impl App {
             index_total: Arc::new(AtomicUsize::new(0)),
             index_started_at: None,
             cut_buffer: None,
+            highlight_worker: Some(HighlightWorker::new()),
+            highlight_version: 0,
+            highlight_pending: false,
         };
 
         if !is_first_launch && notes_dir_exists {
@@ -931,6 +942,9 @@ impl App {
             index_total: Arc::new(AtomicUsize::new(0)),
             index_started_at: None,
             cut_buffer: None,
+            highlight_worker: Some(HighlightWorker::new()),
+            highlight_version: 0,
+            highlight_pending: false,
         };
 
         if notes_dir_exists {
@@ -4290,6 +4304,12 @@ impl App {
     }
 
     pub fn enter_edit_mode(&mut self) {
+        // Drain any old highlight results before starting fresh
+        if let Some(ref worker) = self.highlight_worker {
+            worker.drain_results();
+        }
+        self.highlight_pending = false;
+
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
             let line_count = lines.len();
@@ -4338,9 +4358,6 @@ impl App {
             );
             self.editor.set_frontmatter_color(self.theme.content.frontmatter);
 
-            // Update all editor syntax highlighting
-            self.update_editor_highlights();
-
             self.editor.set_cursor(target_row, 0);
 
             // Calculate scroll position:
@@ -4370,42 +4387,17 @@ impl App {
             self.update_editor_block();
             self.mode = Mode::Edit;
             self.focus = Focus::Content;
+
+            self.request_highlight_update();
         }
     }
 
     pub fn update_editor_highlights(&mut self) {
-        self.update_editor_wiki_links();
-        self.editor.update_markdown_highlights();
+        self.request_highlight_update();
     }
 
-    pub fn update_editor_wiki_links(&mut self) {
-        let notes_path = self.config.notes_path();
-        let mut valid_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for note in &self.notes {
-            if let Some(file_path) = &note.file_path {
-                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
-                    let path_str = relative.to_string_lossy();
-                    if let Some(stripped) = path_str.strip_suffix(".md") {
-                        // Add full path (e.g., "folder/note-name")
-                        valid_targets.insert(stripped.to_string());
-                        // Also add just the note title for recursive search support
-                        valid_targets.insert(note.title.clone());
-                        valid_targets.insert(note.title.to_lowercase());
-                    }
-                }
-            }
-        }
-
-        self.editor.update_wiki_links(|target| {
-            if valid_targets.contains(target) {
-                return true;
-            }
-            if !target.contains('/') {
-                return valid_targets.contains(&target.to_lowercase());
-            }
-            false
-        });
+    pub fn update_editor_highlights_incremental(&mut self) {
+        self.request_highlight_update();
     }
 
     pub fn update_editor_scroll(&mut self, view_height: usize) {
@@ -4494,6 +4486,7 @@ impl App {
         self.vim.command_buffer.clear();
         self.vim.mode = crate::vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
+        self.highlight_pending = false;
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
@@ -4536,6 +4529,7 @@ impl App {
         self.vim.command_buffer.clear();
         self.vim.mode = crate::vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
+        self.highlight_pending = false;
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
@@ -4618,6 +4612,145 @@ impl App {
             let highlighter = Highlighter::new(&syntax_theme);
             let _ = sender.send(highlighter);
         });
+    }
+
+    // Background Highlight Worker
+
+    pub fn request_highlight_update(&mut self) {
+        self.highlight_version += 1;
+        self.highlight_pending = true;
+
+        if let Some(ref worker) = self.highlight_worker {
+            let content = self.editor.lines().join("\n");
+            let colors = self.get_highlight_colors();
+            worker.request(content, self.highlight_version, colors);
+        }
+    }
+
+    fn get_highlight_colors(&self) -> HighlightColors {
+        HighlightColors {
+            heading_colors: [
+                self.theme.editor.heading1,
+                self.theme.editor.heading2,
+                self.theme.editor.heading3,
+                self.theme.editor.heading4,
+                self.theme.editor.heading5,
+                self.theme.editor.heading6,
+            ],
+            code_color: self.theme.editor.code,
+            link_color: self.theme.editor.link,
+            blockquote_color: self.theme.editor.blockquote,
+            list_marker_color: self.theme.editor.list_marker,
+            bold_color: Some(self.theme.editor.bold),
+            italic_color: Some(self.theme.editor.italic),
+            frontmatter_color: self.theme.content.frontmatter,
+            details_color: self.theme.editor.link, // Use link color for HTML details tags
+            horizontal_rule_color: self.theme.editor.blockquote, // Use blockquote color for horizontal rules
+        }
+    }
+
+    pub fn poll_highlight_worker(&mut self) -> bool {
+        let result = if let Some(ref worker) = self.highlight_worker {
+            worker.try_recv()
+        } else {
+            return false;
+        };
+
+        if let Some(result) = result {
+            let applied = self.apply_highlight_result(result);
+            if applied {
+                self.highlight_pending = false;
+            }
+            applied
+        } else {
+            false
+        }
+    }
+
+    fn apply_highlight_result(&mut self, result: HighlightResult) -> bool {
+        if result.version != self.highlight_version {
+            return false;
+        }
+
+        self.editor.clear_highlights();
+        self.editor.add_highlights(result.highlights);
+        self.update_editor_wiki_links_with_ranges(&result.wiki_links);
+        self.editor.invalidate_all_styles();
+        true
+    }
+
+    fn update_editor_wiki_links_with_ranges(&mut self, ranges: &[crate::editor::WikiLinkRange]) {
+        let notes_path = self.config.notes_path();
+        let mut valid_targets: HashSet<String> = HashSet::new();
+
+        for note in &self.notes {
+            if let Some(file_path) = &note.file_path {
+                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
+                    let path_str = relative.to_string_lossy();
+                    if let Some(stripped) = path_str.strip_suffix(".md") {
+                        valid_targets.insert(stripped.to_string());
+                        valid_targets.insert(note.title.clone());
+                        valid_targets.insert(note.title.to_lowercase());
+                    }
+                }
+            }
+        }
+
+        let validated_ranges: Vec<crate::editor::WikiLinkRange> = ranges
+            .iter()
+            .map(|range| {
+                // Extract target from the wiki link at this position
+                let is_valid = self.validate_wiki_link_at(range.row, range.start_col, &valid_targets);
+                crate::editor::WikiLinkRange {
+                    row: range.row,
+                    start_col: range.start_col,
+                    end_col: range.end_col,
+                    is_valid,
+                }
+            })
+            .collect();
+
+        self.editor.set_wiki_link_ranges(validated_ranges);
+    }
+
+    fn validate_wiki_link_at(&self, row: usize, start_col: usize, valid_targets: &HashSet<String>) -> bool {
+        let line = match self.editor.lines().get(row) {
+            Some(l) => *l,
+            None => return false,
+        };
+
+        let chars: Vec<char> = line.chars().collect();
+        if start_col + 2 >= chars.len() {
+            return false;
+        }
+
+        let after_open: String = chars[start_col + 2..].iter().collect();
+        if let Some(end_pos) = after_open.find("]]") {
+            let raw_content = &after_open[..end_pos];
+
+            let content = if let Some(pipe_pos) = raw_content.find('|') {
+                &raw_content[..pipe_pos]
+            } else {
+                raw_content
+            };
+            let target = if let Some(hash_pos) = content.find('#') {
+                &content[..hash_pos]
+            } else {
+                content
+            };
+
+            if valid_targets.contains(target) {
+                return true;
+            }
+            if !target.contains('/') {
+                return valid_targets.contains(&target.to_lowercase());
+            }
+        }
+        false
+    }
+
+    pub fn has_highlight_work(&self) -> bool {
+        self.highlight_pending
     }
 
     pub fn get_highlighter(&self) -> Option<&Highlighter> {

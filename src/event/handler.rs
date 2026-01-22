@@ -38,6 +38,10 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
         app.poll_content_search();
         app.poll_index_build();
 
+        if app.poll_highlight_worker() {
+            needs_render = true;
+        }
+
         if app.pending_images.len() < pending_before
             || (highlighter_was_loading && !app.highlighter_loading)
             || (indexing_was_in_progress && !app.indexing_in_progress)
@@ -59,10 +63,14 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
             || app.highlighter_loading
             || app.mouse_button_held
             || app.is_content_search_in_progress()
-            || app.indexing_in_progress;
+            || app.indexing_in_progress
+            || app.has_highlight_work();
 
         if has_background_work {
-            let timeout = if app.mouse_button_held {
+            // Use very short timeout for highlight work to be reactive
+            let timeout = if app.has_highlight_work() {
+                std::time::Duration::from_millis(1)
+            } else if app.mouse_button_held {
                 std::time::Duration::from_millis(33)
             } else {
                 std::time::Duration::from_millis(100)
@@ -2274,6 +2282,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     if handle_wiki_autocomplete(app, key) {
+        app.request_highlight_update();
         return;
     }
 
@@ -2330,6 +2339,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
@@ -2337,16 +2347,19 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     // Check the new vim state mode for command mode
     if app.vim.mode.is_command() {
         handle_vim_command_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
     if app.vim.mode.is_search() {
         handle_vim_search_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
     if matches!(app.vim.mode, VimModeNew::SearchLocked { .. }) {
         handle_vim_search_locked_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
@@ -2359,6 +2372,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             handle_vim_visual_mode(app, key)
         }
     }
+    app.request_highlight_update();
     app.update_editor_block();
 }
 
@@ -3048,11 +3062,13 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.undo();
+            app.update_editor_highlights();
         }
         KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.redo();
+            app.update_editor_highlights();
         }
 
         // Repeat last change (.)
@@ -3473,7 +3489,7 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         _ => {
             app.editor.input(key);
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
-                app.update_editor_highlights();
+                app.update_editor_highlights_incremental();
 
                 let should_detect = matches!(key.code, KeyCode::Char(_))
                     || (matches!(key.code, KeyCode::Backspace) && matches!(app.wiki_autocomplete, WikiAutocompleteState::Open { .. }));
