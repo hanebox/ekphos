@@ -57,14 +57,13 @@ pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
         let x_offset: u16 = if app.zen_mode { 0 } else { 1 }; // border offset
 
         let content_left_offset = app.editor.content_left_offset();
-        let content_width = inner_width.saturating_sub(content_left_offset as usize);
 
         if cursor_row >= scroll_top {
             if app.editor.line_wrap_enabled() {
-                let (wrap_row_offset, wrap_col) = app.editor.cursor_wrapped_position(content_width);
+                let (wrap_row_offset, wrap_col) = app.editor.cursor_wrapped_position();
                 let mut visual_row: usize = 0;
                 for row in scroll_top..cursor_row {
-                    visual_row += app.editor.line_wrapped_height(row, content_width);
+                    visual_row += app.editor.line_wrapped_height(row);
                     if visual_row >= inner_height {
                         break; 
                     }

@@ -2255,25 +2255,74 @@ impl Editor {
     }
 
     /// Returns the cursor's screen position accounting for line wrapping.
-    pub fn cursor_wrapped_position(&self, content_width: usize) -> (usize, usize) {
+    pub fn cursor_wrapped_position(&self) -> (usize, usize) {
+        if !self.line_wrap_enabled {
+            return (0, self.cursor_display_col());
+        }
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
+
         if content_width == 0 {
             return (0, 0);
         }
 
-        let display_col = self.cursor_display_col();
-
-        if !self.line_wrap_enabled {
-            // No wrapping, just use display column
-            return (0, display_col);
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            return (0, 0);
         }
 
-        // Calculate which wrapped line the cursor is on
-        let wrapped_row = display_col / content_width;
-        let wrapped_col = display_col % content_width;
+        let mut col = 0;
+        let mut visual_line: usize = 0;
+        let mut is_wrapped_continuation = false;
 
-        (wrapped_row, wrapped_col)
+        while col < chars.len() {
+            let mut x: usize = 0;
+            if is_wrapped_continuation && col < chars.len() && chars[col] == ' ' {
+                let is_cursor_on_space = col == pos.col;
+                if !is_cursor_on_space {
+                    col += 1;
+                    if col >= chars.len() {
+                        if pos.col >= chars.len() {
+                            return (visual_line, 0);
+                        }
+                        visual_line += 1;
+                        continue;
+                    }
+                }
+            }
+
+            while col < chars.len() && x < content_width {
+                let ch = chars[col];
+                let ch_width = char_display_width(ch, self.tab_width) as usize;
+
+                if col == pos.col {
+                    return (visual_line, x);
+                }
+
+                x += ch_width;
+                col += 1;
+            }
+
+            if pos.col >= chars.len() && col == chars.len() {
+                return (visual_line, x);
+            }
+
+            is_wrapped_continuation = true;
+            visual_line += 1;
+        }
+
+        (visual_line.saturating_sub(1), 0)
     }
-    pub fn line_wrapped_height(&self, row: usize, content_width: usize) -> usize {
+    pub fn line_wrapped_height(&self, row: usize) -> usize {
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
+
         if content_width == 0 {
             return 1;
         }
