@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, Mode, SidebarItemKind};
+use crate::app::{App, CutItem, Focus, Mode, SidebarItemKind};
 
 pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
@@ -62,7 +62,20 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let is_selected = idx == app.selected_sidebar_index;
             let indent = "  ".repeat(item.depth);
 
-            let (icon, style) = match &item.kind {
+            let is_cut = match (&app.cut_buffer, &item.kind) {
+                (Some(CutItem::Note { source_path, .. }), SidebarItemKind::Note { note_index }) => {
+                    app.notes.get(*note_index)
+                        .and_then(|note| note.file_path.as_ref())
+                        .map(|path| path == source_path)
+                        .unwrap_or(false)
+                }
+                (Some(CutItem::Folder { source_path, .. }), SidebarItemKind::Folder { path, .. }) => {
+                    path == source_path
+                }
+                _ => false,
+            };
+
+            let (icon, mut style) = match &item.kind {
                 SidebarItemKind::Folder { expanded, .. } => {
                     let icon = if *expanded { "▼ " } else { "▶ " };
                     let folder_color = if *expanded { sidebar_theme.folder_expanded } else { sidebar_theme.folder };
@@ -92,6 +105,10 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
                     (icon, style)
                 }
             };
+
+            if is_cut {
+                style = style.add_modifier(Modifier::DIM | Modifier::ITALIC);
+            }
 
             let display = format!("{}{}{}", indent, icon, item.display_name);
             ListItem::new(Line::from(Span::styled(display, style)))

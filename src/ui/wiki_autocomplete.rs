@@ -27,23 +27,50 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
 
         let (cursor_row, cursor_col) = app.editor.cursor();
         let editor_area = app.editor_area;
-        let cursor_screen_y = editor_area.y + 1 + (cursor_row.saturating_sub(app.editor_scroll_top)) as u16;
-        let cursor_screen_x = editor_area.x + 1 + cursor_col as u16;
+        let border_offset = if app.zen_mode { 0 } else { 1 };
+        let cursor_screen_y = editor_area.y + border_offset + (cursor_row.saturating_sub(app.editor_scroll_top)) as u16;
+        let cursor_screen_x = editor_area.x + border_offset + cursor_col as u16;
 
         let is_alias_mode = *mode == WikiAutocompleteMode::Alias;
 
-        let visible_items = if is_alias_mode {
-            1
+        let (scroll_offset, visible_count, total_lines) = if is_alias_mode {
+            (0, 1, 1)
+        } else if suggestions.is_empty() {
+            (0, 0, 0)
         } else {
-            suggestions.len().min(POPUP_MAX_VISIBLE_ITEMS)
-        };
+            let mut lines_used = 0;
+            let mut first_visible = *selected_index;
 
-        let total_lines: usize = if is_alias_mode {
-            1
-        } else {
-            suggestions.iter().take(visible_items).map(|s| {
-                if s.folder_hint.is_some() { 2 } else { 1 }
-            }).sum::<usize>().min(POPUP_MAX_VISIBLE_LINES)
+            for i in (0..=*selected_index).rev() {
+                let item_lines = if suggestions[i].folder_hint.is_some() { 2 } else { 1 };
+                if lines_used + item_lines > POPUP_MAX_VISIBLE_LINES {
+                    break;
+                }
+                lines_used += item_lines;
+                first_visible = i;
+
+                if *selected_index - first_visible + 1 >= POPUP_MAX_VISIBLE_ITEMS {
+                    break;
+                }
+            }
+
+            let scroll_offset = first_visible;
+
+            let mut count = 0;
+            let mut lines = 0;
+            for suggestion in suggestions.iter().skip(scroll_offset) {
+                let item_lines = if suggestion.folder_hint.is_some() { 2 } else { 1 };
+                if lines + item_lines > POPUP_MAX_VISIBLE_LINES {
+                    break;
+                }
+                if count >= POPUP_MAX_VISIBLE_ITEMS {
+                    break;
+                }
+                lines += item_lines;
+                count += 1;
+            }
+
+            (scroll_offset, count.max(1), lines.max(1))
         };
 
         let popup_height = (total_lines as u16 + 2).min(POPUP_MAX_VISIBLE_LINES as u16 + 2);
@@ -60,13 +87,6 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
         f.render_widget(Clear, popup_area);
-
-        let visible_count = POPUP_MAX_VISIBLE_ITEMS;
-        let scroll_offset = if *selected_index >= visible_count {
-            selected_index - visible_count + 1
-        } else {
-            0
-        };
 
         let max_name_width = (popup_width as usize).saturating_sub(8);
 

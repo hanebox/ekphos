@@ -1,14 +1,30 @@
 use std::io;
 
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
+use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, SearchPickerState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
-use crate::editor::{CursorMove, Position};
+use crate::editor::{CursorMove, CursorShape, Position};
 use crate::ui;
 use crate::vim::{FindState, PendingFind, PendingMacro, PendingMark, TextObject, TextObjectScope, VimMode as VimModeNew};
 use crate::vim::command::{parse_command, Command};
+
+fn update_cursor_style(app: &mut App) {
+    let terminal_style = match app.vim_mode {
+        VimMode::Insert => SetCursorStyle::SteadyBar,
+        VimMode::Replace => SetCursorStyle::SteadyUnderScore,
+        _ => SetCursorStyle::SteadyBlock,
+    };
+    let _ = crossterm::execute!(std::io::stdout(), terminal_style);
+    let editor_shape = match app.vim_mode {
+        VimMode::Insert => CursorShape::Bar,
+        VimMode::Replace => CursorShape::Underline,
+        _ => CursorShape::Block,
+    };
+    app.editor.set_cursor_shape(editor_shape);
+}
 
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     let mut needs_render = true;
@@ -16,11 +32,19 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
     loop {
         let pending_before = app.pending_images.len();
         let highlighter_was_loading = app.highlighter_loading;
+        let indexing_was_in_progress = app.indexing_in_progress;
         app.poll_pending_images();
         app.poll_highlighter();
+        app.poll_content_search();
+        app.poll_index_build();
+
+        if app.poll_highlight_worker() {
+            needs_render = true;
+        }
 
         if app.pending_images.len() < pending_before
             || (highlighter_was_loading && !app.highlighter_loading)
+            || (indexing_was_in_progress && !app.indexing_in_progress)
         {
             needs_render = true;
         }
@@ -37,10 +61,16 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut 
 
         let has_background_work = !app.pending_images.is_empty()
             || app.highlighter_loading
-            || app.mouse_button_held;
+            || app.mouse_button_held
+            || app.is_content_search_in_progress()
+            || app.indexing_in_progress
+            || app.has_highlight_work();
 
         if has_background_work {
-            let timeout = if app.mouse_button_held {
+            // Use very short timeout for highlight work to be reactive
+            let timeout = if app.has_highlight_work() {
+                std::time::Duration::from_millis(1)
+            } else if app.mouse_button_held {
                 std::time::Duration::from_millis(33)
             } else {
                 std::time::Duration::from_millis(100)
@@ -137,6 +167,44 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
         }
     }
 
+    // Handle search picker mouse events
+    if !matches!(app.search_picker, SearchPickerState::Closed) {
+        if app.is_inside_search_picker(mouse_x, mouse_y) {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    app.search_picker_scroll_up();
+                    return;
+                }
+                MouseEventKind::ScrollDown => {
+                    app.search_picker_scroll_down();
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    match app.search_picker_click(mouse_x, mouse_y) {
+                        2 => {
+                            // Double-click: select and confirm
+                            app.select_search_picker_result();
+                        }
+                        1 => {
+                            // Single click: just select
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    return;
+                }
+                _ => {}
+            }
+        } else if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            // Click outside closes the picker
+            app.close_search_picker();
+            return;
+        }
+        return;
+    }
+
     if app.dialog == DialogState::GraphView {
         handle_graph_view_mouse(app, mouse);
         return;
@@ -230,6 +298,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }).map(|(idx, _)| *idx);
 
                     if let Some(idx) = clicked_item {
+                        if app.is_content_item_visible(idx) {
+                            app.content_cursor = idx;
+                            app.selected_link_index = 0;
+                        }
+
                         if app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x) {
                             app.toggle_task_at(idx);
                         }
@@ -321,6 +394,7 @@ fn handle_paste_event(app: &mut App, text: String) {
     if app.vim_mode == VimMode::Normal || app.vim_mode == VimMode::Visual {
         app.editor.cancel_selection();
         app.vim_mode = VimMode::Insert;
+        update_cursor_style(app);
     }
 
     // Try to get html from clipboard and convert to Markdown
@@ -368,6 +442,7 @@ fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 if app.vim_mode == VimMode::Visual {
                     app.editor.cancel_selection();
                     app.vim_mode = VimMode::Normal;
+                    update_cursor_style(app);
                 }
                 move_editor_cursor_to(app, row, col);
 
@@ -400,6 +475,7 @@ fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 // Start Visual mode on first drag if in Normal mode
                 if app.vim_mode == VimMode::Normal {
                     app.vim_mode = VimMode::Visual;
+                    update_cursor_style(app);
                     app.editor.start_selection();
                     app.update_editor_block();
                 }
@@ -425,30 +501,19 @@ fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             if app.editor_scroll_top > 0 {
                 app.editor_scroll_top = app.editor_scroll_top.saturating_sub(3);
                 app.editor.set_scroll_offset(app.editor_scroll_top);
-
-                let (cursor_row, cursor_col) = app.editor.cursor();
-                let line_count = app.editor.line_count();
-                let max_row = line_count.saturating_sub(1);
-                let viewport_bottom = (app.editor_scroll_top + app.editor_view_height.saturating_sub(1)).min(max_row);
-                if cursor_row > viewport_bottom {
-                    move_editor_cursor_to(app, viewport_bottom, cursor_col);
-                }
             }
+            constrain_cursor_to_viewport(app);
         }
 
         MouseEventKind::ScrollDown => {
             let line_count = app.editor.line_count();
-            let max_scroll = line_count.saturating_sub(app.editor_view_height);
+            let max_scroll = line_count.saturating_sub(1);
+
             if app.editor_scroll_top < max_scroll {
                 app.editor_scroll_top = (app.editor_scroll_top + 3).min(max_scroll);
                 app.editor.set_scroll_offset(app.editor_scroll_top);
-
-                let (cursor_row, cursor_col) = app.editor.cursor();
-                let target_row = app.editor_scroll_top.min(line_count.saturating_sub(1));
-                if cursor_row < app.editor_scroll_top {
-                    move_editor_cursor_to(app, target_row, cursor_col);
-                }
             }
+            constrain_cursor_to_viewport(app);
         }
 
         _ => {}
@@ -496,24 +561,48 @@ fn perform_auto_scroll(app: &mut App, direction: i8) {
 
 /// Move editor cursor to specific row/col position
 fn move_editor_cursor_to(app: &mut App, target_row: usize, target_col: usize) {
-    let (current_row, _) = app.editor.cursor();
+    app.editor.set_cursor_no_scroll(target_row, target_col);
+}
 
-    // Move to target row
-    if target_row < current_row {
-        for _ in 0..(current_row - target_row) {
-            app.editor.move_cursor(CursorMove::Up);
-        }
-    } else if target_row > current_row {
-        for _ in 0..(target_row - current_row) {
-            app.editor.move_cursor(CursorMove::Down);
-        }
+fn constrain_cursor_to_viewport(app: &mut App) {
+    let view_height = app.editor_view_height;
+    if view_height == 0 {
+        return;
     }
 
-    // Move to start of line, then to target column
-    app.editor.move_cursor(CursorMove::Head);
-    for _ in 0..target_col {
-        app.editor.move_cursor(CursorMove::Forward);
-    }
+    let (cursor_row, cursor_col) = app.editor.cursor();
+    let line_count = app.editor.line_count();
+    let max_row = line_count.saturating_sub(1);
+    let viewport_top = app.editor_scroll_top;
+    let viewport_bottom = (app.editor_scroll_top + view_height.saturating_sub(2)).min(max_row);
+
+    let clamped_row = if cursor_row < viewport_top {
+        viewport_top
+    } else if cursor_row > viewport_bottom {
+        viewport_bottom
+    } else {
+        cursor_row
+    };
+
+    let scrolloff = app.config.editor.scrolloff as usize;
+    let effective_scrolloff = scrolloff.min(view_height / 2);
+
+    let final_row = if effective_scrolloff > 0 && clamped_row == cursor_row {
+        let scrolloff_top = viewport_top + effective_scrolloff;
+        let scrolloff_bottom = viewport_bottom.saturating_sub(effective_scrolloff);
+
+        if cursor_row < scrolloff_top {
+            scrolloff_top.min(max_row).min(viewport_bottom)
+        } else if cursor_row > scrolloff_bottom {
+            scrolloff_bottom.max(viewport_top)
+        } else {
+            cursor_row
+        }
+    } else {
+        clamped_row
+    };
+
+    app.editor.set_cursor_no_scroll(final_row, cursor_col);
 }
 
 // ==================== Context Menu Helpers ====================
@@ -557,10 +646,12 @@ fn execute_context_menu_action(app: &mut App, action: ContextMenuItem) {
             app.editor.copy();
             app.editor.cancel_selection();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
         }
         ContextMenuItem::Cut => {
             app.editor.cut();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
         }
         ContextMenuItem::Paste => {
             app.editor.paste();
@@ -570,6 +661,7 @@ fn execute_context_menu_action(app: &mut App, action: ContextMenuItem) {
             app.editor.start_selection();
             app.editor.move_cursor(CursorMove::Bottom);
             app.vim_mode = VimMode::Visual;
+            update_cursor_style(app);
         }
     }
     app.update_editor_block();
@@ -640,6 +732,12 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
     // Handle welcome dialog
     if app.show_welcome {
         handle_welcome_dialog(app, key);
+        return Ok(false);
+    }
+
+    // Handle search picker input (high priority)
+    if !matches!(app.search_picker, SearchPickerState::Closed) {
+        handle_search_picker_input(app, key);
         return Ok(false);
     }
 
@@ -810,11 +908,13 @@ fn handle_unsaved_changes_dialog(app: &mut App, key: crossterm::event::KeyEvent)
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.dialog = DialogState::None;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             app.cancel_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.dialog = DialogState::None;
         }
         KeyCode::Esc => {
@@ -1698,6 +1798,45 @@ fn handle_welcome_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+fn handle_search_picker_input(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.close_search_picker();
+        }
+        KeyCode::Enter => {
+            app.select_search_picker_result();
+        }
+        KeyCode::Left | KeyCode::Right => {
+            app.toggle_search_picker_mode();
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_next();
+        }
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+            app.search_picker_select_prev();
+        }
+        KeyCode::Backspace => {
+            app.search_picker_pop_char();
+        }
+        KeyCode::Char(c) => {
+            app.search_picker_push_char(c);
+        }
+        _ => {}
+    }
+}
+
 fn handle_search_input(app: &mut App, key: crossterm::event::KeyEvent) {
     let is_nav_down = key.code == KeyCode::Down
         || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL)
@@ -1854,8 +1993,8 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 
     match key.code {
         KeyCode::Char('q') => return true,
-        KeyCode::Tab if !app.zen_mode => app.toggle_focus(false),
-        KeyCode::BackTab if !app.zen_mode => app.toggle_focus(true),
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if !app.zen_mode => app.toggle_focus(false),
+        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left if !app.zen_mode => app.toggle_focus(true),
         KeyCode::Char('e') => {
             app.push_navigation_history(app.selected_note);
             app.enter_edit_mode();
@@ -1894,6 +2033,18 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
+        KeyCode::Char('x') if !app.zen_mode && key.modifiers.is_empty() => {
+            if app.focus == Focus::Sidebar {
+                app.cut_selected_item();
+            }
+        }
+        KeyCode::Char('p') if !app.zen_mode && key.modifiers.is_empty() => {
+            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
+                if let Err(e) = app.paste_cut_item() {
+                    app.status_message = Some(format!("Move failed: {}", e));
+                }
+            }
+        }
         KeyCode::Char('r') if !app.zen_mode => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
@@ -1923,6 +2074,9 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.reload_on_focus();
                 app.needs_full_clear = true;
             }
+        }
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.open_search_picker();
         }
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
@@ -1981,8 +2135,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('/') => {
             if app.focus == Focus::Sidebar {
-                app.search_active = true;
-                app.search_query.clear();
+                app.activate_sidebar_search();
             }
         }
         KeyCode::Char('s') => {
@@ -2075,6 +2228,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_zen_mode();
         }
+        KeyCode::Char('m') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == Focus::Content {
+                app.toggle_frontmatter_hidden();
+            }
+        }
         KeyCode::Char('z') => {
             app.pending_z = true;
         }
@@ -2112,6 +2270,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
+        KeyCode::Esc => {
+            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
+                app.clear_cut_buffer();
+            }
+        }
         _ => {}
     }
     false
@@ -2119,6 +2282,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     if handle_wiki_autocomplete(app, key) {
+        app.request_highlight_update();
         return;
     }
 
@@ -2175,6 +2339,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
@@ -2182,16 +2347,19 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     // Check the new vim state mode for command mode
     if app.vim.mode.is_command() {
         handle_vim_command_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
     if app.vim.mode.is_search() {
         handle_vim_search_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
     if matches!(app.vim.mode, VimModeNew::SearchLocked { .. }) {
         handle_vim_search_locked_mode(app, key);
+        app.request_highlight_update();
         app.update_editor_block();
         return;
     }
@@ -2204,6 +2372,7 @@ fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             handle_vim_visual_mode(app, key)
         }
     }
+    app.request_highlight_update();
     app.update_editor_block();
 }
 
@@ -2363,6 +2532,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                         'c' => {
                             app.editor.cut();
                             app.vim_mode = VimMode::Insert;
+                            update_cursor_style(app);
                         }
                         'y' => {
                             app.editor.copy();
@@ -2418,6 +2588,12 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 
     match key.code {
+        // Global file picker blocked in Edit mode - exit edit mode first
+        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+            app.vim.status_message = Some("Exit edit mode (Esc) to use search".to_string());
+            return;
+        }
+
         // Count accumulation
         KeyCode::Char(c @ '1'..='9') => {
             let digit = c.to_digit(10).unwrap() as usize;
@@ -2448,24 +2624,28 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('a') => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.move_cursor(CursorMove::Forward);
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('A') => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.move_cursor(CursorMove::End);
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('I') => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.move_cursor(CursorMove::FirstNonBlank);
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('o') => {
             app.vim.reset_pending();
@@ -2473,19 +2653,20 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.move_cursor(CursorMove::End);
             app.editor.insert_newline();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('O') => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
-            app.editor.move_cursor(CursorMove::Head);
-            app.editor.insert_newline();
-            app.editor.move_cursor(CursorMove::Up);
+            app.editor.open_line_above();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
         }
         KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
             // Visual block mode (Ctrl-V)
             app.vim.reset_pending();
             app.vim_mode = VimMode::VisualBlock;
+            update_cursor_style(app);
             app.editor.cancel_selection();
             let (row, col) = app.editor.cursor();
             let anchor = Position { row, col };
@@ -2495,12 +2676,14 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('v') => {
             app.vim.reset_pending();
             app.vim_mode = VimMode::Visual;
+            update_cursor_style(app);
             app.editor.cancel_selection();
             app.editor.start_selection();
         }
         KeyCode::Char('V') => {
             app.vim.reset_pending();
             app.vim_mode = VimMode::VisualLine;
+            update_cursor_style(app);
             let (row, _) = app.editor.cursor();
             app.visual_line_anchor = Some(row);
             app.visual_line_current = Some(row);
@@ -2510,6 +2693,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             // Replace mode - overwrite characters instead of inserting
             app.vim.reset_pending();
             app.vim_mode = VimMode::Replace;
+            update_cursor_style(app);
             app.editor.cancel_selection();
         }
         KeyCode::Char(':') => {
@@ -2601,6 +2785,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                     'c' => {
                         app.editor.cut();
                         app.vim_mode = VimMode::Insert;
+                        update_cursor_style(app);
                     }
                     'y' => {
                         app.editor.copy();
@@ -2716,6 +2901,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.editor.move_cursor(CursorMove::End);
                 app.editor.cut();
                 app.vim_mode = VimMode::Insert;
+                update_cursor_style(app);
                 app.vim.reset_pending();
             } else {
                 app.pending_operator = Some('c');
@@ -2800,6 +2986,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('s') if key.modifiers.is_empty() => {
             app.editor.delete_char();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
             app.vim.reset_pending();
         }
         KeyCode::Char('S') => {
@@ -2808,6 +2995,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.move_cursor(CursorMove::End);
             app.editor.cut();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
             app.vim.reset_pending();
         }
         KeyCode::Char('D') => {
@@ -2821,6 +3009,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.move_cursor(CursorMove::End);
             app.editor.cut();
             app.vim_mode = VimMode::Insert;
+            update_cursor_style(app);
             app.vim.reset_pending();
         }
         KeyCode::Char('Y') => {
@@ -2873,11 +3062,13 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.undo();
+            app.update_editor_highlights();
         }
         KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
             app.vim.reset_pending();
             app.editor.cancel_selection();
             app.editor.redo();
+            app.update_editor_highlights();
         }
 
         // Repeat last change (.)
@@ -2894,6 +3085,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.cancel_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
         }
         KeyCode::Esc => {
             app.vim.reset_pending();
@@ -2905,6 +3097,7 @@ fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             } else {
                 app.cancel_edit();
                 app.vim_mode = VimMode::Normal;
+                update_cursor_style(app);
             }
         }
 
@@ -3101,6 +3294,7 @@ fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
             'c' => {
                 app.editor.cut();
                 app.vim_mode = VimMode::Insert;
+                update_cursor_style(app);
                 // Note: Change operations need insert text to be recorded on exit from insert mode
             }
             'y' => { app.editor.copy(); app.editor.cancel_selection(); }
@@ -3149,6 +3343,7 @@ fn execute_find(app: &mut App, find: FindState) {
                     'c' => {
                         app.editor.cut();
                         app.vim_mode = VimMode::Insert;
+                        update_cursor_style(app);
                     }
                     'y' => {
                         app.editor.copy();
@@ -3180,7 +3375,7 @@ fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: TextObject) {
             app.editor.set_cursor(end.row, end.col);
             match op {
                 'd' => { app.editor.cut(); }
-                'c' => { app.editor.cut(); app.vim_mode = VimMode::Insert; }
+                'c' => { app.editor.cut(); app.vim_mode = VimMode::Insert; update_cursor_style(app); }
                 'y' => { app.editor.copy(); app.editor.cancel_selection(); app.editor.set_cursor(start.row, start.col); }
                 _ => { app.editor.cancel_selection(); }
             }
@@ -3246,6 +3441,7 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 apply_block_insert(app, state);
             }
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
@@ -3255,6 +3451,7 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             }
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
@@ -3292,9 +3489,11 @@ fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         _ => {
             app.editor.input(key);
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
-                app.update_editor_highlights();
+                app.update_editor_highlights_incremental();
 
-                if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                let should_detect = matches!(key.code, KeyCode::Char(_))
+                    || (matches!(key.code, KeyCode::Backspace) && matches!(app.wiki_autocomplete, WikiAutocompleteState::Open { .. }));
+                if should_detect {
                     let (row, col) = app.editor.cursor();
                     if !app.is_cursor_in_code(row, col) {
                         if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
@@ -3342,12 +3541,14 @@ fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
         KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
         }
@@ -3424,6 +3625,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.clear_visual_line_selection();
             app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
@@ -3554,6 +3756,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.clear_visual_line_selection();
             app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
@@ -3572,6 +3775,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.clear_visual_line_selection();
             app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
@@ -3584,6 +3788,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.clear_visual_block_selection();
             app.save_edit();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
@@ -3596,6 +3801,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             app.editor.clear_visual_line_selection();
             app.editor.clear_visual_block_selection();
             app.vim_mode = VimMode::Normal;
+            update_cursor_style(app);
             app.vim.mode = VimModeNew::Normal;
             app.vim.reset_pending();
             app.visual_line_anchor = None;
@@ -3625,6 +3831,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.visual_block_anchor = None;
                 app.editor.set_cursor(start_row, insert_col);
                 app.vim_mode = VimMode::Insert;
+                update_cursor_style(app);
                 app.vim.mode = VimModeNew::Insert;
             }
         }
@@ -3651,6 +3858,7 @@ fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.visual_block_anchor = None;
                 app.editor.set_cursor(start_row, insert_col);
                 app.vim_mode = VimMode::Insert;
+                update_cursor_style(app);
                 app.vim.mode = VimModeNew::Insert;
             }
         }

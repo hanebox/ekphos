@@ -9,9 +9,6 @@ use ratatui::{
 use crate::app::{App, BlockInsertMode, VimMode};
 
 pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
-    // Store editor area for mouse coordinate translation
-    app.editor_area = area;
-
     const ZEN_MAX_WIDTH: u16 = 95;
 
     let (editor_area, inner_width, inner_height) = if app.zen_mode {
@@ -44,11 +41,60 @@ pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
         (area, inner_width, inner_height)
     };
 
+    app.editor_area = editor_area;
+
     // Update editor view dimensions and scroll
     app.editor.set_view_size(inner_width, inner_height);
     app.update_editor_scroll(inner_height);
 
     f.render_widget(&app.editor, editor_area);
+
+    // Set terminal cursor position for Insert mode (bar cursor)
+    if app.editor.uses_native_cursor() {
+        let (cursor_row, _cursor_col) = app.editor.cursor();
+        let scroll_top = app.editor_scroll_top;
+        let y_offset: u16 = if app.zen_mode { 0 } else { 1 }; // border offset
+        let x_offset: u16 = if app.zen_mode { 0 } else { 1 }; // border offset
+
+        let content_left_offset = app.editor.content_left_offset();
+
+        if cursor_row >= scroll_top {
+            if app.editor.line_wrap_enabled() {
+                let (wrap_row_offset, wrap_col) = app.editor.cursor_wrapped_position();
+                let mut visual_row: usize = 0;
+                for row in scroll_top..cursor_row {
+                    visual_row += app.editor.line_wrapped_height(row);
+                    if visual_row >= inner_height {
+                        break; 
+                    }
+                }
+                visual_row += wrap_row_offset;
+
+                if visual_row < inner_height {
+                    let screen_y = editor_area.y + y_offset + visual_row as u16;
+                    let screen_x = editor_area.x + x_offset + content_left_offset + wrap_col as u16;
+                    let max_x = editor_area.x + editor_area.width.saturating_sub(if app.zen_mode { 0 } else { 1 });
+                    if screen_x < max_x {
+                        f.set_cursor_position((screen_x, screen_y));
+                    }
+                }
+            } else {
+                if cursor_row < scroll_top + inner_height {
+                    let screen_y = editor_area.y + y_offset + (cursor_row - scroll_top) as u16;
+
+                    let display_col = app.editor.cursor_display_col();
+                    let h_scroll_display = app.editor.h_scroll_display_offset();
+                    let adjusted_col = display_col.saturating_sub(h_scroll_display);
+                    let screen_x = editor_area.x + x_offset + content_left_offset + adjusted_col as u16;
+
+                    let max_x = editor_area.x + editor_area.width.saturating_sub(if app.zen_mode { 0 } else { 1 });
+                    if screen_x < max_x {
+                        f.set_cursor_position((screen_x, screen_y));
+                    }
+                }
+            }
+        }
+    }
 
     // Only show overflow indicators when line wrap is disabled
     if !app.editor.line_wrap_enabled() {

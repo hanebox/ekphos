@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use image::DynamicImage;
 use ratatui::{
@@ -14,7 +16,9 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 
 use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
+use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker};
 use crate::config::{Config, Theme};
+use crate::search::{self, SearchIndex};
 use crate::vim::VimState;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,169 +36,7 @@ pub struct BlockInsertState {
     pub start_col: usize,
 }
 
-const GETTING_STARTED_CONTENT: &str = r#"# Getting Started
-
-A lightweight, fast, terminal-based markdown research tool built with Rust.
-
-## Layout
-
-Ekphos has three panels:
-
-- **Sidebar** (left): Collapsible folder tree with notes
-- **Content** (center): Note content with markdown rendering
-- **Outline** (right): Auto-generated headings for quick navigation
-
-Use `Tab` or `Shift+Tab` to switch between panels.
-
-**Collapsible Panels:**
-
-- `Ctrl+b` to collapse/expand the sidebar
-- `Ctrl+o` to collapse/expand the outline
-
-## Quick Start
-
-- `j/k`: Navigate up/down
-- `e`: Enter edit mode
-- `n`: Create new note
-- `/`: Search notes
-- `?`: Show help dialog
-- `Ctrl+g`: Open graph view
-- `Ctrl+z`: Toggle zen mode
-
-Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
-
-## Interactive Demo
-
-Try these interactive elements! Press `Space` or click to interact:
-
-### Task Lists
-
-- [ ] Try pressing Space on this checkbox
-- [ ] Or click on a task to toggle it
-- [x] This one is already completed
-
-### Wikilinks
-
-Navigate between notes using wikilinks:
-
-- [[02-Demo Note]] - Press `Space` or click to visit
-- Use `]` and `[` to jump between links on a line
-- In edit mode, type `[[` for autocomplete suggestions
-- [[Non-existent Note]] - Opens a dialog to create it!
-
-### Collapsible Sections
-
-<details>
-<summary>Click or press Space to expand this section</summary>
-
-This content is hidden by default! Great for:
-- FAQs and documentation
-- Optional information
-- Keeping notes organized
-</details>
-
-<details>
-<summary>Another collapsible section</summary>
-
-You can have multiple collapsible sections in one note.
-Each maintains its own open/closed state.
-</details>
-
-## Graph View
-
-Press `Ctrl+g` to open the interactive graph view and visualize connections between your notes.
-
-- See how your notes link together
-- Click on nodes to navigate
-- Drag to pan, scroll to zoom
-
-## Markdown Features
-
-### Text Formatting
-
-- **Bold text** with double asterisks
-- *Italic text* with single asterisks
-- `Inline code` with backticks
-- ~~Strikethrough~~ in task items
-
-### Code Blocks
-
-```rust
-fn main() {
-    println!("Hello, Ekphos!");
-}
-```
-
-### Blockquotes
-
-> Blockquotes are rendered with a colored border.
-> Great for highlighting important information.
-
-### Images
-
-Embed images with `![alt](path/to/image.png)`. Press `Enter`, `o`, or click to open in system viewer.
-
-![Ekphos Screenshot](https://raw.githubusercontent.com/hanebox/ekphos/release/examples/ekphos-screenshot.png)
-
-Inline preview works in terminals with image support (iTerm2, Kitty, WezTerm, Ghostty, Sixel).
-
----
-
-Read the docs at [docs.ekphos.xyz](https://docs.ekphos.xyz) for full documentation, vim keybindings, themes, and configuration.
-
-Press `q` to quit. Happy note-taking!"#;
-
-const DEMO_NOTE_CONTENT: &str = r#"# Demo Note
-
-This is a demo note to showcase wikilinks and interactive markdown features!
-
-## Wikilinks
-
-Wikilinks let you connect your notes together, creating a personal knowledge base.
-
-- [[Getting Started]] - Link back to the main documentation
-- [[Getting Started#Graph View]] - Link to a specific heading
-- [[Getting Started|Main Guide]] - Custom display text with `|`
-
-### Creating Wikilinks
-
-1. Press `e` to enter edit mode
-2. Type `[[` to see autocomplete suggestions
-3. Add `#` to link to specific headings
-4. Add `|` to customize the display text
-5. Press `Ctrl+s` or `:w` to save
-
-### Navigation
-
-- Press `Space` or click on any wikilink to navigate
-- Use `]` to jump to next link, `[` for previous
-- Links to non-existent notes will prompt to create them
-
-## Interactive Elements
-
-### Tasks with Links
-
-- [ ] Check out the [[Getting Started]] guide
-- [ ] Try pressing `Space` on this checkbox
-- [x] Complete the tutorial
-
-### Collapsible Content
-
-<details>
-<summary>Wikilink Ideas</summary>
-
-Here are some ways to use wikilinks:
-- Create a **daily notes** system with links between days
-- Build a **zettelkasten** for research and learning
-- Organize **project notes** with interconnected topics
-- Make a **personal wiki** for anything you want to remember
-</details>
-
-## Graph View
-
-Press `Ctrl+g` to see how this note connects to [[Getting Started]] in the graph visualization!
-
-Happy linking!"#;
+use super::welcome_notes::{GETTING_STARTED_CONTENT, DEMO_NOTE_CONTENT};
 
 #[derive(Debug, Clone)]
 pub struct Note {
@@ -203,6 +45,8 @@ pub struct Note {
     pub file_path: Option<PathBuf>,
     pub modified_time: Option<std::time::SystemTime>,
     pub created_time: Option<std::time::SystemTime>,
+    pub frontmatter: Option<super::frontmatter::Frontmatter>,
+    pub content_start_line: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -349,6 +193,9 @@ pub enum ContentItem {
     TaskItem { text: String, checked: bool, line_index: usize },
     TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
     Details { summary: String, content_lines: Vec<String>, id: usize },
+    FrontmatterLine { key: String, value: String },
+    FrontmatterDelimiter,
+    TagBadges { tags: Vec<String>, date: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -397,6 +244,7 @@ impl ContextMenuItem {
         }
     }
 }
+
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum WikiAutocompleteMode {
@@ -482,6 +330,53 @@ impl BufferSearchState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SearchPickerMode {
+    #[default]
+    Files,
+    Content,
+}
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SearchPickerState {
+    #[default]
+    Closed,
+    Open {
+        mode: SearchPickerMode,
+        query: String,
+        file_results: Vec<FilePickerResult>,
+        content_results: Vec<ContentSearchResult>,
+        selected_index: usize,
+        scroll_offset: usize,
+        search_in_progress: bool,
+        search_id: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilePickerResult {
+    pub display_name: String,
+    pub folder_hint: Option<String>,
+    pub note_index: usize,
+    pub score: i32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContentSearchResult {
+    pub display_name: String,
+    pub matched_line: String,
+    pub line_number: usize,
+    pub note_index: usize,
+    pub folder_hint: Option<String>,
+    pub score: i32,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
+pub struct ContentSearchResponse {
+    pub search_id: u64,
+    pub results: Vec<ContentSearchResult>,
+}
+
 /// A suggestion item for wiki link autocomplete
 #[derive(Debug, Clone, PartialEq)]
 pub struct WikiSuggestion {
@@ -565,6 +460,12 @@ pub enum SidebarItemKind {
     Note { note_index: usize },
 }
 
+#[derive(Debug, Clone)]
+pub enum CutItem {
+    Note { source_path: PathBuf, title: String },
+    Folder { source_path: PathBuf, name: String },
+}
+
 pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
@@ -611,6 +512,8 @@ pub struct App {
     pub target_folder: Option<PathBuf>,
     pub dialog_error: Option<String>,
     pub search_matched_notes: Vec<usize>,
+    pub pre_search_folder_states: Option<HashMap<PathBuf, bool>>,
+    pub pre_search_sidebar_index: Option<usize>,
     pub content_area: Rect,
     pub sidebar_area: Rect,
     pub outline_area: Rect,
@@ -646,8 +549,37 @@ pub struct App {
     // Sidebar sorting
     pub sort_mode: SortMode,
     // Navigation history (like browser back/forward)
-    pub navigation_history: Vec<usize>,  
-    pub navigation_index: usize,         
+    pub navigation_history: Vec<NavigationEntry>,
+    pub navigation_index: usize,
+    // Frontmatter visibility
+    pub frontmatter_hidden: bool,
+    // Global search picker (file/content search)
+    pub search_picker: SearchPickerState,
+    pub search_picker_area: ratatui::layout::Rect,
+    pub search_picker_results_area: ratatui::layout::Rect,
+    pub search_picker_last_click: Option<(std::time::Instant, usize)>, // (time, selected_index)
+    pub content_search_sender: Sender<ContentSearchResponse>,
+    pub content_search_receiver: Receiver<ContentSearchResponse>,
+    pub next_search_id: u64,
+    // Search index for fast content search
+    pub search_index: SearchIndex,
+    /// Channel to receive completed index from background thread
+    pub index_receiver: Receiver<SearchIndex>,
+    pub indexing_in_progress: bool,
+    /// Progress counters (updated by background thread, read by main thread)
+    pub index_progress: Arc<AtomicUsize>,
+    pub index_total: Arc<AtomicUsize>,
+    /// Timestamp when indexing started (for timeout detection)
+    pub index_started_at: Option<std::time::Instant>,
+    /// Cut buffer for file move/relocation operations
+    pub cut_buffer: Option<CutItem>,
+    // Background highlight worker
+    /// Highlight worker for background syntax highlighting
+    pub highlight_worker: Option<HighlightWorker>,
+    /// Current document version for highlight requests (incremented on edits)
+    pub highlight_version: u64,
+    /// Whether there's a pending highlight request waiting for results
+    pub highlight_pending: bool,
 }
 
 #[allow(dead_code)]
@@ -655,6 +587,14 @@ pub struct App {
 pub enum DeleteType {
     Word,
     Line,
+}
+
+/// Navigation history entry storing note index and cursor/scroll position
+#[derive(Debug, Clone)]
+pub struct NavigationEntry {
+    pub note_idx: usize,
+    pub content_cursor: usize,
+    pub content_scroll_offset: usize,
 }
 
 impl App {
@@ -719,9 +659,12 @@ impl App {
         let input_buffer = config.notes_dir.clone();
         let sidebar_collapsed = config.sidebar_collapsed;
         let outline_collapsed = config.outline_collapsed;
+        let frontmatter_hidden = config.frontmatter_hidden;
 
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
+        let (content_search_sender, content_search_receiver) = mpsc::channel();
+        let (_, index_receiver) = mpsc::channel();
 
         let mut app = Self {
             notes: Vec::new(),
@@ -768,6 +711,8 @@ impl App {
             target_folder: None,
             dialog_error: None,
             search_matched_notes: Vec::new(),
+            pre_search_folder_states: None,
+            pre_search_sidebar_index: None,
             content_area: Rect::default(),
             sidebar_area: Rect::default(),
             outline_area: Rect::default(),
@@ -801,10 +746,29 @@ impl App {
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
+            frontmatter_hidden,
+            search_picker: SearchPickerState::Closed,
+            search_picker_area: ratatui::layout::Rect::default(),
+            search_picker_results_area: ratatui::layout::Rect::default(),
+            search_picker_last_click: None,
+            content_search_sender,
+            content_search_receiver,
+            next_search_id: 0,
+            search_index: SearchIndex::default(),
+            index_receiver,
+            indexing_in_progress: false,
+            index_progress: Arc::new(AtomicUsize::new(0)),
+            index_total: Arc::new(AtomicUsize::new(0)),
+            index_started_at: None,
+            cut_buffer: None,
+            highlight_worker: Some(HighlightWorker::new()),
+            highlight_version: 0,
+            highlight_pending: false,
         };
 
         if !is_first_launch && notes_dir_exists {
             app.load_notes_from_dir();
+            app.start_index_build();
         }
 
         app
@@ -877,9 +841,12 @@ impl App {
         let input_buffer = config.notes_dir.clone();
         let sidebar_collapsed = config.sidebar_collapsed;
         let outline_collapsed = config.outline_collapsed;
+        let frontmatter_hidden = config.frontmatter_hidden;
 
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
+        let (content_search_sender, content_search_receiver) = mpsc::channel();
+        let (_, index_receiver) = mpsc::channel();
 
         let mut app = Self {
             notes: Vec::new(),
@@ -926,6 +893,8 @@ impl App {
             target_folder: None,
             dialog_error: None,
             search_matched_notes: Vec::new(),
+            pre_search_folder_states: None,
+            pre_search_sidebar_index: None,
             content_area: Rect::default(),
             sidebar_area: Rect::default(),
             outline_area: Rect::default(),
@@ -958,10 +927,29 @@ impl App {
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
+            frontmatter_hidden,
+            search_picker: SearchPickerState::Closed,
+            search_picker_area: ratatui::layout::Rect::default(),
+            search_picker_results_area: ratatui::layout::Rect::default(),
+            search_picker_last_click: None,
+            content_search_sender,
+            content_search_receiver,
+            next_search_id: 0,
+            search_index: SearchIndex::default(),
+            index_receiver,
+            indexing_in_progress: false,
+            index_progress: Arc::new(AtomicUsize::new(0)),
+            index_total: Arc::new(AtomicUsize::new(0)),
+            index_started_at: None,
+            cut_buffer: None,
+            highlight_worker: Some(HighlightWorker::new()),
+            highlight_version: 0,
+            highlight_pending: false,
         };
 
         if notes_dir_exists {
             app.load_notes_from_dir();
+            app.start_index_build();
             if let Some(ref target_path) = target_file {
                 app.select_note_by_path(target_path);
             }
@@ -1162,6 +1150,9 @@ impl App {
                             .map(|m| (m.modified().ok(), m.created().ok()))
                             .unwrap_or((None, None));
 
+                        // Parse frontmatter
+                        let (frontmatter, content_start_line) = super::frontmatter::Frontmatter::parse(&content);
+
                         let note_index = self.notes.len();
                         self.notes.push(Note {
                             title,
@@ -1169,6 +1160,8 @@ impl App {
                             file_path: Some(path),
                             modified_time,
                             created_time,
+                            frontmatter,
+                            content_start_line,
                         });
 
                         items.push(FileTreeItem::Note {
@@ -1622,6 +1615,294 @@ impl App {
         }
     }
 
+    // ==================== Cut/Paste/Move Operations ====================
+    pub fn cut_selected_item(&mut self) {
+        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+            match &item.kind {
+                SidebarItemKind::Note { note_index } => {
+                    if let Some(note) = self.notes.get(*note_index) {
+                        if let Some(ref path) = note.file_path {
+                            self.cut_buffer = Some(CutItem::Note {
+                                source_path: path.clone(),
+                                title: note.title.clone(),
+                            });
+                            self.status_message = Some(format!("Cut: {}", note.title));
+                        }
+                    }
+                }
+                SidebarItemKind::Folder { path, .. } => {
+                    let name = item.display_name.clone();
+                    self.cut_buffer = Some(CutItem::Folder {
+                        source_path: path.clone(),
+                        name: name.clone(),
+                    });
+                    self.status_message = Some(format!("Cut: {}/", name));
+                }
+            }
+        }
+    }
+    pub fn clear_cut_buffer(&mut self) {
+        if self.cut_buffer.is_some() {
+            self.cut_buffer = None;
+            self.status_message = Some("Cut cancelled".to_string());
+        }
+    }
+    pub fn paste_cut_item(&mut self) -> Result<(), String> {
+        let cut_item = match self.cut_buffer.take() {
+            Some(item) => item,
+            None => return Err("Nothing to paste".to_string()),
+        };
+        let dest_folder = self.get_paste_destination_folder();
+
+        match cut_item {
+            CutItem::Note { source_path, title } => {
+                self.move_note(&source_path, &dest_folder, &title)
+            }
+            CutItem::Folder { source_path, name } => {
+                self.move_folder(&source_path, &dest_folder, &name)
+            }
+        }
+    }
+    fn get_paste_destination_folder(&self) -> PathBuf {
+        if let Some(item) = self.sidebar_items.get(self.selected_sidebar_index) {
+            match &item.kind {
+                SidebarItemKind::Folder { path, .. } => {
+                    return path.clone();
+                }
+                SidebarItemKind::Note { note_index } => {
+                    if let Some(note) = self.notes.get(*note_index) {
+                        if let Some(ref file_path) = note.file_path {
+                            if let Some(parent) = file_path.parent() {
+                                return parent.to_path_buf();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.config.notes_path()
+    }
+    fn move_note(&mut self, source: &std::path::Path, dest_folder: &std::path::Path, title: &str) -> Result<(), String> {
+        if !source.exists() {
+            return Err("Source file no longer exists".to_string());
+        }
+        let dest_path = dest_folder.join(format!("{}.md", title));
+        if source == &dest_path {
+            return Err("Already in this location".to_string());
+        }
+        if source.parent() == Some(dest_folder) {
+            return Err("Already in this location".to_string());
+        }
+        if dest_path.exists() {
+            return Err(format!("'{}' already exists in destination", title));
+        }
+        let notes_root = self.config.notes_path();
+        let old_wiki_path = Self::calculate_wiki_path(source, &notes_root);
+        let new_wiki_path = Self::calculate_wiki_path(&dest_path, &notes_root);
+        fs::rename(source, &dest_path)
+            .map_err(|e| format!("Failed to move file: {}", e))?;
+        self.update_wiki_links_after_move(&old_wiki_path, &new_wiki_path, title);
+        self.load_notes_from_dir();
+        self.start_index_build();
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Note { note_index } = &item.kind {
+                if let Some(note) = self.notes.get(*note_index) {
+                    if note.file_path.as_ref() == Some(&dest_path) {
+                        self.selected_sidebar_index = idx;
+                        self.selected_note = *note_index;
+                        break;
+                    }
+                }
+            }
+        }
+        self.update_content_items();
+        self.update_outline();
+        self.status_message = Some(format!("Moved: {}", title));
+
+        Ok(())
+    }
+    fn move_folder(&mut self, source: &std::path::Path, dest_folder: &std::path::Path, name: &str) -> Result<(), String> {
+        if !source.exists() {
+            return Err("Source folder no longer exists".to_string());
+        }
+        let dest_path = dest_folder.join(name);
+        if dest_folder.starts_with(source) {
+            return Err("Cannot move folder into itself".to_string());
+        }
+        if source == &dest_path {
+            return Err("Already in this location".to_string());
+        }
+        if source.parent() == Some(dest_folder) {
+            return Err("Already in this location".to_string());
+        }
+        if dest_path.exists() {
+            return Err(format!("Folder '{}' already exists in destination", name));
+        }
+
+        let notes_root = self.config.notes_path();
+        let mut old_new_paths: Vec<(String, String, String)> = Vec::new(); // (old_wiki, new_wiki, title)
+
+        for note in &self.notes {
+            if let Some(ref file_path) = note.file_path {
+                if file_path.starts_with(source) {
+                    let old_wiki = Self::calculate_wiki_path(file_path, &notes_root);
+                    // Calculate new path by replacing source prefix with dest
+                    let relative = file_path.strip_prefix(source).unwrap_or(file_path.as_path());
+                    let new_file_path = dest_path.join(relative);
+                    let new_wiki = Self::calculate_wiki_path(&new_file_path, &notes_root);
+                    old_new_paths.push((old_wiki, new_wiki, note.title.clone()));
+                }
+            }
+        }
+
+        fs::rename(source, &dest_path)
+            .map_err(|e| format!("Failed to move folder: {}", e))?;
+
+        let keys_to_update: Vec<PathBuf> = self.folder_states.keys()
+            .filter(|k| k.starts_with(source))
+            .cloned()
+            .collect();
+
+        for old_key in keys_to_update {
+            if let Some(expanded) = self.folder_states.remove(&old_key) {
+                let relative = old_key.strip_prefix(source).unwrap_or(&old_key);
+                let new_key = dest_path.join(relative);
+                self.folder_states.insert(new_key, expanded);
+            }
+        }
+
+        for (old_wiki, new_wiki, title) in old_new_paths {
+            self.update_wiki_links_after_move(&old_wiki, &new_wiki, &title);
+        }
+
+        self.load_notes_from_dir();
+        self.start_index_build();
+        for (idx, item) in self.sidebar_items.iter().enumerate() {
+            if let SidebarItemKind::Folder { path, .. } = &item.kind {
+                if path == &dest_path {
+                    self.selected_sidebar_index = idx;
+                    break;
+                }
+            }
+        }
+
+        self.update_content_items();
+        self.update_outline();
+        self.status_message = Some(format!("Moved: {}/", name));
+
+        Ok(())
+    }
+
+    fn update_wiki_links_after_move(&mut self, old_path: &str, new_path: &str, title: &str) {
+        let notes_root = self.config.notes_path();
+        let md_files = Self::collect_markdown_files(&notes_root);
+
+        for file_path in md_files {
+            let content = match fs::read_to_string(&file_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let modified_content = self.replace_wiki_links_in_content(
+                &content,
+                old_path,
+                new_path,
+                title,
+            );
+
+            if modified_content != content {
+                let _ = fs::write(&file_path, modified_content);
+            }
+        }
+    }
+    fn collect_markdown_files(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(Self::collect_markdown_files(&path));
+                } else if path.extension().map(|ext| ext == "md").unwrap_or(false) {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    fn replace_wiki_links_in_content(
+        &self,
+        content: &str,
+        old_path: &str,
+        new_path: &str,
+        old_title: &str,
+    ) -> String {
+        let mut result = String::new();
+        let mut remaining = content;
+
+        while let Some(start) = remaining.find("[[") {
+            result.push_str(&remaining[..start]);
+            remaining = &remaining[start + 2..];
+
+            if let Some(end) = remaining.find("]]") {
+                let link_content = &remaining[..end];
+
+                let (target, suffix) = if let Some(hash_pos) = link_content.find('#') {
+                    (&link_content[..hash_pos], &link_content[hash_pos..])
+                } else if let Some(pipe_pos) = link_content.find('|') {
+                    (&link_content[..pipe_pos], &link_content[pipe_pos..])
+                } else {
+                    (link_content, "")
+                };
+
+                let target_lower = target.to_lowercase();
+                let old_path_lower = old_path.to_lowercase();
+                let old_title_lower = old_title.to_lowercase();
+
+                let should_replace = target_lower == old_path_lower
+                    || target_lower == old_title_lower;
+
+                if should_replace {
+                    let new_target = if new_path.contains('/') {
+                        new_path.to_string()
+                    } else {
+                        old_title.to_string()
+                    };
+                    result.push_str("[[");
+                    result.push_str(&new_target);
+                    result.push_str(suffix);
+                    result.push_str("]]");
+                } else {
+                    // Keep original
+                    result.push_str("[[");
+                    result.push_str(link_content);
+                    result.push_str("]]");
+                }
+
+                remaining = &remaining[end + 2..];
+            } else {
+                result.push_str("[[");
+            }
+        }
+
+        result.push_str(remaining);
+        result
+    }
+
+    fn calculate_wiki_path(file_path: &std::path::Path, notes_root: &std::path::Path) -> String {
+        if let Ok(relative) = file_path.strip_prefix(notes_root) {
+            let path_str = relative.to_string_lossy();
+            if let Some(stripped) = path_str.strip_suffix(".md") {
+                return stripped.to_string();
+            }
+            path_str.to_string()
+        } else {
+            file_path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        }
+    }
+
     pub fn complete_onboarding(&mut self) {
         // 1. Save config
         self.config.notes_dir = self.input_buffer.clone();
@@ -1694,11 +1975,66 @@ impl App {
         self.content_item_source_lines.clear();
         self.details_open_states.clear();
         self.heading_fold_states.clear();
-        let content = self.current_note().map(|n| n.content.clone());
-        if let Some(content) = content {
+
+        // Get note data to extract frontmatter info
+        let note_data = self.current_note().map(|n| {
+            (n.content.clone(), n.frontmatter.clone(), n.content_start_line)
+        });
+
+        if let Some((content, frontmatter, content_start_line)) = note_data {
             let mut in_code_block = false;
             let lines: Vec<&str> = content.lines().collect();
             let mut i = 0;
+
+            // Handle frontmatter display
+            let has_frontmatter = frontmatter.is_some() && content_start_line > 0;
+            if has_frontmatter && !self.frontmatter_hidden {
+                self.content_items.push(ContentItem::FrontmatterDelimiter);
+                self.content_item_source_lines.push(0);
+
+                // Parse and show frontmatter lines as key-value pairs
+                for line_idx in 1..content_start_line.saturating_sub(1) {
+                    if line_idx < lines.len() {
+                        let line = lines[line_idx];
+                        if let Some(colon_pos) = line.find(':') {
+                            let key = line[..colon_pos].trim().to_string();
+                            let value = line[colon_pos + 1..].trim().to_string();
+                            self.content_items.push(ContentItem::FrontmatterLine {
+                                key,
+                                value,
+                            });
+                        } else {
+                            self.content_items.push(ContentItem::FrontmatterLine {
+                                key: String::new(),
+                                value: line.to_string(),
+                            });
+                        }
+                        self.content_item_source_lines.push(line_idx);
+                    }
+                }
+
+                // Closing delimiter
+                if content_start_line > 0 {
+                    let closing_idx = content_start_line.saturating_sub(1);
+                    self.content_items.push(ContentItem::FrontmatterDelimiter);
+                    self.content_item_source_lines.push(closing_idx);
+                }
+
+                i = content_start_line;
+            } else if has_frontmatter {
+                if self.config.show_tags {
+                    if let Some(ref fm) = frontmatter {
+                        if !fm.tags.is_empty() || fm.date.is_some() {
+                            self.content_items.push(ContentItem::TagBadges {
+                                tags: fm.tags.clone(),
+                                date: fm.date.clone(),
+                            });
+                            self.content_item_source_lines.push(0);
+                        }
+                    }
+                }
+                i = content_start_line;
+            }
 
             while i < lines.len() {
                 let line = lines[i];
@@ -2732,17 +3068,40 @@ impl App {
         // Check for inline code on the current line
         if let Some(line) = lines.get(row) {
             let chars: Vec<char> = line.chars().collect();
-            let mut in_inline_code = false;
-            for (i, &ch) in chars.iter().enumerate() {
-                if i >= col {
-                    break;
+
+            let mut i = 0;
+            while i < col {
+                if chars.get(i) == Some(&'`') {
+                    let mut count = 0;
+                    while i < col && chars.get(i) == Some(&'`') {
+                        count += 1;
+                        i += 1;
+                    }
+
+                    let mut found_closing = false;
+                    let mut j = i;
+                    while j < col {
+                        if chars.get(j) == Some(&'`') {
+                            let mut close_count = 0;
+                            while j < chars.len() && chars.get(j) == Some(&'`') {
+                                close_count += 1;
+                                j += 1;
+                            }
+                            if close_count == count {
+                                found_closing = true;
+                                i = j; 
+                                break;
+                            }
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    if !found_closing {
+                        return true;
+                    }
+                } else {
+                    i += 1;
                 }
-                if ch == '`' {
-                    in_inline_code = !in_inline_code;
-                }
-            }
-            if in_inline_code {
-                return true;
             }
         }
 
@@ -2777,7 +3136,11 @@ impl App {
             }
         }
 
-        let start = open_pos? + 2; 
+        let start = open_pos? + 2;
+
+        if self.is_cursor_in_code(row, start) {
+            return None;
+        } 
 
         for j in start..col.saturating_sub(1) {
             if chars.get(j) == Some(&']') && chars.get(j + 1) == Some(&']') {
@@ -3100,21 +3463,30 @@ impl App {
 
     // ==================== Navigation History ====================
 
-    /// push a note to navigation history 
+    /// push a note to navigation history
     /// called when navigating to a new note
     pub fn push_navigation_history(&mut self, note_idx: usize) {
-        if let Some(&current) = self.navigation_history.get(self.navigation_index) {
-            if current == note_idx {
+        if let Some(current) = self.navigation_history.get(self.navigation_index) {
+            if current.note_idx == note_idx {
                 return;
             }
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
+
         if self.navigation_index + 1 < self.navigation_history.len() {
             self.navigation_history.truncate(self.navigation_index + 1);
         }
 
-        self.navigation_history.push(note_idx);
+        self.navigation_history.push(NavigationEntry {
+            note_idx,
+            content_cursor: 0,
+            content_scroll_offset: 0,
+        });
         self.navigation_index = self.navigation_history.len().saturating_sub(1);
-        
+
         // limit history size to prevent memory bloat
         const MAX_HISTORY: usize = 100;
         if self.navigation_history.len() > MAX_HISTORY {
@@ -3128,31 +3500,39 @@ impl App {
         if self.navigation_index == 0 || self.navigation_history.is_empty() {
             return false;
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
 
         self.navigation_index -= 1;
-        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
-            self.go_to_note_without_history(note_idx);
+        if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
+            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
             return true;
         }
         false
     }
 
-    /// navigate to next note in history 
+    /// navigate to next note in history
     pub fn navigate_forward(&mut self) -> bool {
         if self.navigation_index + 1 >= self.navigation_history.len() {
             return false;
         }
+        if let Some(current) = self.navigation_history.get_mut(self.navigation_index) {
+            current.content_cursor = self.content_cursor;
+            current.content_scroll_offset = self.content_scroll_offset;
+        }
 
         self.navigation_index += 1;
-        if let Some(&note_idx) = self.navigation_history.get(self.navigation_index) {
-            self.go_to_note_without_history(note_idx);
+        if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
+            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
             return true;
         }
         false
     }
 
     /// go to a note without pushing to history used by back/forward to prevent infinite loop
-    fn go_to_note_without_history(&mut self, note_idx: usize) {
+    fn go_to_note_without_history(&mut self, note_idx: usize, cursor: Option<usize>, scroll: Option<usize>) {
         if note_idx >= self.notes.len() {
             return;
         }
@@ -3185,11 +3565,12 @@ impl App {
                     self.end_buffer_search();
                     self.selected_sidebar_index = idx;
                     self.selected_note = note_idx;
-                    self.content_cursor = 0;
-                    self.content_scroll_offset = 0;
                     self.selected_link_index = 0;
                     self.update_content_items();
                     self.update_outline();
+                    let max_cursor = self.content_items.len().saturating_sub(1);
+                    self.content_cursor = cursor.unwrap_or(0).min(max_cursor);
+                    self.content_scroll_offset = scroll.unwrap_or(0).min(max_cursor);
                     return;
                 }
             }
@@ -3587,6 +3968,11 @@ impl App {
         }
     }
 
+    pub fn toggle_frontmatter_hidden(&mut self) {
+        self.frontmatter_hidden = !self.frontmatter_hidden;
+        self.update_content_items();
+    }
+
     pub fn update_filtered_indices(&mut self) {
         if self.search_query.is_empty() {
             self.search_matched_notes.clear();
@@ -3655,11 +4041,26 @@ impl App {
         }
     }
 
+    pub fn activate_sidebar_search(&mut self) {
+        self.pre_search_folder_states = Some(self.folder_states.clone());
+        self.pre_search_sidebar_index = Some(self.selected_sidebar_index);
+        self.search_active = true;
+        self.search_query.clear();
+    }
+
     pub fn clear_search(&mut self) {
         self.search_active = false;
         self.search_query.clear();
         self.filtered_indices.clear();
         self.search_matched_notes.clear();
+        if let Some(saved_states) = self.pre_search_folder_states.take() {
+            self.folder_states = saved_states;
+            Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+            self.rebuild_sidebar_items();
+        }
+        if let Some(saved_index) = self.pre_search_sidebar_index.take() {
+            self.selected_sidebar_index = saved_index.min(self.sidebar_items.len().saturating_sub(1));
+        }
     }
 
     pub fn start_buffer_search(&mut self) {
@@ -3903,18 +4304,22 @@ impl App {
     }
 
     pub fn enter_edit_mode(&mut self) {
+        // Drain any old highlight results before starting fresh
+        if let Some(ref worker) = self.highlight_worker {
+            worker.drain_results();
+        }
+        self.highlight_pending = false;
+
         if let Some(note) = self.current_note() {
             let lines: Vec<String> = note.content.lines().map(String::from).collect();
             let line_count = lines.len();
+            let content_start_line = note.content_start_line;
 
             let target_row = self.content_item_source_lines
                 .get(self.content_cursor)
                 .copied()
                 .unwrap_or(0)
                 .min(line_count.saturating_sub(1));
-
-            let preview_scroll_top = self.content_scroll_offset.saturating_sub(1);
-            let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
 
             self.editor = Editor::new(lines);
             self.editor.set_line_wrap(self.config.editor.line_wrap);
@@ -3951,55 +4356,48 @@ impl App {
                 Some(self.theme.editor.bold),
                 Some(self.theme.editor.italic),
             );
-
-            // Update all editor syntax highlighting
-            self.update_editor_highlights();
+            self.editor.set_frontmatter_color(self.theme.content.frontmatter);
 
             self.editor.set_cursor(target_row, 0);
 
-            let editor_scroll = target_row.saturating_sub(cursor_offset_from_top);
+            // Calculate scroll position:
+            // - If frontmatter was hidden and we're near the top, start from line 0
+            //   to show frontmatter in edit mode (unless it would push cursor off screen)
+            // - Otherwise, try to maintain similar viewport position
+            let view_height = self.editor_view_height.max(10);
+            // content_scroll_offset is 1-indexed, so <= 1 means at the top
+            let editor_scroll = if self.frontmatter_hidden && content_start_line > 0 && self.content_scroll_offset <= 1 {
+                // Frontmatter was hidden, user was at/near top of content
+                // Start from line 0 unless cursor would be off screen
+                if target_row < view_height {
+                    0
+                } else {
+                    target_row.saturating_sub(view_height / 2)
+                }
+            } else {
+                // Normal case: try to preserve relative cursor position
+                let preview_scroll_top = self.content_scroll_offset.saturating_sub(1);
+                let cursor_offset_from_top = self.content_cursor.saturating_sub(preview_scroll_top);
+                target_row.saturating_sub(cursor_offset_from_top)
+            };
+
             self.editor.set_scroll_offset(editor_scroll.min(line_count.saturating_sub(1)));
             self.editor_scroll_top = self.editor.scroll_offset();
 
             self.update_editor_block();
             self.mode = Mode::Edit;
             self.focus = Focus::Content;
+
+            self.request_highlight_update();
         }
     }
 
     pub fn update_editor_highlights(&mut self) {
-        self.update_editor_wiki_links();
-        self.editor.update_markdown_highlights();
+        self.request_highlight_update();
     }
 
-    pub fn update_editor_wiki_links(&mut self) {
-        let notes_path = self.config.notes_path();
-        let mut valid_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for note in &self.notes {
-            if let Some(file_path) = &note.file_path {
-                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
-                    let path_str = relative.to_string_lossy();
-                    if let Some(stripped) = path_str.strip_suffix(".md") {
-                        // Add full path (e.g., "folder/note-name")
-                        valid_targets.insert(stripped.to_string());
-                        // Also add just the note title for recursive search support
-                        valid_targets.insert(note.title.clone());
-                        valid_targets.insert(note.title.to_lowercase());
-                    }
-                }
-            }
-        }
-
-        self.editor.update_wiki_links(|target| {
-            if valid_targets.contains(target) {
-                return true;
-            }
-            if !target.contains('/') {
-                return valid_targets.contains(&target.to_lowercase());
-            }
-            false
-        });
+    pub fn update_editor_highlights_incremental(&mut self) {
+        self.request_highlight_update();
     }
 
     pub fn update_editor_scroll(&mut self, view_height: usize) {
@@ -4088,6 +4486,7 @@ impl App {
         self.vim.command_buffer.clear();
         self.vim.mode = crate::vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
+        self.highlight_pending = false;
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
@@ -4096,6 +4495,10 @@ impl App {
 
         if let Some(note) = self.notes.get_mut(self.selected_note) {
             note.content = self.editor.lines().join("\n");
+            // Re-parse frontmatter after content change
+            let (frontmatter, content_start_line) = super::frontmatter::Frontmatter::parse(&note.content);
+            note.frontmatter = frontmatter;
+            note.content_start_line = content_start_line;
             // Save to file
             if let Some(ref path) = note.file_path {
                 let _ = fs::write(path, &note.content);
@@ -4126,6 +4529,7 @@ impl App {
         self.vim.command_buffer.clear();
         self.vim.mode = crate::vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
+        self.highlight_pending = false;
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
@@ -4210,8 +4614,444 @@ impl App {
         });
     }
 
+    // Background Highlight Worker
+
+    pub fn request_highlight_update(&mut self) {
+        self.highlight_version += 1;
+        self.highlight_pending = true;
+
+        if let Some(ref worker) = self.highlight_worker {
+            let content = self.editor.lines().join("\n");
+            let colors = self.get_highlight_colors();
+            worker.request(content, self.highlight_version, colors);
+        }
+    }
+
+    fn get_highlight_colors(&self) -> HighlightColors {
+        HighlightColors {
+            heading_colors: [
+                self.theme.editor.heading1,
+                self.theme.editor.heading2,
+                self.theme.editor.heading3,
+                self.theme.editor.heading4,
+                self.theme.editor.heading5,
+                self.theme.editor.heading6,
+            ],
+            code_color: self.theme.editor.code,
+            link_color: self.theme.editor.link,
+            blockquote_color: self.theme.editor.blockquote,
+            list_marker_color: self.theme.editor.list_marker,
+            bold_color: Some(self.theme.editor.bold),
+            italic_color: Some(self.theme.editor.italic),
+            frontmatter_color: self.theme.content.frontmatter,
+            details_color: self.theme.editor.link, // Use link color for HTML details tags
+            horizontal_rule_color: self.theme.editor.blockquote, // Use blockquote color for horizontal rules
+        }
+    }
+
+    pub fn poll_highlight_worker(&mut self) -> bool {
+        let result = if let Some(ref worker) = self.highlight_worker {
+            worker.try_recv()
+        } else {
+            return false;
+        };
+
+        if let Some(result) = result {
+            let applied = self.apply_highlight_result(result);
+            if applied {
+                self.highlight_pending = false;
+            }
+            applied
+        } else {
+            false
+        }
+    }
+
+    fn apply_highlight_result(&mut self, result: HighlightResult) -> bool {
+        if result.version != self.highlight_version {
+            return false;
+        }
+
+        self.editor.clear_highlights();
+        self.editor.add_highlights(result.highlights);
+        self.update_editor_wiki_links_with_ranges(&result.wiki_links);
+        self.editor.invalidate_all_styles();
+        true
+    }
+
+    fn update_editor_wiki_links_with_ranges(&mut self, ranges: &[crate::editor::WikiLinkRange]) {
+        let notes_path = self.config.notes_path();
+        let mut valid_targets: HashSet<String> = HashSet::new();
+
+        for note in &self.notes {
+            if let Some(file_path) = &note.file_path {
+                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
+                    let path_str = relative.to_string_lossy();
+                    if let Some(stripped) = path_str.strip_suffix(".md") {
+                        valid_targets.insert(stripped.to_string());
+                        valid_targets.insert(note.title.clone());
+                        valid_targets.insert(note.title.to_lowercase());
+                    }
+                }
+            }
+        }
+
+        let validated_ranges: Vec<crate::editor::WikiLinkRange> = ranges
+            .iter()
+            .map(|range| {
+                // Extract target from the wiki link at this position
+                let is_valid = self.validate_wiki_link_at(range.row, range.start_col, &valid_targets);
+                crate::editor::WikiLinkRange {
+                    row: range.row,
+                    start_col: range.start_col,
+                    end_col: range.end_col,
+                    is_valid,
+                }
+            })
+            .collect();
+
+        self.editor.set_wiki_link_ranges(validated_ranges);
+    }
+
+    fn validate_wiki_link_at(&self, row: usize, start_col: usize, valid_targets: &HashSet<String>) -> bool {
+        let line = match self.editor.lines().get(row) {
+            Some(l) => *l,
+            None => return false,
+        };
+
+        let chars: Vec<char> = line.chars().collect();
+        if start_col + 2 >= chars.len() {
+            return false;
+        }
+
+        let after_open: String = chars[start_col + 2..].iter().collect();
+        if let Some(end_pos) = after_open.find("]]") {
+            let raw_content = &after_open[..end_pos];
+
+            let content = if let Some(pipe_pos) = raw_content.find('|') {
+                &raw_content[..pipe_pos]
+            } else {
+                raw_content
+            };
+            let target = if let Some(hash_pos) = content.find('#') {
+                &content[..hash_pos]
+            } else {
+                content
+            };
+
+            if valid_targets.contains(target) {
+                return true;
+            }
+            if !target.contains('/') {
+                return valid_targets.contains(&target.to_lowercase());
+            }
+        }
+        false
+    }
+
+    pub fn has_highlight_work(&self) -> bool {
+        self.highlight_pending
+    }
+
     pub fn get_highlighter(&self) -> Option<&Highlighter> {
         self.highlighter.as_ref()
+    }
+
+    // ==================== Search Index ====================
+
+    pub fn start_index_build(&mut self) {
+        if self.indexing_in_progress {
+            return;
+        }
+
+        let notes_dir = self.config.notes_path();
+        let index_path = search::get_index_path(&notes_dir);
+        let notes_dir_str = notes_dir.to_string_lossy().to_string();
+
+        let note_data: Vec<(usize, String, String, u64)> = self.notes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, note)| {
+                let path = note.file_path.as_ref()?;
+                let rel_path = path.strip_prefix(&notes_dir).ok()?
+                    .to_string_lossy().to_string();
+                let mtime = note.modified_time?
+                    .duration_since(std::time::UNIX_EPOCH).ok()?
+                    .as_secs();
+                Some((idx, rel_path, note.content.clone(), mtime))
+            })
+            .collect();
+
+        if note_data.is_empty() {
+            self.index_progress.store(0, Ordering::Relaxed);
+            self.index_total.store(0, Ordering::Relaxed);
+            self.search_index = SearchIndex {
+                version: 2,
+                notes_dir: notes_dir_str,
+                ready: true,
+                indexing_complete: true,
+                ..Default::default()
+            };
+            return;
+        }
+
+        self.indexing_in_progress = true;
+        self.index_started_at = Some(std::time::Instant::now());
+
+        self.index_progress.store(0, Ordering::Relaxed);
+        self.index_total.store(note_data.len(), Ordering::Relaxed);
+        let progress = Arc::clone(&self.index_progress);
+        let total = Arc::clone(&self.index_total);
+        let (sender, receiver) = mpsc::channel();
+        self.index_receiver = receiver;
+
+        std::thread::spawn(move || {
+            let build_full_with_progress = |note_data: &[(usize, String, String, u64)],
+                                            notes_dir: &str,
+                                            progress: &Arc<AtomicUsize>| -> SearchIndex {
+                let mut index = SearchIndex {
+                    version: 2,
+                    notes_dir: notes_dir.to_string(),
+                    ..Default::default()
+                };
+                for (i, (note_idx, rel_path, content, mtime)) in note_data.iter().enumerate() {
+                    index.index_note_pub(*note_idx, rel_path, content, *mtime);
+                    progress.store(i + 1, Ordering::Relaxed);
+                }
+                index
+            };
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let existing_index = search::load_index(&index_path);
+
+                let mut index = if let Some(mut cached) = existing_index {
+                    if cached.notes_dir == notes_dir_str {
+                        let current_files: Vec<(String, u64)> = note_data
+                            .iter()
+                            .map(|(_, path, _, mtime)| (path.clone(), *mtime))
+                            .collect();
+                        let current_paths: Vec<String> = current_files.iter().map(|(p, _)| p.clone()).collect();
+
+                        cached.remove_deleted(&current_paths);
+                        let stale = cached.get_stale_files(&current_files);
+
+                        if stale.is_empty() {
+                            progress.store(note_data.len(), Ordering::Relaxed);
+                            total.store(note_data.len(), Ordering::Relaxed);
+                            cached
+                        } else {
+                            total.store(stale.len(), Ordering::Relaxed);
+                            progress.store(0, Ordering::Relaxed);
+
+                            let stale_notes: Vec<_> = note_data
+                                .iter()
+                                .filter(|(_, path, _, _)| stale.contains(path))
+                                .cloned()
+                                .collect();
+
+                            for (i, note) in stale_notes.iter().enumerate() {
+                                cached.update_with_notes(&[note.clone()]);
+                                progress.store(i + 1, Ordering::Relaxed);
+                            }
+                            cached
+                        }
+                    } else {
+                        build_full_with_progress(&note_data, &notes_dir_str, &progress)
+                    }
+                } else {
+                    build_full_with_progress(&note_data, &notes_dir_str, &progress)
+                };
+
+                index.ready = true;
+                index.indexing_complete = true;
+                let _ = search::save_index(&index, &index_path);
+                let _ = sender.send(index);
+            }));
+
+            if result.is_err() {
+                let mut empty = SearchIndex::default();
+                empty.ready = true;
+                empty.indexing_complete = true;
+                let _ = sender.send(empty);
+            }
+        });
+    }
+
+    pub fn poll_index_build(&mut self) {
+        // Early return if not indexing
+        if !self.indexing_in_progress {
+            return;
+        }
+
+        if let Ok(index) = self.index_receiver.try_recv() {
+            self.search_index = index;
+            self.indexing_in_progress = false;
+            self.index_started_at = None;
+            // Reset progress counters
+            self.index_progress.store(0, Ordering::Relaxed);
+            self.index_total.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        const INDEXING_TIMEOUT_SECS: u64 = 60;
+        if let Some(started) = self.index_started_at {
+            if started.elapsed().as_secs() > INDEXING_TIMEOUT_SECS {
+                self.indexing_in_progress = false;
+                self.index_started_at = None;
+                self.index_progress.store(0, Ordering::Relaxed);
+                self.index_total.store(0, Ordering::Relaxed);
+                self.search_index.ready = true;
+                self.search_index.indexing_complete = true;
+            }
+        }
+    }
+
+    /// Search using the index (fast path)
+    fn search_with_index(&self, query: &str) -> Vec<ContentSearchResult> {
+        let query_lower = query.to_lowercase();
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // i think most people should be fine with 15k limits
+        const MAX_RESULTS: usize = 15000;
+        const MAX_EXACT_MATCHES: usize = 15000;
+        const MAX_PREFIX_MATCHES: usize = 15000;
+        const MAX_PREFIX_TERMS_SCANNED: usize = 15000;
+        const MAX_LINE_SCAN_NOTES: usize = 15000;
+
+        let create_result = |note_idx: usize, line_num: usize, line: &str, query_lower: &str| -> Option<ContentSearchResult> {
+            let note = self.notes.get(note_idx)?;
+            let wiki_path = self.get_wiki_path_for_note(note_idx);
+            let folder_hint = wiki_path.as_ref().and_then(|wp| {
+                wp.rfind('/').map(|pos| wp[..pos].to_string())
+            });
+
+            let line_lower = line.to_lowercase();
+            let match_byte_pos = line_lower.find(query_lower)?;
+            let line_chars: Vec<char> = line.chars().collect();
+            let match_start_char = line_lower[..match_byte_pos].chars().count();
+            let match_end_char = match_start_char + query_lower.chars().count();
+
+            let mut score = 100;
+            let title_lower = note.title.to_lowercase();
+            if title_lower.contains(query_lower) {
+                score += 50;
+            }
+            if match_start_char == 0 {
+                score += 20;
+            }
+            if match_start_char == 0 || !line_chars.get(match_start_char.saturating_sub(1))
+                .map(|c| c.is_alphanumeric())
+                .unwrap_or(false) {
+                score += 10;
+            }
+
+            let context_size = 25;
+            let start = match_start_char.saturating_sub(context_size);
+            let end = (match_end_char + context_size).min(line_chars.len());
+
+            let mut matched_line: String = line_chars[start..end].iter().collect();
+            let display_match_start = match_start_char - start;
+            let display_match_end = match_end_char - start;
+
+            if start > 0 {
+                matched_line = format!("...{}", matched_line);
+            }
+            if end < line_chars.len() {
+                matched_line.push_str("...");
+            }
+
+            Some(ContentSearchResult {
+                display_name: note.title.clone(),
+                matched_line,
+                line_number: line_num + 1,
+                note_index: note_idx,
+                folder_hint,
+                score,
+                match_start: display_match_start + if start > 0 { 3 } else { 0 },
+                match_end: display_match_end + if start > 0 { 3 } else { 0 },
+            })
+        };
+
+        if let Some(positions) = self.search_index.terms.get(&query_lower) {
+            for &(note_idx, line_num, _) in positions.iter().take(MAX_EXACT_MATCHES) {
+                if seen.insert((note_idx, line_num)) {
+                    if let Some(lines) = self.search_index.lines.get(note_idx) {
+                        if let Some(line) = lines.get(line_num) {
+                            if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
+                                results.push(result);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2 Prefix matches - limit terms scanned to prevent freeze
+        if results.len() < MAX_RESULTS {
+            let mut terms_scanned = 0;
+            let mut prefix_matches = 0;
+
+            for (word, positions) in &self.search_index.terms {
+                // Early exit conditions
+                if terms_scanned >= MAX_PREFIX_TERMS_SCANNED || prefix_matches >= MAX_PREFIX_MATCHES {
+                    break;
+                }
+                terms_scanned += 1;
+
+                if word.starts_with(&query_lower) && word != &query_lower {
+                    for &(note_idx, line_num, _) in positions.iter().take(50) {
+                        if prefix_matches >= MAX_PREFIX_MATCHES {
+                            break;
+                        }
+                        if seen.insert((note_idx, line_num)) {
+                            if let Some(lines) = self.search_index.lines.get(note_idx) {
+                                if let Some(line) = lines.get(line_num) {
+                                    if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
+                                        results.push(result);
+                                        prefix_matches += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3 Line scan fallback for substring matches
+        if results.len() < MAX_RESULTS {
+            let mut notes_scanned = 0;
+            'outer: for (note_idx, lines) in self.search_index.lines.iter().enumerate() {
+                if notes_scanned >= MAX_LINE_SCAN_NOTES || results.len() >= MAX_RESULTS {
+                    break;
+                }
+                notes_scanned += 1;
+
+                for (line_num, line) in lines.iter().enumerate() {
+                    if seen.contains(&(note_idx, line_num)) {
+                        continue;
+                    }
+                    if line.to_lowercase().contains(&query_lower) {
+                        if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
+                            seen.insert((note_idx, line_num));
+                            results.push(result);
+                            if results.len() >= MAX_RESULTS {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score.cmp(&a.score)
+                .then_with(|| a.display_name.cmp(&b.display_name))
+                .then_with(|| a.line_number.cmp(&b.line_number))
+        });
+        results.truncate(MAX_RESULTS);
+        results
     }
 
     // ==================== Mouse Selection Helpers ====================
@@ -4220,14 +5060,11 @@ impl App {
     /// Returns None if mouse is outside the editor area.
     pub fn screen_to_editor_coords(&self, mouse_x: u16, mouse_y: u16) -> Option<(usize, usize)> {
         let (inner_x, inner_y, inner_width, inner_height) = if self.zen_mode {
-            const ZEN_MAX_WIDTH: u16 = 95;
-            let content_width = self.editor_area.width.min(ZEN_MAX_WIDTH);
-            let x_offset = (self.editor_area.width.saturating_sub(content_width)) / 2;
             (
-                self.editor_area.x + x_offset,
-                self.editor_area.y + 2, 
-                content_width,
-                self.editor_area.height.saturating_sub(2),
+                self.editor_area.x,
+                self.editor_area.y,
+                self.editor_area.width,
+                self.editor_area.height,
             )
         } else {
             (
@@ -4243,7 +5080,13 @@ impl App {
             return None;
         }
 
-        let rel_x = (mouse_x - inner_x) as usize;
+        let content_x_offset = self.editor.content_x_offset();
+        let content_start_x = inner_x + content_x_offset;
+        let rel_x = if mouse_x >= content_start_x {
+            (mouse_x - content_start_x) as usize
+        } else {
+            0
+        };
         let rel_y = (mouse_y - inner_y) as usize;
 
         let (row, col) = self.editor.visual_to_logical_coords(rel_y, rel_x);
@@ -4258,8 +5101,8 @@ impl App {
 
         let (inner_y, inner_height) = if self.zen_mode {
             (
-                self.editor_area.y + 2, 
-                self.editor_area.height.saturating_sub(2),
+                self.editor_area.y,
+                self.editor_area.height,
             )
         } else {
             (
@@ -4274,6 +5117,574 @@ impl App {
             1 // Scroll down
         } else {
             0
+        }
+    }
+
+    pub fn open_search_picker(&mut self) {
+        self.search_picker = SearchPickerState::Open {
+            mode: SearchPickerMode::Files,
+            query: String::new(),
+            file_results: Vec::new(),
+            content_results: Vec::new(),
+            selected_index: 0,
+            scroll_offset: 0,
+            search_in_progress: false,
+            search_id: 0,
+        };
+    }
+
+    pub fn close_search_picker(&mut self) {
+        self.search_picker = SearchPickerState::Closed;
+    }
+
+    pub fn toggle_search_picker_mode(&mut self) {
+        let (new_mode, query) = if let SearchPickerState::Open {
+            mode,
+            query,
+            selected_index,
+            scroll_offset,
+            ..
+        } = &mut self.search_picker {
+            *mode = match *mode {
+                SearchPickerMode::Files => SearchPickerMode::Content,
+                SearchPickerMode::Content => SearchPickerMode::Files,
+            };
+            // Reset selection and scroll
+            *selected_index = 0;
+            *scroll_offset = 0;
+            (*mode, query.clone())
+        } else {
+            return;
+        };
+
+        match new_mode {
+            SearchPickerMode::Content => {
+                if !query.is_empty() {
+                    self.start_content_search();
+                }
+            }
+            SearchPickerMode::Files => {
+                if query.is_empty() {
+                    if let SearchPickerState::Open { file_results, .. } = &mut self.search_picker {
+                        file_results.clear();
+                    }
+                } else {
+                    let new_results = self.build_file_picker_results(&query);
+                    if let SearchPickerState::Open { file_results, .. } = &mut self.search_picker {
+                        *file_results = new_results;
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_file_picker_results(&self, query: &str) -> Vec<FilePickerResult> {
+        let query_lower = query.to_lowercase();
+
+        let mut results: Vec<FilePickerResult> = self
+            .notes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, note)| {
+                let wiki_path = self.get_wiki_path_for_note(idx);
+
+                let score = fuzzy_match(&note.title, query)
+                    .or_else(|| wiki_path.as_ref().and_then(|p| fuzzy_match(p, query)))
+                    .or_else(|| {
+                        let title_lower = note.title.to_lowercase();
+                        if title_lower.contains(&query_lower) {
+                            Some(100)
+                        } else if let Some(ref wp) = wiki_path {
+                            if wp.to_lowercase().contains(&query_lower) {
+                                Some(50)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                let score = score?;
+
+                let folder_hint = wiki_path.and_then(|wp| {
+                    wp.rfind('/').map(|pos| wp[..pos].to_string())
+                });
+
+                Some(FilePickerResult {
+                    display_name: note.title.clone(),
+                    folder_hint,
+                    note_index: idx,
+                    score,
+                })
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score.cmp(&a.score).then_with(|| a.display_name.cmp(&b.display_name))
+        });
+
+        results
+    }
+
+    pub fn start_content_search(&mut self) {
+        let query = if let SearchPickerState::Open { query, mode, .. } = &self.search_picker {
+            if *mode != SearchPickerMode::Content || query.is_empty() {
+                return;
+            }
+            query.clone()
+        } else {
+            return;
+        };
+
+        if self.search_index.ready {
+            let results = self.search_with_index(&query);
+            if let SearchPickerState::Open {
+                content_results,
+                search_in_progress,
+                selected_index,
+                scroll_offset,
+                ..
+            } = &mut self.search_picker {
+                *content_results = results;
+                *search_in_progress = false;
+                *selected_index = 0;
+                *scroll_offset = 0;
+            }
+            return;
+        }
+
+        self.next_search_id += 1;
+        let search_id = self.next_search_id;
+
+        if let SearchPickerState::Open {
+            search_in_progress,
+            search_id: state_search_id,
+            ..
+        } = &mut self.search_picker {
+            *search_in_progress = true;
+            *state_search_id = search_id;
+        }
+
+        let notes: Vec<(usize, String, String, Option<String>)> = self.notes
+            .iter()
+            .enumerate()
+            .map(|(idx, note)| {
+                let wiki_path = self.get_wiki_path_for_note(idx);
+                let folder_hint = wiki_path.as_ref().and_then(|wp| {
+                    wp.rfind('/').map(|pos| wp[..pos].to_string())
+                });
+                (idx, note.title.clone(), note.content.clone(), folder_hint)
+            })
+            .collect();
+
+        let sender = self.content_search_sender.clone();
+
+        // Spawn background thread for content search
+        std::thread::spawn(move || {
+            let query_lower = query.to_lowercase();
+            let mut results: Vec<ContentSearchResult> = Vec::new();
+
+            for (note_idx, title, content, folder_hint) in notes {
+                let title_lower = title.to_lowercase();
+                let title_matches = title_lower.contains(&query_lower);
+
+                for (line_num, line) in content.lines().enumerate() {
+                    let line_lower = line.to_lowercase();
+                    if let Some(match_byte_pos) = line_lower.find(&query_lower) {
+                        // Convert byte position to character position for Unicode support
+                        let line_chars: Vec<char> = line.chars().collect();
+                        let match_start_char = line_lower[..match_byte_pos].chars().count();
+                        let match_end_char = match_start_char + query_lower.chars().count();
+
+                        // Calculate score
+                        let mut score = 100;
+                        if title_matches {
+                            score += 50; 
+                        }
+                        if match_start_char == 0 {
+                            score += 20; 
+                        }
+                        // Word boundary bonus - use char position, not byte position
+                        if match_start_char == 0 || !line_chars.get(match_start_char.saturating_sub(1))
+                            .map(|c| c.is_alphanumeric())
+                            .unwrap_or(false) {
+                            score += 10;
+                        }
+
+                        // Get context around match (max 60 chars total)
+                        let context_size = 25;
+                        let start = match_start_char.saturating_sub(context_size);
+                        let end = (match_end_char + context_size).min(line_chars.len());
+
+                        let mut matched_line: String = line_chars[start..end].iter().collect();
+                        let display_match_start = match_start_char - start;
+                        let display_match_end = match_end_char - start;
+
+                        // Add ellipsis if truncated
+                        if start > 0 {
+                            matched_line = format!("...{}", matched_line);
+                        }
+                        if end < line_chars.len() {
+                            matched_line.push_str("...");
+                        }
+
+                        results.push(ContentSearchResult {
+                            display_name: title.clone(),
+                            matched_line,
+                            line_number: line_num + 1, 
+                            note_index: note_idx,
+                            folder_hint: folder_hint.clone(),
+                            score,
+                            match_start: display_match_start + if start > 0 { 3 } else { 0 },
+                            match_end: display_match_end + if start > 0 { 3 } else { 0 },
+                        });
+                    }
+                }
+            }
+
+            results.sort_by(|a, b| {
+                b.score.cmp(&a.score)
+                    .then_with(|| a.display_name.cmp(&b.display_name))
+                    .then_with(|| a.line_number.cmp(&b.line_number))
+            });
+
+            results.truncate(500);
+
+            let _ = sender.send(ContentSearchResponse { search_id, results });
+        });
+    }
+
+    /// Polls for content search results (call in main loop)
+    pub fn poll_content_search(&mut self) {
+        while let Ok(response) = self.content_search_receiver.try_recv() {
+            if let SearchPickerState::Open {
+                search_id,
+                content_results,
+                search_in_progress,
+                selected_index,
+                scroll_offset,
+                ..
+            } = &mut self.search_picker {
+                if response.search_id == *search_id {
+                    *content_results = response.results;
+                    *search_in_progress = false;
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+            }
+        }
+    }
+
+    pub fn is_content_search_in_progress(&self) -> bool {
+        if let SearchPickerState::Open { search_in_progress, .. } = &self.search_picker {
+            *search_in_progress
+        } else {
+            false
+        }
+    }
+
+    pub fn update_search_picker_results(&mut self) {
+        let (query, mode) = if let SearchPickerState::Open { query, mode, .. } = &self.search_picker {
+            (query.clone(), *mode)
+        } else {
+            return;
+        };
+
+        match mode {
+            SearchPickerMode::Files => {
+                if query.is_empty() {
+                    if let SearchPickerState::Open { file_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
+                        file_results.clear();
+                        *selected_index = 0;
+                        *scroll_offset = 0;
+                    }
+                } else {
+                    let new_results = self.build_file_picker_results(&query);
+                    if let SearchPickerState::Open { file_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
+                        *file_results = new_results;
+                        *selected_index = 0;
+                        *scroll_offset = 0;
+                    }
+                }
+            }
+            SearchPickerMode::Content => {
+                if query.is_empty() {
+                    if let SearchPickerState::Open { content_results, selected_index, scroll_offset, search_in_progress, .. } = &mut self.search_picker {
+                        content_results.clear();
+                        *selected_index = 0;
+                        *scroll_offset = 0;
+                        *search_in_progress = false;
+                    }
+                } else {
+                    self.start_content_search();
+                }
+            }
+        }
+    }
+
+    pub fn select_search_picker_result(&mut self) {
+        let result_info = if let SearchPickerState::Open {
+            mode, file_results, content_results, selected_index, ..
+        } = &self.search_picker {
+            match mode {
+                SearchPickerMode::Files => {
+                    file_results.get(*selected_index).map(|r| (r.note_index, None))
+                }
+                SearchPickerMode::Content => {
+                    content_results.get(*selected_index).map(|r| (r.note_index, Some(r.line_number)))
+                }
+            }
+        } else {
+            None
+        };
+
+        let Some((note_index, line_number)) = result_info else {
+            self.search_picker = SearchPickerState::Closed;
+            return;
+        };
+
+        if note_index < self.notes.len() {
+            if let Some(note) = self.notes.get(note_index) {
+                if let Some(ref file_path) = note.file_path {
+                    let notes_root = self.config.notes_path();
+                    let mut current = file_path.parent();
+                    let mut needs_rebuild = false;
+                    while let Some(parent) = current {
+                        if parent == notes_root {
+                            break;
+                        }
+                        if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                            self.folder_states.insert(parent.to_path_buf(), true);
+                            needs_rebuild = true;
+                        }
+                        current = parent.parent();
+                    }
+                    if needs_rebuild {
+                        Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                        self.rebuild_sidebar_items();
+                    }
+                }
+            }
+
+            for (idx, item) in self.sidebar_items.iter().enumerate() {
+                if let SidebarItemKind::Note { note_index: idx_note } = &item.kind {
+                    if *idx_note == note_index {
+                        self.end_buffer_search();
+                        self.selected_sidebar_index = idx;
+                        self.selected_note = note_index;
+                        self.content_cursor = 0;
+                        self.content_scroll_offset = 0;
+                        self.update_content_items();
+                        self.update_outline();
+                        self.push_navigation_history(note_index);
+
+                        if let Some(target_line) = line_number {
+                            let target_line_0indexed = target_line.saturating_sub(1);
+                            let mut best_match_idx = 0;
+                            let mut best_match_diff = usize::MAX;
+
+                            for (i, &source_line) in self.content_item_source_lines.iter().enumerate() {
+                                if source_line == target_line_0indexed {
+                                    best_match_idx = i;
+                                    break;
+                                } else if source_line < target_line_0indexed {
+                                    let diff = target_line_0indexed - source_line;
+                                    if diff < best_match_diff {
+                                        best_match_diff = diff;
+                                        best_match_idx = i;
+                                    }
+                                } else {
+                                    let diff = source_line - target_line_0indexed;
+                                    if diff < best_match_diff {
+                                        best_match_idx = i;
+                                    }
+                                    break;
+                                }
+                            }
+
+                            self.content_cursor = best_match_idx.min(self.content_items.len().saturating_sub(1));
+
+                            let visible_height = 20usize; // Approximate visible lines
+                            let target_scroll = self.content_cursor.saturating_sub(visible_height / 3);
+                            self.content_scroll_offset = target_scroll;
+                        }
+
+                        self.focus = Focus::Content;
+                        break;
+                    }
+                }
+            }
+        }
+
+        self.search_picker = SearchPickerState::Closed;
+    }
+
+    pub fn search_picker_select_prev(&mut self) {
+        // Must match POPUP_MAX_VISIBLE_ITEMS / POPUP_MAX_VISIBLE_ITEMS_CONTENT in ui/file_picker.rs
+        const MAX_VISIBLE_FILES: usize = 10;
+        const MAX_VISIBLE_CONTENT: usize = 18;
+        if let SearchPickerState::Open { mode, file_results, content_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
+            let (results_len, max_visible) = match mode {
+                SearchPickerMode::Files => (file_results.len(), MAX_VISIBLE_FILES),
+                SearchPickerMode::Content => (content_results.len(), MAX_VISIBLE_CONTENT),
+            };
+
+            if results_len == 0 {
+                return;
+            }
+
+            if *selected_index > 0 {
+                *selected_index -= 1;
+            } else {
+                *selected_index = results_len - 1;
+                *scroll_offset = results_len.saturating_sub(max_visible);
+                return;
+            }
+
+            if *selected_index < *scroll_offset {
+                *scroll_offset = *selected_index;
+            }
+        }
+    }
+
+    pub fn search_picker_select_next(&mut self) {
+        // Must match POPUP_MAX_VISIBLE_ITEMS / POPUP_MAX_VISIBLE_ITEMS_CONTENT in ui/file_picker.rs
+        const MAX_VISIBLE_FILES: usize = 10;
+        const MAX_VISIBLE_CONTENT: usize = 18;
+        if let SearchPickerState::Open { mode, file_results, content_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
+            let (results_len, max_visible) = match mode {
+                SearchPickerMode::Files => (file_results.len(), MAX_VISIBLE_FILES),
+                SearchPickerMode::Content => (content_results.len(), MAX_VISIBLE_CONTENT),
+            };
+
+            if results_len == 0 {
+                return;
+            }
+
+            if *selected_index < results_len - 1 {
+                *selected_index += 1;
+            } else {
+                *selected_index = 0;
+                *scroll_offset = 0;
+                return;
+            }
+
+            let visible_end = *scroll_offset + max_visible;
+            if *selected_index >= visible_end {
+                *scroll_offset = *selected_index - max_visible + 1;
+            }
+        }
+    }
+
+    pub fn search_picker_push_char(&mut self, c: char) {
+        if let SearchPickerState::Open { query, .. } = &mut self.search_picker {
+            query.push(c);
+        }
+        self.update_search_picker_results();
+    }
+
+    pub fn search_picker_pop_char(&mut self) {
+        if let SearchPickerState::Open { query, .. } = &mut self.search_picker {
+            query.pop();
+        }
+        self.update_search_picker_results();
+    }
+    pub fn is_inside_search_picker(&self, x: u16, y: u16) -> bool {
+        let area = self.search_picker_area;
+        x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+    }
+    /// Handle mouse click on search picker results
+    pub fn search_picker_click(&mut self, x: u16, y: u16) -> u8 {
+        let results_area = self.search_picker_results_area;
+
+        // Check if click is in results area
+        if x < results_area.x || x >= results_area.x + results_area.width
+            || y < results_area.y || y >= results_area.y + results_area.height
+        {
+            return 0;
+        }
+
+        // Calculate which row was clicked (relative to results area)
+        let clicked_row = (y - results_area.y) as usize;
+
+        if let SearchPickerState::Open {
+            mode,
+            file_results,
+            content_results,
+            selected_index,
+            scroll_offset,
+            ..
+        } = &mut self.search_picker
+        {
+            let clicked_index = match mode {
+                SearchPickerMode::Content => {
+                    *scroll_offset + clicked_row
+                }
+                SearchPickerMode::Files => {
+                    let mut accumulated_lines = 0;
+                    let mut target_index = None;
+
+                    for (i, result) in file_results.iter().enumerate().skip(*scroll_offset) {
+                        let item_lines = if result.folder_hint.is_some() { 2 } else { 1 };
+                        if clicked_row < accumulated_lines + item_lines {
+                            target_index = Some(i);
+                            break;
+                        }
+                        accumulated_lines += item_lines;
+                    }
+
+                    target_index.unwrap_or(*scroll_offset + clicked_row)
+                }
+            };
+
+            let results_len = match mode {
+                SearchPickerMode::Files => file_results.len(),
+                SearchPickerMode::Content => content_results.len(),
+            };
+
+            if clicked_index < results_len {
+                *selected_index = clicked_index;
+                let now = std::time::Instant::now();
+                let is_double_click = if let Some((last_time, last_index)) = self.search_picker_last_click {
+                    last_index == clicked_index && now.duration_since(last_time).as_millis() < 400
+                } else {
+                    false
+                };
+
+                self.search_picker_last_click = Some((now, clicked_index));
+
+                return if is_double_click { 2 } else { 1 };
+            }
+        }
+        0
+    }
+
+    pub fn search_picker_scroll_up(&mut self) {
+        if let SearchPickerState::Open { scroll_offset, .. } = &mut self.search_picker {
+            if *scroll_offset > 0 {
+                *scroll_offset -= 1;
+            }
+        }
+    }
+    pub fn search_picker_scroll_down(&mut self) {
+        const MAX_VISIBLE_FILES: usize = 10; // Must match POPUP_MAX_VISIBLE_ITEMS
+        const MAX_VISIBLE_CONTENT: usize = 18; // Must match POPUP_MAX_VISIBLE_ITEMS_CONTENT
+        if let SearchPickerState::Open {
+            mode,
+            file_results,
+            content_results,
+            scroll_offset,
+            ..
+        } = &mut self.search_picker
+        {
+            let (results_len, max_visible) = match mode {
+                SearchPickerMode::Files => (file_results.len(), MAX_VISIBLE_FILES),
+                SearchPickerMode::Content => (content_results.len(), MAX_VISIBLE_CONTENT),
+            };
+
+            if *scroll_offset + max_visible < results_len {
+                *scroll_offset += 1;
+            }
         }
     }
 }

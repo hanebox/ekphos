@@ -266,6 +266,25 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         vec![]
     };
 
+    let indexing_indicator = if app.indexing_in_progress {
+        use std::sync::atomic::Ordering;
+        let current = app.index_progress.load(Ordering::Relaxed);
+        let total = app.index_total.load(Ordering::Relaxed);
+        let progress_text = if total > 0 {
+            format!("indexing ({}/{})  ", current, total)
+        } else {
+            "indexing  ".to_string()
+        };
+        vec![
+            Span::styled(
+                progress_text,
+                Style::default().fg(theme.muted),
+            ),
+        ]
+    } else {
+        vec![]
+    };
+
     let zen_indicator = if app.zen_mode {
         vec![
             Span::styled(
@@ -302,6 +321,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut right_content = recording_indicator;
+    right_content.extend(indexing_indicator);
     right_content.extend(zen_indicator);
     right_content.extend(vec![stats, position, help]);
 

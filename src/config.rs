@@ -23,6 +23,10 @@ pub struct Config {
     pub outline_collapsed: bool,
     #[serde(default = "default_folders_first")]
     pub folders_first: bool,
+    #[serde(default = "default_frontmatter_hidden")]
+    pub frontmatter_hidden: bool,
+    #[serde(default = "default_show_tags")]
+    pub show_tags: bool,
     #[serde(default)]
     pub editor: EditorConfig,
 }
@@ -80,6 +84,8 @@ fn default_syntax_theme() -> String { "base16-ocean.dark".to_string() }
 fn default_sidebar_collapsed() -> bool { false }
 fn default_outline_collapsed() -> bool { false }
 fn default_folders_first() -> bool { true }
+fn default_frontmatter_hidden() -> bool { true }
+fn default_show_tags() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -92,6 +98,8 @@ impl Default for Config {
             sidebar_collapsed: default_sidebar_collapsed(),
             outline_collapsed: default_outline_collapsed(),
             folders_first: default_folders_first(),
+            frontmatter_hidden: default_frontmatter_hidden(),
+            show_tags: default_show_tags(),
             editor: EditorConfig::default(),
         }
     }
@@ -301,6 +309,12 @@ pub struct ContentColors {
     pub blockquote: String,
     #[serde(default = "defaults::secondary")]
     pub list_marker: String,
+    #[serde(default = "defaults::secondary")]
+    pub tag: String,
+    #[serde(default = "defaults::background_secondary")]
+    pub tag_background: String,
+    #[serde(default = "defaults::muted")]
+    pub frontmatter: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,6 +472,9 @@ impl Default for ContentColors {
             code_background: defaults::background_secondary(),
             blockquote: defaults::muted(),
             list_marker: defaults::secondary(),
+            tag: defaults::secondary(),
+            tag_background: defaults::background_secondary(),
+            frontmatter: defaults::muted(),
         }
     }
 }
@@ -629,6 +646,9 @@ pub struct ContentTheme {
     pub code_background: Color,
     pub blockquote: Color,
     pub list_marker: Color,
+    pub tag: Color,
+    pub tag_background: Color,
+    pub frontmatter: Color,
 }
 
 #[derive(Debug, Clone)]
@@ -720,6 +740,9 @@ impl Theme {
                 code_background: parse_hex_color(&tf.ui.content.code_background),
                 blockquote: parse_hex_color(&tf.ui.content.blockquote),
                 list_marker: parse_hex_color(&tf.ui.content.list_marker),
+                tag: parse_hex_color(&tf.ui.content.tag),
+                tag_background: parse_hex_color(&tf.ui.content.tag_background),
+                frontmatter: parse_hex_color(&tf.ui.content.frontmatter),
             },
             outline: OutlineTheme {
                 background: parse_hex_color(&tf.ui.outline.background),

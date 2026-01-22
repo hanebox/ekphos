@@ -6,6 +6,7 @@ mod wrap;
 
 pub use cursor::{CursorMove, Position};
 pub use input::{process_key, InputAction};
+// HighlightRange and HighlightType are defined in this module and automatically public
 
 // Re-export LineNumberMode for use in other modules
 pub use crate::config::LineNumberMode;
@@ -22,6 +23,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Widget},
 };
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashSet};
 use unicode_width::UnicodeWidthChar;
 
 #[inline]
@@ -47,6 +50,8 @@ pub enum HighlightType {
     HorizontalRule,
     SearchMatch,
     SearchMatchCurrent,
+    Frontmatter,
+    Details,
     Custom(u8),
 }
 
@@ -85,6 +90,194 @@ impl HighlightRange {
 
     pub fn contains(&self, row: usize, col: usize) -> bool {
         self.row == row && col >= self.start_col && col < self.end_col
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HighlightIndex {
+    by_row: BTreeMap<usize, Vec<HighlightRange>>,
+}
+
+impl HighlightIndex {
+    fn new() -> Self {
+        Self {
+            by_row: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, highlight: HighlightRange) {
+        self.by_row
+            .entry(highlight.row)
+            .or_insert_with(Vec::new)
+            .push(highlight);
+    }
+
+    fn get_row(&self, row: usize) -> &[HighlightRange] {
+        self.by_row.get(&row).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        self.by_row.remove(&row);
+    }
+
+    fn clear_row_of_type(&mut self, row: usize, highlight_type: HighlightType) {
+        if let Some(highlights) = self.by_row.get_mut(&row) {
+            highlights.retain(|h| h.highlight_type != highlight_type);
+            if highlights.is_empty() {
+                self.by_row.remove(&row);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.by_row.clear();
+    }
+
+    fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&HighlightRange) -> bool,
+    {
+        for highlights in self.by_row.values_mut() {
+            highlights.retain(|h| f(h));
+        }
+        self.by_row.retain(|_, v| !v.is_empty());
+    }
+
+    fn shift_rows_after(&mut self, row: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+
+        // Collect rows that need to be shifted
+        let rows_to_shift: Vec<usize> = if delta > 0 {
+            self.by_row.range(row..).map(|(r, _)| *r).collect()
+        } else {
+            self.by_row.range(row..).map(|(r, _)| *r).collect()
+        };
+
+        // Remove and re-insert with new row numbers
+        let mut shifted: Vec<(usize, Vec<HighlightRange>)> = Vec::new();
+        for old_row in rows_to_shift {
+            if let Some(mut highlights) = self.by_row.remove(&old_row) {
+                let new_row = if delta > 0 {
+                    old_row + delta as usize
+                } else {
+                    old_row.saturating_sub((-delta) as usize)
+                };
+                for h in &mut highlights {
+                    h.row = new_row;
+                }
+                shifted.push((new_row, highlights));
+            }
+        }
+        for (new_row, highlights) in shifted {
+            self.by_row.insert(new_row, highlights);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &HighlightRange> {
+        self.by_row.values().flat_map(|v| v.iter())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_row.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.by_row.values().map(|v| v.len()).sum()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RowStyleCache {
+    rows: BTreeMap<usize, Vec<Style>>,
+    dirty_rows: HashSet<usize>,
+    all_dirty: bool,
+}
+
+impl RowStyleCache {
+    fn new() -> Self {
+        Self {
+            rows: BTreeMap::new(),
+            dirty_rows: HashSet::new(),
+            all_dirty: true,
+        }
+    }
+
+    fn invalidate_row(&mut self, row: usize) {
+        self.dirty_rows.insert(row);
+        self.rows.remove(&row);
+    }
+
+    fn invalidate_from(&mut self, row: usize) {
+        let rows_to_remove: Vec<usize> = self.rows.range(row..).map(|(r, _)| *r).collect();
+        for r in rows_to_remove {
+            self.rows.remove(&r);
+            self.dirty_rows.insert(r);
+        }
+    }
+
+    fn invalidate_all(&mut self) {
+        self.rows.clear();
+        self.dirty_rows.clear();
+        self.all_dirty = true;
+    }
+
+    fn is_dirty(&self, row: usize) -> bool {
+        self.all_dirty || self.dirty_rows.contains(&row) || !self.rows.contains_key(&row)
+    }
+
+    fn set_row_styles(&mut self, row: usize, styles: Vec<Style>) {
+        self.rows.insert(row, styles);
+        self.dirty_rows.remove(&row);
+    }
+
+    fn get_row_styles(&self, row: usize) -> Option<&[Style]> {
+        self.rows.get(&row).map(|v| v.as_slice())
+    }
+
+    #[allow(dead_code)]
+    fn mark_clean(&mut self) {
+        self.all_dirty = false;
+        self.dirty_rows.clear();
+    }
+
+    fn shift_rows_after(&mut self, row: usize, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+
+        let rows_to_shift: Vec<usize> = if delta > 0 {
+            self.rows.range(row..).map(|(r, _)| *r).collect()
+        } else {
+            self.rows.range(row..).map(|(r, _)| *r).collect()
+        };
+
+        let mut shifted: Vec<(usize, Vec<Style>)> = Vec::new();
+        for old_row in rows_to_shift {
+            if let Some(styles) = self.rows.remove(&old_row) {
+                let new_row = if delta > 0 {
+                    old_row + delta as usize
+                } else {
+                    old_row.saturating_sub((-delta) as usize)
+                };
+                shifted.push((new_row, styles));
+            }
+        }
+        for (new_row, styles) in shifted {
+            self.rows.insert(new_row, styles);
+        }
+
+        let dirty_to_shift: Vec<usize> = self.dirty_rows.iter().filter(|&&r| r >= row).cloned().collect();
+        for old_row in dirty_to_shift {
+            self.dirty_rows.remove(&old_row);
+            let new_row = if delta > 0 {
+                old_row + delta as usize
+            } else {
+                old_row.saturating_sub((-delta) as usize)
+            };
+            self.dirty_rows.insert(new_row);
+        }
     }
 }
 
@@ -164,6 +357,14 @@ impl ListPrefix {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
 pub struct Editor {
     buffer: TextBuffer,
     cursor: Cursor,
@@ -182,8 +383,10 @@ pub struct Editor {
     selection_style: Style,
     clipboard: Option<String>,
     clipboard_linewise: bool,
-    // General highlighting system
-    highlights: Vec<HighlightRange>,
+    highlight_index: HighlightIndex,
+    row_style_cache: RefCell<RowStyleCache>,
+    code_block_rows: HashSet<usize>,
+    frontmatter_end: Option<usize>,
     // Wiki link highlighting (legacy, kept for compatibility)
     wiki_link_ranges: Vec<WikiLinkRange>,
     wiki_link_valid_style: Style,
@@ -198,12 +401,15 @@ pub struct Editor {
     list_marker_color: Color,
     bold_color: Option<Color>,
     italic_color: Option<Color>,
+    frontmatter_color: Color,
     // Line number display
     line_number_mode: LineNumberMode,
     line_number_style: Style,
     line_number_width: u16,
     // scrolloff, minimum lines above/below cursor
     scrolloff: usize,
+    // Cursor shape for visual mode feedback
+    cursor_shape: CursorShape,
 }
 
 impl Default for Editor {
@@ -232,7 +438,10 @@ impl Editor {
             selection_style: Style::default().bg(ratatui::style::Color::DarkGray),
             clipboard: None,
             clipboard_linewise: false,
-            highlights: Vec::new(),
+            highlight_index: HighlightIndex::new(),
+            row_style_cache: RefCell::new(RowStyleCache::new()),
+            code_block_rows: HashSet::new(),
+            frontmatter_end: None,
             wiki_link_ranges: Vec::new(),
             wiki_link_valid_style: Style::default().fg(Color::Cyan),
             wiki_link_invalid_style: Style::default().fg(Color::Red),
@@ -245,10 +454,12 @@ impl Editor {
             list_marker_color: Color::Yellow,
             bold_color: None,
             italic_color: None,
+            frontmatter_color: Color::DarkGray,
             line_number_mode: LineNumberMode::Absolute,
             line_number_style: Style::default().fg(Color::DarkGray),
             line_number_width: 4, // Default width for line numbers
             scrolloff: 0,
+            cursor_shape: CursorShape::Block,
         }
     }
 
@@ -331,6 +542,10 @@ impl Editor {
 
     pub fn set_selection_style(&mut self, style: Style) {
         self.selection_style = style;
+    }
+
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.cursor_shape = shape;
     }
 
     pub fn set_visual_line_selection(&mut self, anchor_row: usize, current_row: usize) {
@@ -573,6 +788,10 @@ impl Editor {
         self.italic_color = italic_color;
     }
 
+    pub fn set_frontmatter_color(&mut self, color: Color) {
+        self.frontmatter_color = color;
+    }
+
     pub fn update_wiki_links<F>(&mut self, validator: F)
     where
         F: Fn(&str) -> bool,
@@ -665,35 +884,56 @@ impl Editor {
         None
     }
 
+    pub fn set_wiki_link_ranges(&mut self, ranges: Vec<WikiLinkRange>) {
+        self.wiki_link_ranges = ranges;
+        self.row_style_cache.borrow_mut().invalidate_all();
+    }
+
+    pub fn invalidate_all_styles(&mut self) {
+        self.row_style_cache.borrow_mut().invalidate_all();
+    }
+
     // ==================== Highlight Management ====================
 
     pub fn add_highlight(&mut self, highlight: HighlightRange) {
-        self.highlights.push(highlight);
+        let row = highlight.row;
+        self.highlight_index.insert(highlight);
+        self.row_style_cache.borrow_mut().invalidate_row(row);
     }
 
     pub fn add_highlights(&mut self, highlights: impl IntoIterator<Item = HighlightRange>) {
-        self.highlights.extend(highlights);
+        for highlight in highlights {
+            let row = highlight.row;
+            self.highlight_index.insert(highlight);
+            self.row_style_cache.borrow_mut().invalidate_row(row);
+        }
     }
 
     pub fn clear_highlights(&mut self) {
-        self.highlights.clear();
+        self.highlight_index.clear();
+        self.row_style_cache.borrow_mut().invalidate_all();
     }
+
     pub fn clear_highlights_of_type(&mut self, highlight_type: HighlightType) {
-        self.highlights.retain(|h| h.highlight_type != highlight_type);
+        self.highlight_index.retain(|h| h.highlight_type != highlight_type);
+        self.row_style_cache.borrow_mut().invalidate_all();
     }
 
     pub fn clear_highlights_for_row(&mut self, row: usize) {
-        self.highlights.retain(|h| h.row != row);
+        self.highlight_index.clear_row(row);
+        self.row_style_cache.borrow_mut().invalidate_row(row);
     }
 
     pub fn clear_highlights_for_row_and_type(&mut self, row: usize, highlight_type: HighlightType) {
-        self.highlights.retain(|h| h.row != row || h.highlight_type != highlight_type);
+        self.highlight_index.clear_row_of_type(row, highlight_type);
+        self.row_style_cache.borrow_mut().invalidate_row(row);
     }
 
     fn highlight_style_at(&self, row: usize, col: usize) -> Option<Style> {
         let mut best_match: Option<&HighlightRange> = None;
 
-        for highlight in &self.highlights {
+        // O(log n) lookup to get highlights for this row, then scan only that row's highlights
+        for highlight in self.highlight_index.get_row(row) {
             if highlight.contains(row, col) {
                 match best_match {
                     None => best_match = Some(highlight),
@@ -708,41 +948,97 @@ impl Editor {
         best_match.map(|h| h.style)
     }
 
+    pub fn get_row_styles_cached(&self, row: usize) -> Vec<Style> {
+        {
+            let cache = self.row_style_cache.borrow();
+            if let Some(styles) = cache.get_row_styles(row) {
+                if !cache.is_dirty(row) {
+                    return styles.to_vec();
+                }
+            }
+        }
+        let styles = self.compute_row_styles_readonly(row);
+
+        self.row_style_cache.borrow_mut().set_row_styles(row, styles.clone());
+
+        styles
+    }
+
+    fn compute_row_styles_readonly(&self, row: usize) -> Vec<Style> {
+        let line_len = self.buffer.line_len(row);
+        let mut styles = Vec::with_capacity(line_len);
+
+        for col in 0..line_len {
+            let style = self.highlight_style_at(row, col)
+                .or_else(|| self.wiki_link_style_at(row, col))
+                .unwrap_or_default();
+            styles.push(style);
+        }
+
+        styles
+    }
+    pub fn get_row_styles(&mut self, row: usize) -> Vec<Style> {
+        self.get_row_styles_cached(row)
+    }
+    pub fn invalidate_row_styles(&mut self, row: usize) {
+        self.row_style_cache.borrow_mut().invalidate_row(row);
+    }
+    pub fn invalidate_styles_from(&mut self, row: usize) {
+        self.row_style_cache.borrow_mut().invalidate_from(row);
+    }
+
     #[allow(dead_code)]
     pub fn highlights_for_row(&self, row: usize) -> Vec<&HighlightRange> {
-        self.highlights.iter().filter(|h| h.row == row).collect()
+        self.highlight_index.get_row(row).iter().collect()
     }
 
     #[allow(dead_code)]
     pub fn highlights_of_type(&self, highlight_type: HighlightType) -> Vec<&HighlightRange> {
-        self.highlights.iter().filter(|h| h.highlight_type == highlight_type).collect()
+        self.highlight_index.iter().filter(|h| h.highlight_type == highlight_type).collect()
     }
 
     #[allow(dead_code)]
     pub fn has_highlights(&self) -> bool {
-        !self.highlights.is_empty()
+        !self.highlight_index.is_empty()
     }
 
     #[allow(dead_code)]
     pub fn highlight_count(&self) -> usize {
-        self.highlights.len()
+        self.highlight_index.len()
     }
 
     // ==================== Markdown Syntax Highlighting ====================
 
     pub fn update_markdown_highlights(&mut self) {
-        self.highlights.retain(|h| h.highlight_type == HighlightType::WikiLink);
+        self.highlight_index.retain(|h| h.highlight_type == HighlightType::WikiLink);
+        self.code_block_rows.clear();
+        self.row_style_cache.borrow_mut().invalidate_all();
 
         let line_count = self.buffer.line_count();
         let mut in_code_block = false;
+        self.frontmatter_end = self.detect_frontmatter_end();
 
         for row in 0..line_count {
             let line = self.buffer.line(row).unwrap_or("").to_string();
 
+            if let Some(fm_end) = self.frontmatter_end {
+                if row <= fm_end {
+                    self.highlight_index.insert(HighlightRange::new(
+                        row,
+                        0,
+                        line.chars().count(),
+                        Style::default().fg(self.frontmatter_color),
+                        HighlightType::Frontmatter,
+                    ));
+                    continue;
+                }
+            }
+
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
+                self.code_block_rows.insert(row);
                 let start = line.find("```").unwrap_or(0);
-                self.highlights.push(HighlightRange::new(
+                self.highlight_index.insert(HighlightRange::new(
                     row,
                     start,
                     line.chars().count(),
@@ -753,7 +1049,8 @@ impl Editor {
             }
 
             if in_code_block {
-                self.highlights.push(HighlightRange::new(
+                self.code_block_rows.insert(row);
+                self.highlight_index.insert(HighlightRange::new(
                     row,
                     0,
                     line.chars().count(),
@@ -767,6 +1064,174 @@ impl Editor {
         }
     }
 
+    pub fn update_row_highlights(&mut self, row: usize) {
+        self.highlight_index.clear_row_of_type(row, HighlightType::Frontmatter);
+        self.highlight_index.clear_row_of_type(row, HighlightType::CodeBlock);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Header);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Blockquote);
+        self.highlight_index.clear_row_of_type(row, HighlightType::ListMarker);
+        self.highlight_index.clear_row_of_type(row, HighlightType::InlineCode);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Link);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Bold);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Italic);
+
+        self.row_style_cache.borrow_mut().invalidate_row(row);
+
+        let line = match self.buffer.line(row) {
+            Some(l) => l.to_string(),
+            None => return,
+        };
+
+        if let Some(fm_end) = self.frontmatter_end {
+            if row <= fm_end {
+                self.highlight_index.insert(HighlightRange::new(
+                    row,
+                    0,
+                    line.chars().count(),
+                    Style::default().fg(self.frontmatter_color),
+                    HighlightType::Frontmatter,
+                ));
+                return;
+            }
+        }
+
+        let is_code_fence = line.trim_start().starts_with("```");
+        let was_in_code_block = self.code_block_rows.contains(&row);
+
+        if is_code_fence {
+            self.code_block_rows.insert(row);
+            let start = line.find("```").unwrap_or(0);
+            self.highlight_index.insert(HighlightRange::new(
+                row,
+                start,
+                line.chars().count(),
+                Style::default().fg(self.code_color),
+                HighlightType::CodeBlock,
+            ));
+            if !was_in_code_block || self.is_in_code_block(row) != self.is_in_code_block(row.saturating_sub(1)) {
+                self.recalc_code_blocks_from(row);
+            }
+            return;
+        }
+
+        if self.is_in_code_block(row) {
+            self.code_block_rows.insert(row);
+            self.highlight_index.insert(HighlightRange::new(
+                row,
+                0,
+                line.chars().count(),
+                Style::default().fg(self.code_color),
+                HighlightType::CodeBlock,
+            ));
+            return;
+        }
+
+        self.code_block_rows.remove(&row);
+        self.highlight_line_markdown(row, &line);
+    }
+
+    fn is_in_code_block(&self, row: usize) -> bool {
+        let mut in_block = false;
+        for r in 0..=row {
+            if let Some(line) = self.buffer.line(r) {
+                if line.trim_start().starts_with("```") {
+                    in_block = !in_block;
+                }
+            }
+        }
+        in_block
+    }
+
+    fn recalc_code_blocks_from(&mut self, start_row: usize) {
+        let line_count = self.buffer.line_count();
+        let mut in_code_block = if start_row > 0 { self.is_in_code_block(start_row - 1) } else { false };
+
+        for row in start_row..line_count {
+            let line = match self.buffer.line(row) {
+                Some(l) => l.to_string(),
+                None => continue,
+            };
+
+            if let Some(fm_end) = self.frontmatter_end {
+                if row <= fm_end {
+                    continue;
+                }
+            }
+
+            self.highlight_index.clear_row_of_type(row, HighlightType::CodeBlock);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Header);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Blockquote);
+            self.highlight_index.clear_row_of_type(row, HighlightType::ListMarker);
+            self.highlight_index.clear_row_of_type(row, HighlightType::InlineCode);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Link);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Bold);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Italic);
+            self.row_style_cache.borrow_mut().invalidate_row(row);
+
+            if line.trim_start().starts_with("```") {
+                in_code_block = !in_code_block;
+                self.code_block_rows.insert(row);
+                let start = line.find("```").unwrap_or(0);
+                self.highlight_index.insert(HighlightRange::new(
+                    row,
+                    start,
+                    line.chars().count(),
+                    Style::default().fg(self.code_color),
+                    HighlightType::CodeBlock,
+                ));
+                continue;
+            }
+
+            if in_code_block {
+                self.code_block_rows.insert(row);
+                self.highlight_index.insert(HighlightRange::new(
+                    row,
+                    0,
+                    line.chars().count(),
+                    Style::default().fg(self.code_color),
+                    HighlightType::CodeBlock,
+                ));
+            } else {
+                self.code_block_rows.remove(&row);
+                self.highlight_line_markdown(row, &line);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn update_frontmatter_boundary(&mut self) {
+        let old_end = self.frontmatter_end;
+        self.frontmatter_end = self.detect_frontmatter_end();
+
+        if old_end != self.frontmatter_end {
+            let max_row = old_end.unwrap_or(0).max(self.frontmatter_end.unwrap_or(0));
+            for row in 0..=max_row.min(self.buffer.line_count().saturating_sub(1)) {
+                self.update_row_highlights(row);
+            }
+        }
+    }
+
+    /// detect the line index where frontmatter ends, returns None if no valid frontmatter is found.
+    fn detect_frontmatter_end(&self) -> Option<usize> {
+        let line_count = self.buffer.line_count();
+        if line_count == 0 {
+            return None;
+        }
+
+        let first_line = self.buffer.line(0).unwrap_or("");
+        if first_line.trim() != "---" {
+            return None;
+        }
+        for row in 1..line_count {
+            let line = self.buffer.line(row).unwrap_or("");
+            if line.trim() == "---" {
+                return Some(row);
+            }
+        }
+
+        None
+    }
+
     fn highlight_line_markdown(&mut self, row: usize, line: &str) {
         let chars: Vec<char> = line.chars().collect();
         let line_len = chars.len();
@@ -778,7 +1243,7 @@ impl Editor {
         if let Some(header_end) = self.detect_header(line) {
             let level = line.chars().take_while(|&c| c == '#').count();
             let color = self.heading_colors[level.saturating_sub(1).min(5)];
-            self.highlights.push(HighlightRange::new(
+            self.highlight_index.insert(HighlightRange::new(
                 row,
                 0,
                 header_end.min(line_len),
@@ -790,7 +1255,7 @@ impl Editor {
 
         if line.trim_start().starts_with('>') {
             let start = line.find('>').unwrap_or(0);
-            self.highlights.push(HighlightRange::new(
+            self.highlight_index.insert(HighlightRange::new(
                 row,
                 start,
                 start + 1,
@@ -826,7 +1291,7 @@ impl Editor {
         let indent_chars = line.chars().take_while(|c| c.is_whitespace()).count();
 
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
-            self.highlights.push(HighlightRange::new(
+            self.highlight_index.insert(HighlightRange::new(
                 row,
                 indent_chars,
                 indent_chars + 1,
@@ -837,7 +1302,7 @@ impl Editor {
             if trimmed.len() >= 5 {
                 let after_marker = &trimmed[2..];
                 if after_marker.starts_with("[ ] ") || after_marker.starts_with("[x] ") || after_marker.starts_with("[X] ") {
-                    self.highlights.push(HighlightRange::new(
+                    self.highlight_index.insert(HighlightRange::new(
                         row,
                         indent_chars + 2,
                         indent_chars + 5,
@@ -850,7 +1315,7 @@ impl Editor {
         else if let Some(dot_pos) = trimmed.find(". ") {
             let num_part = &trimmed[..dot_pos];
             if num_part.chars().all(|c| c.is_ascii_digit()) && !num_part.is_empty() {
-                self.highlights.push(HighlightRange::new(
+                self.highlight_index.insert(HighlightRange::new(
                     row,
                     indent_chars,
                     indent_chars + dot_pos + 1,
@@ -869,7 +1334,7 @@ impl Editor {
             if chars[i] == '`' && (i + 1 >= chars.len() || chars[i + 1] != '`') {
                 if let Some(end) = chars[i + 1..].iter().position(|&c| c == '`') {
                     let end_pos = i + 1 + end;
-                    self.highlights.push(HighlightRange::new(
+                    self.highlight_index.insert(HighlightRange::new(
                         row,
                         i,
                         end_pos + 1,
@@ -895,7 +1360,7 @@ impl Editor {
                     if bracket_end_pos + 1 < chars.len() && chars[bracket_end_pos + 1] == '(' {
                         if let Some(paren_end) = chars[bracket_end_pos + 2..].iter().position(|&c| c == ')') {
                             let paren_end_pos = bracket_end_pos + 2 + paren_end;
-                            self.highlights.push(HighlightRange::new(
+                            self.highlight_index.insert(HighlightRange::new(
                                 row,
                                 i,
                                 paren_end_pos + 1,
@@ -927,7 +1392,7 @@ impl Editor {
                             if let Some(color) = self.bold_color {
                                 style = style.fg(color);
                             }
-                            self.highlights.push(HighlightRange::new(
+                            self.highlight_index.insert(HighlightRange::new(
                                 row,
                                 i,
                                 j + 2,
@@ -977,7 +1442,7 @@ impl Editor {
                             if let Some(color) = self.italic_color {
                                 style = style.fg(color);
                             }
-                            self.highlights.push(HighlightRange::new(
+                            self.highlight_index.insert(HighlightRange::new(
                                 row,
                                 i,
                                 j + 1,
@@ -1000,17 +1465,18 @@ impl Editor {
     }
 
     fn is_position_highlighted(&self, row: usize, col: usize) -> bool {
-        self.highlights.iter().any(|h| {
-            h.row == row && col >= h.start_col && col < h.end_col &&
+        self.highlight_index.get_row(row).iter().any(|h| {
+            col >= h.start_col && col < h.end_col &&
             (h.highlight_type == HighlightType::InlineCode || h.highlight_type == HighlightType::Link)
         })
     }
 
     pub fn clear_search_highlights(&mut self) {
-        self.highlights.retain(|h| {
+        self.highlight_index.retain(|h| {
             h.highlight_type != HighlightType::SearchMatch &&
             h.highlight_type != HighlightType::SearchMatchCurrent
         });
+        self.row_style_cache.borrow_mut().invalidate_all();
     }
 
     pub fn set_search_highlights(
@@ -1030,14 +1496,15 @@ impl Editor {
                 (match_color, HighlightType::SearchMatch)
             };
 
-            self.highlights.push(HighlightRange {
+            self.highlight_index.insert(HighlightRange {
                 row: *row,
                 start_col: *start_col,
                 end_col: *end_col,
                 style: Style::default().bg(color).fg(Color::Black),
                 highlight_type,
-                priority: 200, 
+                priority: 200,
             });
+            self.row_style_cache.borrow_mut().invalidate_row(*row);
         }
     }
 
@@ -1054,6 +1521,14 @@ impl Editor {
         let safe_col = col.min(line_len);
         self.cursor.move_to(safe_row, safe_col);
         self.ensure_cursor_visible();
+    }
+
+    pub fn set_cursor_no_scroll(&mut self, row: usize, col: usize) {
+        let line_count = self.buffer.line_count();
+        let safe_row = row.min(line_count.saturating_sub(1));
+        let line_len = self.buffer.line_len(safe_row);
+        let safe_col = col.min(line_len);
+        self.cursor.move_to(safe_row, safe_col);
     }
 
     pub fn move_cursor(&mut self, movement: CursorMove) {
@@ -1556,7 +2031,10 @@ impl Editor {
     }
 
     pub fn paste(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
+        let text = self.clipboard.clone().or_else(|| {
+            arboard::Clipboard::new().ok()?.get_text().ok()
+        });
+        if let Some(text) = text {
             self.insert_str(&text);
         }
     }
@@ -1565,38 +2043,51 @@ impl Editor {
     /// For line-wise content: paste below current line
     /// For character-wise content: paste after cursor
     pub fn paste_after(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
-            if self.clipboard_linewise {
-                let (row, col) = self.cursor();
-                let cursor_before = Position { row, col };
-
-                let new_row = row + 1;
-
-                let text_to_insert = text.trim_end_matches('\n');
-                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
-
-                for (i, line) in lines.iter().enumerate() {
-                    self.buffer.insert_line(new_row + i, line.clone());
-                    self.wrap_cache.insert_line(new_row + i);
-                }
-
-                self.cursor.move_to(new_row, 0);
-
-                self.history.record(
-                    EditOperation::LineInsert {
-                        row: new_row,
-                        lines,
-                    },
-                    cursor_before,
-                    Position { row: new_row, col: 0 },
-                );
+        // Try internal clipboard first, then fall back to system clipboard
+        let (text, linewise) = if let Some(text) = self.clipboard.clone() {
+            (text, self.clipboard_linewise)
+        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                // For system clipboard, detect linewise by checking if ends with newline
+                let linewise = text.ends_with('\n');
+                (text, linewise)
             } else {
-                let (row, col) = self.cursor();
-                let line_len = self.buffer.line(row).map(|l| l.chars().count()).unwrap_or(0);
-                let new_col = (col + 1).min(line_len);
-                self.cursor.move_to(row, new_col);
-                self.insert_str(&text);
+                return;
             }
+        } else {
+            return;
+        };
+
+        if linewise {
+            let (row, col) = self.cursor();
+            let cursor_before = Position { row, col };
+
+            let new_row = row + 1;
+
+            let text_to_insert = text.trim_end_matches('\n');
+            let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                self.buffer.insert_line(new_row + i, line.clone());
+                self.wrap_cache.insert_line(new_row + i);
+            }
+
+            self.cursor.move_to(new_row, 0);
+
+            self.history.record(
+                EditOperation::LineInsert {
+                    row: new_row,
+                    lines,
+                },
+                cursor_before,
+                Position { row: new_row, col: 0 },
+            );
+        } else {
+            let (row, col) = self.cursor();
+            let line_len = self.buffer.line(row).map(|l| l.chars().count()).unwrap_or(0);
+            let new_col = (col + 1).min(line_len);
+            self.cursor.move_to(row, new_col);
+            self.insert_str(&text);
         }
     }
 
@@ -1604,32 +2095,44 @@ impl Editor {
     /// For line-wise content: paste above current line
     /// For character-wise content: paste before cursor
     pub fn paste_before(&mut self) {
-        if let Some(text) = self.clipboard.clone() {
-            if self.clipboard_linewise {
-                let (row, col) = self.cursor();
-                let cursor_before = Position { row, col };
-
-                let text_to_insert = text.trim_end_matches('\n');
-                let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
-
-                for (i, line) in lines.iter().enumerate() {
-                    self.buffer.insert_line(row + i, line.clone());
-                    self.wrap_cache.insert_line(row + i);
-                }
-
-                self.cursor.move_to(row, 0);
-
-                self.history.record(
-                    EditOperation::LineInsert {
-                        row,
-                        lines,
-                    },
-                    cursor_before,
-                    Position { row, col: 0 },
-                );
+        let (text, linewise) = if let Some(text) = self.clipboard.clone() {
+            (text, self.clipboard_linewise)
+        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(text) = clipboard.get_text() {
+                // For system clipboard, detect linewise by checking if ends with newline
+                let linewise = text.ends_with('\n');
+                (text, linewise)
             } else {
-                self.insert_str(&text);
+                return;
             }
+        } else {
+            return;
+        };
+
+        if linewise {
+            let (row, col) = self.cursor();
+            let cursor_before = Position { row, col };
+
+            let text_to_insert = text.trim_end_matches('\n');
+            let lines: Vec<String> = text_to_insert.split('\n').map(|s| s.to_string()).collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                self.buffer.insert_line(row + i, line.clone());
+                self.wrap_cache.insert_line(row + i);
+            }
+
+            self.cursor.move_to(row, 0);
+
+            self.history.record(
+                EditOperation::LineInsert {
+                    row,
+                    lines,
+                },
+                cursor_before,
+                Position { row, col: 0 },
+            );
+        } else {
+            self.insert_str(&text);
         }
     }
 
@@ -1644,6 +2147,8 @@ impl Editor {
         let pos = self.cursor.pos();
         self.buffer.insert_char(pos.row, pos.col, c);
         self.wrap_cache.invalidate_line(pos.row);
+
+        self.update_row_highlights(pos.row);
 
         self.history.record(
             EditOperation::Insert { pos, text: c.to_string() },
@@ -1685,6 +2190,7 @@ impl Editor {
         if newline_count == 0 {
             self.buffer.insert_str(pos.row, pos.col, s);
             self.wrap_cache.invalidate_line(pos.row);
+            self.update_row_highlights(pos.row);
             self.cursor.move_to(pos.row, pos.col + s.chars().count());
         } else {
             if !parts[0].is_empty() {
@@ -1707,6 +2213,11 @@ impl Editor {
             }
 
             self.wrap_cache.invalidate_from(pos.row);
+
+            self.highlight_index.shift_rows_after(pos.row + 1, newline_count as isize);
+            self.row_style_cache.borrow_mut().shift_rows_after(pos.row + 1, newline_count as isize);
+            self.recalc_code_blocks_from(pos.row);
+
             self.cursor.move_to(last_idx, last_part.chars().count());
         }
 
@@ -1751,6 +2262,7 @@ impl Editor {
         if let Some((_, prefix_len, true)) = &list_prefix {
             let deleted = self.buffer.delete_range(pos.row, 0, *prefix_len);
             self.wrap_cache.invalidate_line(pos.row);
+            self.update_row_highlights(pos.row);
             self.history.record(
                 EditOperation::Delete {
                     start: Position::new(pos.row, 0),
@@ -1768,6 +2280,9 @@ impl Editor {
         self.buffer.split_line(pos.row, pos.col);
         self.wrap_cache.insert_line(pos.row + 1);
         self.wrap_cache.invalidate_line(pos.row);
+
+        self.highlight_index.shift_rows_after(pos.row + 1, 1);
+        self.row_style_cache.borrow_mut().shift_rows_after(pos.row + 1, 1);
 
         self.history.record(
             EditOperation::SplitLine { pos },
@@ -1793,6 +2308,39 @@ impl Editor {
             self.cursor.move_to(pos.row + 1, 0);
         }
 
+        // Update highlights for both affected rows
+        self.update_row_highlights(pos.row);
+        self.update_row_highlights(pos.row + 1);
+
+        self.ensure_cursor_visible();
+    }
+
+    pub fn open_line_above(&mut self) {
+        let pos = self.cursor.pos();
+        let cursor_before = pos;
+        let indent: String = self.buffer.line(pos.row)
+            .map(|line| line.chars().take_while(|c| c.is_whitespace()).collect())
+            .unwrap_or_default();
+
+        let indent_len = indent.chars().count();
+        self.buffer.insert_line(pos.row, indent.clone());
+        self.wrap_cache.insert_line(pos.row);
+
+        // Shift highlights for inserted line
+        self.highlight_index.shift_rows_after(pos.row, 1);
+        self.row_style_cache.borrow_mut().shift_rows_after(pos.row, 1);
+        self.update_row_highlights(pos.row);
+
+        self.history.record(
+            EditOperation::LineInsert {
+                row: pos.row,
+                lines: vec![indent],
+            },
+            cursor_before,
+            Position::new(pos.row, indent_len),
+        );
+
+        self.cursor.move_to(pos.row, indent_len);
         self.ensure_cursor_visible();
     }
 
@@ -1803,6 +2351,8 @@ impl Editor {
         if pos.col < line_len {
             if let Some(c) = self.buffer.delete_char(pos.row, pos.col) {
                 self.wrap_cache.invalidate_line(pos.row);
+                // Reactive highlight update
+                self.update_row_highlights(pos.row);
                 self.history.record(
                     EditOperation::Delete {
                         start: pos,
@@ -1817,6 +2367,10 @@ impl Editor {
             self.buffer.join_with_previous(pos.row + 1);
             self.wrap_cache.remove_line(pos.row + 1);
             self.wrap_cache.invalidate_line(pos.row);
+            // Line joined: shift highlights and update
+            self.highlight_index.shift_rows_after(pos.row + 1, -1);
+            self.row_style_cache.borrow_mut().shift_rows_after(pos.row + 1, -1);
+            self.update_row_highlights(pos.row);
             self.history.record(
                 EditOperation::JoinLine { row: pos.row + 1, col: line_len },
                 pos,
@@ -1833,6 +2387,8 @@ impl Editor {
             self.cursor.move_to(pos.row, pos.col - 1);
             if let Some(c) = self.buffer.delete_char(pos.row, pos.col - 1) {
                 self.wrap_cache.invalidate_line(pos.row);
+                // Reactive highlight update
+                self.update_row_highlights(pos.row);
                 self.history.record(
                     EditOperation::Delete {
                         start: Position::new(pos.row, pos.col - 1),
@@ -1851,6 +2407,10 @@ impl Editor {
             self.wrap_cache.remove_line(pos.row);
             self.wrap_cache.invalidate_line(pos.row - 1);
 
+            self.highlight_index.shift_rows_after(pos.row, -1);
+            self.row_style_cache.borrow_mut().shift_rows_after(pos.row, -1);
+            self.update_row_highlights(pos.row - 1);
+
             self.history.record(
                 EditOperation::JoinLine { row: pos.row, col: prev_len },
                 cursor_before,
@@ -1865,8 +2425,16 @@ impl Editor {
 
     fn delete_selection_internal(&mut self) {
         if let Some((start, end)) = self.cursor.selection_range() {
+            let lines_deleted = end.row - start.row;
             self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
             self.wrap_cache.invalidate_from(start.row);
+
+            if lines_deleted > 0 {
+                self.highlight_index.shift_rows_after(end.row + 1, -(lines_deleted as isize));
+                self.row_style_cache.borrow_mut().shift_rows_after(end.row + 1, -(lines_deleted as isize));
+            }
+            self.update_row_highlights(start.row);
+
             self.cursor.move_to(start.row, start.col);
             self.cursor.cancel_selection();
         }
@@ -2097,6 +2665,160 @@ impl Editor {
         self.h_scroll_offset
     }
 
+    /// Returns the horizontal scroll offset in display units (accounting for Unicode widths).
+    /// This calculates the display width of characters from 0 to h_scroll_offset on the cursor line.
+    pub fn h_scroll_display_offset(&self) -> usize {
+        if self.h_scroll_offset == 0 {
+            return 0;
+        }
+
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_offset: usize = 0;
+        for (i, ch) in chars.iter().enumerate() {
+            if i >= self.h_scroll_offset {
+                break;
+            }
+            display_offset += char_display_width(*ch, self.tab_width) as usize;
+        }
+        display_offset
+    }
+
+    pub fn line_number_gutter_width(&self) -> u16 {
+        if self.line_number_mode != LineNumberMode::None {
+            self.line_number_width
+        } else {
+            0
+        }
+    }
+    pub fn content_left_offset(&self) -> u16 {
+        self.left_padding + self.line_number_gutter_width()
+    }
+
+    /// Returns the cursor's display column position, accounting for Unicode character widths and tabs.
+    pub fn cursor_display_col(&self) -> usize {
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_col: usize = 0;
+        for (i, ch) in chars.iter().enumerate() {
+            if i >= pos.col {
+                break;
+            }
+            display_col += char_display_width(*ch, self.tab_width) as usize;
+        }
+        display_col
+    }
+
+    /// Returns the cursor screen position info for native cursor positioning.
+    pub fn cursor_screen_info(&self) -> (usize, bool, usize) {
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut display_col: usize = 0;
+        let mut line_display_width: usize = 0;
+
+        for (i, ch) in chars.iter().enumerate() {
+            let ch_width = char_display_width(*ch, self.tab_width) as usize;
+            if i < pos.col {
+                display_col += ch_width;
+            }
+            line_display_width += ch_width;
+        }
+
+        let is_at_line_end = pos.col >= chars.len();
+        (display_col, is_at_line_end, line_display_width)
+    }
+
+    /// Returns the cursor's screen position accounting for line wrapping.
+    pub fn cursor_wrapped_position(&self) -> (usize, usize) {
+        if !self.line_wrap_enabled {
+            return (0, self.cursor_display_col());
+        }
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
+
+        if content_width == 0 {
+            return (0, 0);
+        }
+
+        let pos = self.cursor.pos();
+        let line = self.buffer.line(pos.row).unwrap_or("");
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            return (0, 0);
+        }
+
+        let mut col = 0;
+        let mut visual_line: usize = 0;
+        let mut is_wrapped_continuation = false;
+
+        while col < chars.len() {
+            let mut x: usize = 0;
+            if is_wrapped_continuation && col < chars.len() && chars[col] == ' ' {
+                let is_cursor_on_space = col == pos.col;
+                if !is_cursor_on_space {
+                    col += 1;
+                    if col >= chars.len() {
+                        if pos.col >= chars.len() {
+                            return (visual_line, 0);
+                        }
+                        visual_line += 1;
+                        continue;
+                    }
+                }
+            }
+
+            while col < chars.len() && x < content_width {
+                let ch = chars[col];
+                let ch_width = char_display_width(ch, self.tab_width) as usize;
+
+                if col == pos.col {
+                    return (visual_line, x);
+                }
+
+                x += ch_width;
+                col += 1;
+            }
+
+            if pos.col >= chars.len() && col == chars.len() {
+                return (visual_line, x);
+            }
+
+            is_wrapped_continuation = true;
+            visual_line += 1;
+        }
+
+        (visual_line.saturating_sub(1), 0)
+    }
+    pub fn line_wrapped_height(&self, row: usize) -> usize {
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
+
+        if content_width == 0 {
+            return 1;
+        }
+
+        let line = self.buffer.line(row).unwrap_or("");
+        if line.is_empty() {
+            return 1;
+        }
+
+        let mut display_width: usize = 0;
+        for ch in line.chars() {
+            display_width += char_display_width(ch, self.tab_width) as usize;
+        }
+        ((display_width + content_width - 1) / content_width).max(1)
+    }
+
     /// Center the cursor line on screen (zz command)
     pub fn center_cursor(&mut self) {
         let (cursor_row, _) = self.cursor();
@@ -2127,6 +2849,15 @@ impl Editor {
         (self.h_scroll_offset > 0, line_len > self.h_scroll_offset + self.view_width)
     }
 
+    pub fn content_x_offset(&self) -> u16 {
+        let gutter_width = if self.line_number_mode != LineNumberMode::None {
+            self.line_number_width
+        } else {
+            0
+        };
+        self.left_padding + gutter_width
+    }
+
     pub fn visual_to_logical_coords(&self, visual_y: usize, visual_x: usize) -> (usize, usize) {
         if !self.line_wrap_enabled || self.view_width == 0 {
             let row = visual_y + self.scroll_offset;
@@ -2134,7 +2865,10 @@ impl Editor {
             return (row, col);
         }
 
-        let content_width = self.view_width.saturating_sub(self.right_padding as usize);
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize);
         if content_width == 0 {
             return (self.scroll_offset, 0);
         }
@@ -2144,20 +2878,61 @@ impl Editor {
         let mut row = self.scroll_offset;
 
         while row < line_count {
-            let line_len = self.buffer.line_len(row);
-            let visual_lines_for_row = if line_len == 0 {
-                1
-            } else {
-                (line_len + content_width - 1) / content_width 
-            };
+            let line = self.buffer.line(row).unwrap_or("");
+            let chars: Vec<char> = line.chars().collect();
 
-            if visual_lines_consumed + visual_lines_for_row > visual_y {
-                let visual_offset_in_row = visual_y - visual_lines_consumed;
-                let col = visual_offset_in_row * content_width + visual_x;
-                return (row, col.min(line_len));
+            if chars.is_empty() {
+                if visual_lines_consumed == visual_y {
+                    return (row, 0);
+                }
+                visual_lines_consumed += 1;
+                row += 1;
+                continue;
             }
 
-            visual_lines_consumed += visual_lines_for_row;
+            let mut col_idx = 0;
+            let mut visual_line_of_row = 0;
+
+            while col_idx < chars.len() {
+                let mut visual_line_start = col_idx;
+                let mut x: usize = 0;
+                let is_wrapped_continuation = visual_line_of_row > 0;
+                if is_wrapped_continuation && col_idx < chars.len() && chars[col_idx] == ' ' {
+                    col_idx += 1;
+                    visual_line_start = col_idx;
+                    if col_idx >= chars.len() {
+                        if visual_lines_consumed + visual_line_of_row == visual_y {
+                            return (row, col_idx);
+                        }
+                        visual_line_of_row += 1;
+                        continue;
+                    }
+                }
+
+                while col_idx < chars.len() && x < content_width {
+                    let ch = chars[col_idx];
+                    let ch_width = char_display_width(ch, self.tab_width) as usize;
+                    x += ch_width;
+                    col_idx += 1;
+                }
+
+                if visual_lines_consumed + visual_line_of_row == visual_y {
+                    let mut target_x: usize = 0;
+                    for i in visual_line_start..col_idx {
+                        let ch = chars[i];
+                        let ch_width = char_display_width(ch, self.tab_width) as usize;
+                        if target_x + ch_width > visual_x {
+                            return (row, i);
+                        }
+                        target_x += ch_width;
+                    }
+                    return (row, col_idx);
+                }
+
+                visual_line_of_row += 1;
+            }
+
+            visual_lines_consumed += visual_line_of_row.max(1);
             row += 1;
         }
 
@@ -2195,6 +2970,35 @@ impl Widget for &Editor {
 }
 
 impl Editor {
+    /// Renders a cursor at the given position in the buffer
+    fn render_cursor_at(&self, buf: &mut RatatuiBuffer, x: u16, y: u16, ch: char, base_style: Style) {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            match self.cursor_shape {
+                CursorShape::Block => {
+                    // Full reversed block for Normal mode
+                    cell.set_char(ch);
+                    cell.set_style(base_style.add_modifier(Modifier::REVERSED));
+                }
+                CursorShape::Bar => {
+                    // For bar cursor, don't render custom cursor - use terminal's native cursor
+                    // Just render the character normally, terminal cursor will be positioned here
+                    cell.set_char(ch);
+                    cell.set_style(base_style);
+                }
+                CursorShape::Underline => {
+                    // Underline + Reversed for Replace mode - more visible than underline alone
+                    cell.set_char(ch);
+                    cell.set_style(base_style.add_modifier(Modifier::UNDERLINED | Modifier::REVERSED));
+                }
+            }
+        }
+    }
+
+    /// Returns true if the cursor shape uses the terminal's native cursor (not rendered by editor)
+    pub fn uses_native_cursor(&self) -> bool {
+        matches!(self.cursor_shape, CursorShape::Bar)
+    }
+
     fn render_wrapped(&self, area: Rect, buf: &mut RatatuiBuffer) {
         // Account for line number gutter
         let gutter_width = if self.line_number_mode != LineNumberMode::None { self.line_number_width } else { 0 };
@@ -2251,14 +3055,14 @@ impl Editor {
 
             if chars.is_empty() {
                 if is_cursor_line {
-                    if let Some(cell) = buf.cell_mut((content_start_x, screen_y)) {
-                        cell.set_char(' ');
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
+                    self.render_cursor_at(buf, content_start_x, screen_y, ' ', Style::default());
                 }
                 screen_y += 1;
                 continue;
             }
+
+            // Get cached row styles once per row (O(1) per char instead of O(H) per char)
+            let row_styles = self.get_row_styles_cached(row);
 
             // Render line with wrapping
             let mut col = 0;
@@ -2276,10 +3080,7 @@ impl Editor {
                         col += 1;
                         if col >= chars.len() {
                             if is_cursor_line && cursor_pos.col >= chars.len() {
-                                if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                                    cell.set_char(' ');
-                                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                                }
+                                self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                             }
                             screen_y += 1;
                             break;
@@ -2289,11 +3090,8 @@ impl Editor {
 
                 while col < chars.len() && x < content_end_x {
                     let ch = chars[col];
-                    let mut style = self.get_char_style(row, col, selection, block_selection);
+                    let base_style = self.get_char_style_fast(&row_styles, col, row, selection, block_selection);
                     let is_cursor = is_cursor_line && col == cursor_pos.col;
-                    if is_cursor {
-                        style = style.add_modifier(Modifier::REVERSED);
-                    }
 
                     let ch_width = char_display_width(ch, self.tab_width);
                     if ch == '\t' {
@@ -2301,20 +3099,20 @@ impl Editor {
                             if x >= content_end_x {
                                 break;
                             }
-                            if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                            if i == 0 && is_cursor {
+                                self.render_cursor_at(buf, x, screen_y, ' ', base_style);
+                            } else if let Some(cell) = buf.cell_mut((x, screen_y)) {
                                 cell.set_char(' ');
-                                if i == 0 && is_cursor {
-                                    cell.set_style(style);
-                                } else {
-                                    cell.set_style(self.get_char_style(row, col, selection, block_selection));
-                                }
+                                cell.set_style(base_style);
                             }
                             x += 1;
                         }
                     } else {
-                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
+                        if is_cursor {
+                            self.render_cursor_at(buf, x, screen_y, ch, base_style);
+                        } else if let Some(cell) = buf.cell_mut((x, screen_y)) {
                             cell.set_char(ch);
-                            cell.set_style(style);
+                            cell.set_style(base_style);
                         }
                         x += ch_width;
                     }
@@ -2325,10 +3123,7 @@ impl Editor {
                 // Use full area width to allow cursor in right padding
                 if is_cursor_line && cursor_pos.col >= chars.len() && col == chars.len() {
                     if x < area.x + area.width {
-                        if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                            cell.set_char(' ');
-                            cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                        }
+                        self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                     }
                 }
 
@@ -2338,10 +3133,7 @@ impl Editor {
         }
 
         if self.buffer.is_empty() {
-            if let Some(cell) = buf.cell_mut((content_start_x, area.y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
+            self.render_cursor_at(buf, content_start_x, area.y, ' ', Style::default());
         }
     }
 
@@ -2394,6 +3186,8 @@ impl Editor {
                 }
             }
 
+            let row_styles = self.get_row_styles_cached(row);
+
             let mut x = content_start_x;
             for col in line_h_scroll..chars.len() {
                 if x >= content_end_x {
@@ -2401,11 +3195,8 @@ impl Editor {
                 }
 
                 let ch = chars[col];
-                let mut style = self.get_char_style(row, col, selection, block_selection);
+                let base_style = self.get_char_style_fast(&row_styles, col, row, selection, block_selection);
                 let is_cursor = is_cursor_line && col == cursor_pos.col;
-                if is_cursor {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
 
                 let ch_width = char_display_width(ch, self.tab_width);
                 if ch == '\t' {
@@ -2413,20 +3204,20 @@ impl Editor {
                         if x >= content_end_x {
                             break;
                         }
-                        if let Some(cell) = buf.cell_mut((x, y)) {
+                        if i == 0 && is_cursor {
+                            self.render_cursor_at(buf, x, y, ' ', base_style);
+                        } else if let Some(cell) = buf.cell_mut((x, y)) {
                             cell.set_char(' ');
-                            if i == 0 && is_cursor {
-                                cell.set_style(style);
-                            } else {
-                                cell.set_style(self.get_char_style(row, col, selection, block_selection));
-                            }
+                            cell.set_style(base_style);
                         }
                         x += 1;
                     }
                 } else {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
+                    if is_cursor {
+                        self.render_cursor_at(buf, x, y, ch, base_style);
+                    } else if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(ch);
-                        cell.set_style(style);
+                        cell.set_style(base_style);
                     }
                     x += ch_width;
                 }
@@ -2434,10 +3225,7 @@ impl Editor {
 
             if is_cursor_line && cursor_pos.col >= chars.len() {
                 if x < area.x + area.width {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_char(' ');
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
+                    self.render_cursor_at(buf, x, y, ' ', Style::default());
                 }
             }
 
@@ -2445,15 +3233,28 @@ impl Editor {
         }
 
         if self.buffer.line_count() <= self.scroll_offset {
-            if let Some(cell) = buf.cell_mut((content_start_x, area.y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-            }
+            self.render_cursor_at(buf, content_start_x, area.y, ' ', Style::default());
         }
     }
 
+    #[allow(dead_code)]
     fn get_char_style(
         &self,
+        row: usize,
+        col: usize,
+        selection: Option<(Position, Position)>,
+        block_selection: Option<(Position, Position)>,
+    ) -> Style {
+        let row_styles = self.get_row_styles_cached(row);
+        let base_style = row_styles.get(col).copied().unwrap_or_default();
+
+        self.apply_selection_style(base_style, row, col, selection, block_selection)
+    }
+
+    #[inline]
+    fn apply_selection_style(
+        &self,
+        base_style: Style,
         row: usize,
         col: usize,
         selection: Option<(Position, Position)>,
@@ -2496,13 +3297,18 @@ impl Editor {
             }
         }
 
-        if let Some(highlight_style) = self.highlight_style_at(row, col) {
-            return highlight_style;
-        }
-        if let Some(wiki_style) = self.wiki_link_style_at(row, col) {
-            return wiki_style;
-        }
+        base_style
+    }
 
-        Style::default()
+    fn get_char_style_fast(
+        &self,
+        row_styles: &[Style],
+        col: usize,
+        row: usize,
+        selection: Option<(Position, Position)>,
+        block_selection: Option<(Position, Position)>,
+    ) -> Style {
+        let base_style = row_styles.get(col).copied().unwrap_or_default();
+        self.apply_selection_style(base_style, row, col, selection, block_selection)
     }
 }
