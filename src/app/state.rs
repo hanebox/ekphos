@@ -5522,7 +5522,7 @@ impl App {
     pub fn search_picker_select_prev(&mut self) {
         // Must match POPUP_MAX_VISIBLE_ITEMS / POPUP_MAX_VISIBLE_ITEMS_CONTENT in ui/file_picker.rs
         const MAX_VISIBLE_FILES: usize = 10;
-        const MAX_VISIBLE_CONTENT: usize = 16;
+        const MAX_VISIBLE_CONTENT: usize = 18;
         if let SearchPickerState::Open { mode, file_results, content_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
             let (results_len, max_visible) = match mode {
                 SearchPickerMode::Files => (file_results.len(), MAX_VISIBLE_FILES),
@@ -5550,7 +5550,7 @@ impl App {
     pub fn search_picker_select_next(&mut self) {
         // Must match POPUP_MAX_VISIBLE_ITEMS / POPUP_MAX_VISIBLE_ITEMS_CONTENT in ui/file_picker.rs
         const MAX_VISIBLE_FILES: usize = 10;
-        const MAX_VISIBLE_CONTENT: usize = 16;
+        const MAX_VISIBLE_CONTENT: usize = 18;
         if let SearchPickerState::Open { mode, file_results, content_results, selected_index, scroll_offset, .. } = &mut self.search_picker {
             let (results_len, max_visible) = match mode {
                 SearchPickerMode::Files => (file_results.len(), MAX_VISIBLE_FILES),
@@ -5668,7 +5668,7 @@ impl App {
     }
     pub fn search_picker_scroll_down(&mut self) {
         const MAX_VISIBLE_FILES: usize = 10; // Must match POPUP_MAX_VISIBLE_ITEMS
-        const MAX_VISIBLE_CONTENT: usize = 16; // Must match POPUP_MAX_VISIBLE_ITEMS_CONTENT
+        const MAX_VISIBLE_CONTENT: usize = 18; // Must match POPUP_MAX_VISIBLE_ITEMS_CONTENT
         if let SearchPickerState::Open {
             mode,
             file_results,

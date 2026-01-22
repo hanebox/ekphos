@@ -11,9 +11,9 @@ use crate::app::{App, SearchPickerMode, SearchPickerState};
 const POPUP_MAX_WIDTH: u16 = 80;
 const POPUP_MAX_WIDTH_WITH_PREVIEW: u16 = 110;
 const POPUP_MAX_VISIBLE_ITEMS: usize = 10;
-const POPUP_MAX_VISIBLE_ITEMS_CONTENT: usize = 16;
+const POPUP_MAX_VISIBLE_ITEMS_CONTENT: usize = 18;
 const POPUP_MIN_CONTENT_HEIGHT: usize = 3;
-const POPUP_MIN_CONTENT_HEIGHT_WITH_PREVIEW: usize = 16;
+const POPUP_MIN_CONTENT_HEIGHT_WITH_PREVIEW: usize = 17;
 const PREVIEW_LINES_BEFORE: usize = 5;
 const PREVIEW_LINES_AFTER: usize = 8;
 
@@ -32,8 +32,8 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
         let theme = &app.theme;
         let area = f.area();
 
-        // Content mode uses wider layout for preview panel
-        let has_preview = *mode == SearchPickerMode::Content && !content_results.is_empty();
+        // Content mode always uses wider layout for preview panel (prevents layout shift)
+        let has_preview = *mode == SearchPickerMode::Content;
         let base_width = if has_preview { POPUP_MAX_WIDTH_WITH_PREVIEW } else { POPUP_MAX_WIDTH };
         let popup_width = base_width.min((area.width as f32 * 0.9) as u16).min(area.width.saturating_sub(4));
 
@@ -214,12 +214,28 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
             // Render compact content list
             let mut list_lines: Vec<Line> = Vec::new();
             let max_name_width = (list_area.width as usize).saturating_sub(4);
-            render_content_results_compact(&mut list_lines, content_results, *selected_index, *scroll_offset, max_name_width, list_area.width, theme, query);
+
+            if content_results.is_empty() {
+                let empty_message = if *search_in_progress {
+                    "Searching..."
+                } else if query.is_empty() {
+                    "Type to search content..."
+                } else {
+                    "No matching content"
+                };
+                list_lines.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(empty_message, Style::default().fg(theme.muted)),
+                ]));
+            } else {
+                render_content_results_compact(&mut list_lines, content_results, *selected_index, *scroll_offset, max_name_width, list_area.width, theme, query);
+            }
+
             let list = Paragraph::new(list_lines).style(Style::default().bg(theme.background_secondary));
             f.render_widget(list, list_area);
 
             // Render preview
-            render_preview(f, app, content_results, *selected_index, preview_area, query, theme);
+            render_preview(f, app, content_results, *selected_index, preview_area, query, theme, *search_in_progress);
 
             // Store areas for mouse handling
             app.search_picker_area = popup_area;
@@ -622,6 +638,7 @@ fn render_preview(
     area: Rect,
     query: &str,
     theme: &crate::config::Theme,
+    search_in_progress: bool,
 ) {
     // Split area: fixed header (2 lines) + scrollable content
     let header_height = 2u16;
@@ -780,13 +797,44 @@ fn render_preview(
             .scroll((scroll_offset as u16, 0));
         f.render_widget(content, content_area);
     } else {
-        // No result selected - show empty state
+        let empty_message = if search_in_progress {
+            " Searching..."
+        } else if query.is_empty() {
+            " Type to search content..."
+        } else {
+            " No matching content"
+        };
+
+        let header_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 2.min(area.height),
+        };
+        let content_area = Rect {
+            x: area.x,
+            y: area.y + header_area.height,
+            width: area.width,
+            height: area.height.saturating_sub(header_area.height),
+        };
+
+        let header_lines = vec![
+            Line::from(Span::styled(" Preview", Style::default().fg(theme.muted))),
+            Line::from(Span::styled(
+                " ".repeat(area.width as usize),
+                Style::default().fg(theme.muted),
+            )),
+        ];
+        let header = Paragraph::new(header_lines)
+            .style(Style::default().bg(theme.background_secondary));
+        f.render_widget(header, header_area);
+
         let empty_lines = vec![
-            Line::from(Span::styled(" No preview available", Style::default().fg(theme.muted))),
+            Line::from(Span::styled(empty_message, Style::default().fg(theme.muted))),
         ];
         let empty = Paragraph::new(empty_lines)
             .style(Style::default().bg(theme.background_secondary));
-        f.render_widget(empty, area);
+        f.render_widget(empty, content_area);
     }
 }
 
