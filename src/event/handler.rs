@@ -1562,13 +1562,13 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                             if *note_index == note_idx {
                                 app.selected_sidebar_index = idx;
                                 app.selected_note = note_idx;
+                                app.push_navigation_history(note_idx);
                                 app.content_cursor = 0;
                                 app.content_scroll_offset = 0;
                                 app.update_content_items();
                                 app.update_outline();
                                 app.dialog = DialogState::None;
                                 app.focus = Focus::Content;
-                                app.push_navigation_history(note_idx);
                                 return;
                             }
                         }

@@ -3414,12 +3414,12 @@ impl App {
                         self.end_buffer_search();
                         self.selected_sidebar_index = idx;
                         self.selected_note = note_idx;
+                        self.push_navigation_history(note_idx);
                         self.content_cursor = 0;
                         self.content_scroll_offset = 0;
                         self.selected_link_index = 0;
                         self.update_content_items();
                         self.update_outline();
-                        self.push_navigation_history(note_idx);
 
                         // If heading is specified, navigate to it
                         if let Some(heading_text) = heading {
@@ -5472,11 +5472,11 @@ impl App {
                         self.end_buffer_search();
                         self.selected_sidebar_index = idx;
                         self.selected_note = note_index;
+                        self.push_navigation_history(note_index);
                         self.content_cursor = 0;
                         self.content_scroll_offset = 0;
                         self.update_content_items();
                         self.update_outline();
-                        self.push_navigation_history(note_index);
 
                         if let Some(target_line) = line_number {
                             let target_line_0indexed = target_line.saturating_sub(1);
