@@ -90,11 +90,22 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_area = if app.zen_mode {
         let content_width = area.width.min(ZEN_MAX_WIDTH);
         let x_offset = (area.width.saturating_sub(content_width)) / 2;
+        if app.floating_cursor_mode {
+            let status_area = Rect {
+                x: area.x + x_offset,
+                y: area.y,
+                width: content_width,
+                height: 1,
+            };
+            render_zen_content_status_line(f, theme, status_area);
+        }
+
+        let y_offset = if app.floating_cursor_mode { 2 } else { 1 };
         Rect {
             x: area.x + x_offset,
-            y: area.y + 1,
+            y: area.y + y_offset,
             width: content_width,
-            height: area.height.saturating_sub(1),
+            height: area.height.saturating_sub(y_offset),
         }
     } else {
         let block = Block::default()
@@ -2129,6 +2140,21 @@ fn render_tag_badges_inline(
 
     let paragraph = Paragraph::new(Line::from(spans)).style(style);
     f.render_widget(paragraph, tag_area);
+}
+
+fn render_zen_content_status_line(f: &mut Frame, theme: &Theme, area: Rect) {
+    let status_line = Line::from(vec![
+        Span::styled(
+            " FLOAT ",
+            Style::default()
+                .fg(theme.background)
+                .bg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let paragraph = Paragraph::new(status_line);
+    f.render_widget(paragraph, area);
 }
 
 fn render_frontmatter_line(
