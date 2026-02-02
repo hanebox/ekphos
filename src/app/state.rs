@@ -38,6 +38,34 @@ pub struct BlockInsertState {
 
 use super::welcome_notes::{GETTING_STARTED_CONTENT, DEMO_NOTE_CONTENT};
 
+fn cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".cache")
+        })
+        .join("ekphos")
+}
+
+fn last_note_path() -> PathBuf {
+    cache_dir().join("last_note")
+}
+
+fn read_last_opened_note() -> Option<PathBuf> {
+    std::fs::read_to_string(last_note_path())
+        .ok()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.exists())
+}
+
+fn save_last_opened_note(path: &PathBuf) {
+    let cache = cache_dir();
+    let _ = std::fs::create_dir_all(&cache);
+    let _ = std::fs::write(last_note_path(), path.to_string_lossy().as_bytes());
+}
+
 #[derive(Debug, Clone)]
 pub struct Note {
     pub title: String,
@@ -769,6 +797,10 @@ impl App {
         if !is_first_launch && notes_dir_exists {
             app.load_notes_from_dir();
             app.start_index_build();
+
+            if let Some(last_path) = read_last_opened_note() {
+                app.select_note_by_path(&last_path);
+            }
         }
 
         app
@@ -952,6 +984,8 @@ impl App {
             app.start_index_build();
             if let Some(ref target_path) = target_file {
                 app.select_note_by_path(target_path);
+            } else if let Some(last_path) = read_last_opened_note() {
+                app.select_note_by_path(&last_path);
             }
         }
 
@@ -4252,6 +4286,14 @@ impl App {
 
     pub fn current_note(&self) -> Option<&Note> {
         self.notes.get(self.selected_note)
+    }
+
+    pub fn save_last_opened_note_to_cache(&self) {
+        if let Some(note) = self.current_note() {
+            if let Some(ref path) = note.file_path {
+                save_last_opened_note(path);
+            }
+        }
     }
 
     pub fn resolve_image_path(&self, path: &str) -> Option<PathBuf> {

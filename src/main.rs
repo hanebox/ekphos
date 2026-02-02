@@ -326,6 +326,8 @@ fn main() -> io::Result<()> {
     // Main loop
     let result = run_app(&mut terminal, &mut app);
 
+    app.save_last_opened_note_to_cache();
+
     // Restore terminal
     disable_raw_mode()?;
     execute!(
