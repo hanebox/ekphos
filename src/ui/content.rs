@@ -2085,7 +2085,7 @@ fn render_tag_badges_inline(
     area: Rect,
     is_cursor: bool,
 ) {
-    if area.height < 2 {
+    if area.height == 0 {
         return;
     }
 
@@ -2113,10 +2113,10 @@ fn render_tag_badges_inline(
         spans.push(Span::styled(d, Style::default().fg(theme.content.frontmatter)));
     }
 
-    // Render on second line (first line is padding)
+    let y_offset = if area.height >= 2 { 1 } else { 0 };
     let tag_area = Rect {
         x: area.x,
-        y: area.y + 1,
+        y: area.y + y_offset,
         width: area.width,
         height: 1,
     };
