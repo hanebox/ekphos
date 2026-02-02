@@ -503,7 +503,7 @@ pub struct App {
     pub mode: Mode,
     pub editor: Editor,
     pub picker: Option<Picker>,
-    pub image_cache: HashMap<String, DynamicImage>,
+    pub image_cache_dir: PathBuf,
     pub current_image: Option<ImageState>,
     pub pending_images: HashSet<String>,
     pub image_sender: Sender<(String, DynamicImage)>,
@@ -702,7 +702,7 @@ impl App {
             mode: Mode::Normal,
             editor,
             picker,
-            image_cache: HashMap::new(),
+            image_cache_dir: get_image_cache_dir(),
             current_image: None,
             pending_images: HashSet::new(),
             image_sender,
@@ -888,7 +888,7 @@ impl App {
             mode: Mode::Normal,
             editor,
             picker,
-            image_cache: HashMap::new(),
+            image_cache_dir: get_image_cache_dir(),
             current_image: None,
             pending_images: HashSet::new(),
             image_sender,
@@ -4601,15 +4601,21 @@ impl App {
     pub fn poll_pending_images(&mut self) {
         while let Ok((url, img)) = self.image_receiver.try_recv() {
             self.pending_images.remove(&url);
-            const MAX_CACHED_IMAGES: usize = 20;
-            if self.image_cache.len() >= MAX_CACHED_IMAGES {
-                if let Some(key) = self.image_cache.keys().next().cloned() {
-                    self.image_cache.remove(&key);
-                }
-            }
-
-            self.image_cache.insert(url, img);
+            self.cache_image(&url, img);
         }
+    }
+    pub fn cache_image(&self, key: &str, img: DynamicImage) {
+        let resized = resize_for_cache(img);
+        let path = self.image_cache_dir.join(cache_key_to_filename(key));
+        let _ = resized.save(&path);
+    }
+    pub fn get_cached_image(&self, key: &str) -> Option<DynamicImage> {
+        let path = self.image_cache_dir.join(cache_key_to_filename(key));
+        image::open(&path).ok()
+    }
+    pub fn is_image_cached(&self, key: &str) -> bool {
+        let path = self.image_cache_dir.join(cache_key_to_filename(key));
+        path.exists()
     }
 
     pub fn is_image_pending(&self, url: &str) -> bool {
@@ -4617,7 +4623,7 @@ impl App {
     }
 
     pub fn start_remote_image_fetch(&mut self, url: &str) {
-        if self.pending_images.contains(url) || self.image_cache.contains_key(url) {
+        if self.pending_images.contains(url) || self.is_image_cached(url) {
             return;
         }
 
@@ -5757,6 +5763,36 @@ fn fetch_remote_image_blocking(url: &str) -> Option<DynamicImage> {
     response.into_reader().take(10 * 1024 * 1024).read_to_end(&mut bytes).ok()?;
 
     image::load_from_memory(&bytes).ok()
+}
+fn get_image_cache_dir() -> PathBuf {
+    let dir = cache_dir().join("images");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+fn cache_key_to_filename(key: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    format!("{:x}.png", hasher.finish())
+}
+fn resize_for_cache(img: DynamicImage) -> DynamicImage {
+    const MAX_DIMENSION: u32 = 300;
+    let (width, height) = (img.width(), img.height());
+    if width <= MAX_DIMENSION && height <= MAX_DIMENSION {
+        return img;
+    }
+
+    let scale = if width > height {
+        MAX_DIMENSION as f32 / width as f32
+    } else {
+        MAX_DIMENSION as f32 / height as f32
+    };
+
+    let new_width = (width as f32 * scale) as u32;
+    let new_height = (height as f32 * scale) as u32;
+
+    img.resize(new_width, new_height, image::imageops::FilterType::Triangle)
 }
 
 impl Default for App {

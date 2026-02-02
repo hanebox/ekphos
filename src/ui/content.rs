@@ -1057,28 +1057,6 @@ where
                             spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
                         }
 
-                        let alt_text = &remaining[2..1 + bracket_end];
-                        let image_url = &after_bracket[..paren_end];
-
-                        let display_text = if alt_text.is_empty() {
-                            format!("[img: {}]", image_url)
-                        } else {
-                            format!("[img: {}]", alt_text)
-                        };
-
-                        let is_selected = selected_link == Some(link_index);
-                        let style = if is_selected {
-                            Style::default()
-                                .fg(theme.background)
-                                .bg(theme.warning)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                                .fg(content_theme.link)
-                                .add_modifier(Modifier::UNDERLINED)
-                        };
-
-                        spans.push(Span::styled(display_text, style));
                         link_index += 1;
 
                         let total_link_len = 1 + bracket_end + 2 + paren_end + 1;
@@ -1875,7 +1853,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string());
 
-    let is_cached = app.image_cache.contains_key(&resolved_path_str);
+    let is_cached = app.is_image_cached(&resolved_path_str);
 
     // Check if we need to load a new image
     let need_load = match &app.current_image {
@@ -1885,8 +1863,8 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     if need_load {
         // Load image from cache, disk, or trigger async fetch for remote
-        let img = if let Some(img) = app.image_cache.get(&resolved_path_str) {
-            Some(img.clone())
+        let img = if let Some(img) = app.get_cached_image(&resolved_path_str) {
+            Some(img)
         } else if is_remote {
             if !is_pending {
                 app.start_remote_image_fetch(path);
@@ -1894,8 +1872,8 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             None
         } else if let Some(ref resolved) = resolved_path {
             if let Ok(img) = image::open(resolved) {
-                app.image_cache.insert(resolved_path_str.clone(), img.clone());
-                Some(img)
+                app.cache_image(&resolved_path_str, img);
+                app.get_cached_image(&resolved_path_str)
             } else {
                 None
             }
@@ -1926,11 +1904,11 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
     };
 
     let title = if is_pending {
-        format!(" Loading: {} ", path)
+        " Loading... ".to_string()
     } else if show_hint {
-        format!(" Image: {} Open  ↗ ", path)
+        " Open ↗ ".to_string()
     } else {
-        format!(" Image: {} ", path)
+        "".to_string()
     };
 
     let block = Block::default()
@@ -1957,7 +1935,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
 
     if let Some(state) = &mut app.current_image {
         if state.path == resolved_path_str {
-            let image_widget = StatefulImage::new(None);
+            let image_widget = StatefulImage::new();
             f.render_stateful_widget(image_widget, inner_area, &mut state.image);
         }
     } else if !is_remote {
@@ -2001,8 +1979,8 @@ fn render_inline_thumbnails(
             .unwrap_or_else(|| path.to_string());
 
         let is_pending = is_remote && app.is_image_pending(path);
-        let img = if let Some(img) = app.image_cache.get(&resolved_path_str) {
-            Some(img.clone())
+        let img = if let Some(img) = app.get_cached_image(&resolved_path_str) {
+            Some(img)
         } else if is_remote {
             if !is_pending {
                 app.start_remote_image_fetch(path);
@@ -2010,8 +1988,8 @@ fn render_inline_thumbnails(
             None
         } else if let Some(ref resolved) = resolved_path {
             if let Ok(img) = image::open(resolved) {
-                app.image_cache.insert(resolved_path_str.clone(), img.clone());
-                Some(img)
+                app.cache_image(&resolved_path_str, img);
+                app.get_cached_image(&resolved_path_str)
             } else {
                 None
             }
@@ -2024,7 +2002,7 @@ fn render_inline_thumbnails(
                 image: protocol,
                 path: resolved_path_str.clone(),
             };
-            let image_widget = StatefulImage::new(None);
+            let image_widget = StatefulImage::new();
             f.render_stateful_widget(image_widget, thumb_area, &mut thumb_state.image);
         } else if is_pending {
             let loading = Paragraph::new("  ⏳ Loading...")
