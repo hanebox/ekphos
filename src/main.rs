@@ -28,6 +28,104 @@ use event::run_app;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn check_for_updates() -> bool {
+    use std::io::Write;
+    use std::thread;
+    use std::time::Duration;
+
+    let config = config::Config::load();
+    if !config.check_updates {
+        return true;
+    }
+    let latest = match get_latest_version() {
+        Some(v) => v,
+        None => return true, 
+    };
+    if !is_newer_version(&latest, VERSION) {
+        return true; 
+    }
+
+    let skipped = get_skipped_version();
+    let already_skipped = skipped.as_ref() == Some(&latest);
+
+    println!();
+    println!("  A new version of ekphos is available: v{} (current: v{})", latest, VERSION);
+    println!();
+    println!("  To update:");
+    println!("    Cargo:    cargo install ekphos");
+    println!("    Homebrew: brew upgrade ekphos");
+    println!("    AUR:      yay -S ekphos");
+    println!();
+    println!("  Changelog: https://github.com/hanebox/ekphos/releases");
+    println!();
+
+    if already_skipped {
+        println!("  Please update. Launching in 1 second...");
+        let _ = io::stdout().flush();
+        thread::sleep(Duration::from_secs(1));
+        return true;
+    }
+
+    print!("  Press Enter to continue, or 'q' to quit and update: ");
+    let _ = io::stdout().flush();
+
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return true;
+    }
+
+    let input = input.trim().to_lowercase();
+    if input == "q" || input == "quit" {
+        println!();
+        return false;
+    }
+
+    // User cose to continue, save this version as skipped
+    save_skipped_version(&latest);
+    true
+}
+
+fn skipped_version_path() -> PathBuf {
+    config::Config::config_dir().join(".skipped_update")
+}
+
+fn get_skipped_version() -> Option<String> {
+    fs::read_to_string(skipped_version_path()).ok()
+}
+
+fn save_skipped_version(version: &str) {
+    let path = skipped_version_path();
+    let _ = fs::write(path, version);
+}
+fn get_latest_version() -> Option<String> {
+    let response = ureq::get("https://api.github.com/repos/hanebox/ekphos/releases/latest")
+        .set("User-Agent", "ekphos")
+        .timeout(std::time::Duration::from_secs(3))
+        .call()
+        .ok()?;
+
+    let body = response.into_string().ok()?;
+    let tag_start = body.find("\"tag_name\":")?;
+    let after_tag = &body[tag_start + 11..];
+    let quote_start = after_tag.find('"')? + 1;
+    let quote_end = after_tag[quote_start..].find('"')?;
+    let version = after_tag[quote_start..quote_start + quote_end].trim_start_matches('v');
+
+    Some(version.to_string())
+}
+
+fn is_newer_version(remote: &str, local: &str) -> bool {
+    let parse = |v: &str| -> (u32, u32, u32) {
+        let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+        (
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        )
+    };
+    parse(remote) > parse(local)
+}
+
 fn print_help() {
     println!("ekphos {}", VERSION);
     println!("A lightweight, fast, terminal-based markdown research tool");
@@ -209,6 +307,10 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+    }
+
+    if !check_for_updates() {
+        return Ok(());
     }
 
     // Setup terminal
