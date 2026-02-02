@@ -338,17 +338,50 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    let mut current_lang = String::new();
-    if let Some(&first_visible_idx) = visible_indices.first() {
-        for i in (0..first_visible_idx).rev() {
-            if let ContentItem::CodeFence(lang) = &app.content_items[i] {
-                if !lang.is_empty() {
-                    current_lang = lang.clone();
+    // Pre-compute code block highlights for proper syntax state tracking
+    let code_block_highlights: std::collections::HashMap<usize, Vec<Span<'static>>> = {
+        app.ensure_highlighter();
+        let highlighter = app.get_highlighter();
+        let mut highlights = std::collections::HashMap::new();
+
+        if let Some(hl) = highlighter {
+            let mut block_start: Option<(usize, String)> = None; 
+
+            for (i, item) in app.content_items.iter().enumerate() {
+                match item {
+                    ContentItem::CodeFence(lang) => {
+                        if let Some((start_idx, block_lang)) = block_start.take() {
+                            let mut lines: Vec<(usize, String)> = Vec::new();
+                            for j in (start_idx + 1)..i {
+                                if let ContentItem::CodeLine(line) = &app.content_items[j] {
+                                    lines.push((j, expand_tabs(line)));
+                                }
+                            }
+
+                            if !lines.is_empty() && !block_lang.is_empty() {
+                                let block_content: String = lines.iter()
+                                    .map(|(_, l)| l.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+
+                                let highlighted = hl.highlight_block(&block_content, &block_lang);
+                                for (line_idx, (item_idx, _)) in lines.iter().enumerate() {
+                                    if let Some(spans) = highlighted.get(line_idx) {
+                                        highlights.insert(*item_idx, spans.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            block_start = Some((i, lang.clone()));
+                        }
+                    }
+                    _ => {}
                 }
-                break;
             }
         }
-    }
+
+        highlights
+    };
 
     for (chunk_idx, &item_idx) in visible_indices.iter().enumerate() {
         if chunk_idx >= chunks.len() {
@@ -388,11 +421,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             ContentItem::CodeLine(line) => {
-                app.ensure_highlighter();
-                render_code_line(f, &app.theme, app.get_highlighter(), &line, &current_lang, chunks[chunk_idx], is_cursor_line);
+                let highlighted_spans = code_block_highlights.get(&item_idx).cloned();
+                render_code_line(f, &app.theme, &line, highlighted_spans, chunks[chunk_idx], is_cursor_line);
             }
             ContentItem::CodeFence(lang) => {
-                current_lang = lang.clone();
                 render_code_fence(f, &app.theme, &lang, chunks[chunk_idx], is_cursor_line);
             }
             ContentItem::TaskItem { ref text, checked, .. } => {
@@ -1618,9 +1650,8 @@ fn render_content_line<F>(
 fn render_code_line(
     f: &mut Frame,
     theme: &Theme,
-    highlighter: Option<&crate::highlight::Highlighter>,
     line: &str,
-    lang: &str,
+    highlighted_spans: Option<Vec<Span<'static>>>,
     area: Rect,
     is_cursor: bool,
 ) {
@@ -1634,12 +1665,8 @@ fn render_code_line(
         Span::styled("│ ", Style::default().fg(theme.border)),
     ];
 
-    if !lang.is_empty() {
-        if let Some(hl) = highlighter {
-            spans.extend(hl.highlight_line(&expanded_line, lang));
-        } else {
-            spans.push(Span::styled(expanded_line, Style::default().fg(content_theme.code)));
-        }
+    if let Some(hl_spans) = highlighted_spans {
+        spans.extend(hl_spans);
     } else {
         spans.push(Span::styled(expanded_line, Style::default().fg(content_theme.code)));
     }

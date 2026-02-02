@@ -20,7 +20,6 @@ impl Hash for CacheKey {
     }
 }
 
-#[allow(dead_code)]
 fn hash_content(content: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
@@ -28,14 +27,12 @@ fn hash_content(content: &str) -> u64 {
     hasher.finish()
 }
 
-#[allow(dead_code)]
 const MAX_CACHE_ENTRIES: usize = 100;
 
 pub struct Highlighter {
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
     theme_name: String,
-    #[allow(dead_code)]
     cache: RefCell<HashMap<CacheKey, Vec<Vec<Span<'static>>>>>,
 }
 
@@ -55,26 +52,6 @@ impl Highlighter {
         }
     }
 
-    pub fn highlight_line(&self, line: &str, lang: &str) -> Vec<Span<'static>> {
-        let syntax = self
-            .syntax_set
-            .find_syntax_by_token(lang)
-            .or_else(|| self.syntax_set.find_syntax_by_extension(lang))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-
-        let theme = &self.theme_set.themes[&self.theme_name];
-        let mut highlighter = HighlightLines::new(syntax, theme);
-
-        match highlighter.highlight_line(line, &self.syntax_set) {
-            Ok(ranges) => ranges
-                .into_iter()
-                .map(|(style, text)| self.style_to_span(text, style))
-                .collect(),
-            Err(_) => vec![Span::raw(line.to_string())],
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn highlight_block(&self, content: &str, lang: &str) -> Vec<Vec<Span<'static>>> {
         let content_hash = hash_content(content);
         let key = CacheKey {
