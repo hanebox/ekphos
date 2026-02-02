@@ -4448,6 +4448,7 @@ impl App {
 
     pub fn update_editor_scroll(&mut self, view_height: usize) {
         self.editor_view_height = view_height;
+        self.editor.update_scroll(view_height);
         self.editor_scroll_top = self.editor.scroll_offset();
     }
 

@@ -574,7 +574,7 @@ fn constrain_cursor_to_viewport(app: &mut App) {
     let line_count = app.editor.line_count();
     let max_row = line_count.saturating_sub(1);
     let viewport_top = app.editor_scroll_top;
-    let viewport_bottom = (app.editor_scroll_top + view_height.saturating_sub(2)).min(max_row);
+    let viewport_bottom = (app.editor_scroll_top + view_height.saturating_sub(1)).min(max_row);
 
     let clamped_row = if cursor_row < viewport_top {
         viewport_top

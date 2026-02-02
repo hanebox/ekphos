@@ -2610,9 +2610,11 @@ impl Editor {
         }
 
         if self.line_wrap_enabled && self.view_width > 0 {
+            let (cursor_visual_offset, _) = self.cursor_wrapped_position();
             while self.scroll_offset < cursor_row {
-                let visual_lines = self.visual_lines_in_range(self.scroll_offset, cursor_row);
-                if visual_lines <= view_height.saturating_sub(effective_scrolloff) {
+                let lines_before = self.visual_lines_in_range(self.scroll_offset, cursor_row - 1);
+                let total_lines = lines_before + cursor_visual_offset + 1;
+                if total_lines + effective_scrolloff <= view_height {
                     break;
                 }
                 self.scroll_offset += 1;
@@ -2639,17 +2641,54 @@ impl Editor {
         }
     }
 
-    fn visual_lines_in_range(&self, start_row: usize, end_row: usize) -> usize {
-        let width = self.view_width.max(1);
-        let mut visual_lines = 0;
+    fn visual_lines_for_row(&self, row: usize, content_width: usize) -> usize {
+        let line = match self.buffer.line(row) {
+            Some(l) => l,
+            None => return 1,
+        };
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            return 1;
+        }
 
-        for row in start_row..=end_row.min(self.buffer.line_count().saturating_sub(1)) {
-            let line_len = self.buffer.line_len(row);
-            if line_len == 0 {
-                visual_lines += 1;
-            } else {
-                visual_lines += (line_len + width - 1) / width;
+        let mut col = 0;
+        let mut visual_lines = 1;
+
+        while col < chars.len() {
+            let mut x: usize = 0;
+            let is_wrapped = visual_lines > 1;
+            if is_wrapped && col < chars.len() && chars[col] == ' ' {
+                col += 1;
+                if col >= chars.len() {
+                    break;
+                }
             }
+
+            while col < chars.len() && x < content_width {
+                let ch = chars[col];
+                let ch_width = char_display_width(ch, self.tab_width) as usize;
+                x += ch_width;
+                col += 1;
+            }
+
+            if col < chars.len() {
+                visual_lines += 1;
+            }
+        }
+
+        visual_lines
+    }
+
+    fn visual_lines_in_range(&self, start_row: usize, end_row: usize) -> usize {
+        let content_x_offset = self.content_x_offset() as usize;
+        let content_width = self.view_width
+            .saturating_sub(content_x_offset)
+            .saturating_sub(self.right_padding as usize)
+            .max(1);
+
+        let mut visual_lines = 0;
+        for row in start_row..=end_row.min(self.buffer.line_count().saturating_sub(1)) {
+            visual_lines += self.visual_lines_for_row(row, content_width);
         }
 
         visual_lines
