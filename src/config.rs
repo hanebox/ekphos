@@ -29,6 +29,8 @@ pub struct Config {
     pub show_tags: bool,
     #[serde(default = "default_check_updates")]
     pub check_updates: bool,
+    #[serde(default = "default_transparent_bg")]
+    pub transparent_bg: bool,
     #[serde(default)]
     pub editor: EditorConfig,
 }
@@ -89,6 +91,7 @@ fn default_folders_first() -> bool { true }
 fn default_frontmatter_hidden() -> bool { true }
 fn default_show_tags() -> bool { true }
 fn default_check_updates() -> bool { true }
+fn default_transparent_bg() -> bool { false }
 
 impl Default for Config {
     fn default() -> Self {
@@ -104,6 +107,7 @@ impl Default for Config {
             frontmatter_hidden: default_frontmatter_hidden(),
             show_tags: default_show_tags(),
             check_updates: default_check_updates(),
+            transparent_bg: default_transparent_bg(),
             editor: EditorConfig::default(),
         }
     }

@@ -193,6 +193,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let statusbar = &theme.statusbar;
+    let transparent_bg = app.config.transparent_bg;
 
     let brand = Span::styled(
         " ekphos ",
@@ -336,26 +337,32 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let middle_padding = content_width.saturating_sub(left_width + right_width);
     let mut spans = Vec::new();
 
+    let bg_style = if transparent_bg {
+        Style::default()
+    } else {
+        Style::default().bg(statusbar.background)
+    };
+
     if app.zen_mode {
         let left_margin = (area.width as usize).saturating_sub(content_width) / 2;
         if left_margin > 0 {
-            spans.push(Span::styled(" ".repeat(left_margin), Style::default().bg(statusbar.background)));
+            spans.push(Span::styled(" ".repeat(left_margin), bg_style));
         }
     }
 
     spans.extend(left_content);
-    spans.push(Span::styled(" ".repeat(middle_padding), Style::default().bg(statusbar.background)));
+    spans.push(Span::styled(" ".repeat(middle_padding), bg_style));
     spans.extend(right_content);
 
     let current_width = spans.iter().map(|s| s.content.chars().count()).sum::<usize>();
     let right_margin = (area.width as usize).saturating_sub(current_width);
     if right_margin > 0 {
-        spans.push(Span::styled(" ".repeat(right_margin), Style::default().bg(statusbar.background)));
+        spans.push(Span::styled(" ".repeat(right_margin), bg_style));
     }
 
     let status_line = Line::from(spans);
     let status_bar = Paragraph::new(status_line)
-        .style(Style::default().bg(statusbar.background));
+        .style(bg_style);
 
     f.render_widget(status_bar, area);
 }
