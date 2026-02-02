@@ -637,6 +637,8 @@ impl Editor {
                 cursor_before,
                 Position { row: new_row, col: 0 },
             );
+
+            self.ensure_cursor_visible();
         }
     }
 
@@ -761,6 +763,8 @@ impl Editor {
                 cursor_before,
                 Position { row: start_row, col: start_col },
             );
+
+            self.ensure_cursor_visible();
         }
     }
 
@@ -1986,6 +1990,7 @@ impl Editor {
 
             self.cursor.move_to(start.row, start.col);
             self.cursor.cancel_selection();
+            self.ensure_cursor_visible();
         }
     }
 
@@ -2028,6 +2033,7 @@ impl Editor {
         };
         self.cursor.move_to(new_row, 0);
         self.cursor.cancel_selection();
+        self.ensure_cursor_visible();
     }
 
     pub fn paste(&mut self) {
@@ -2089,6 +2095,7 @@ impl Editor {
             self.cursor.move_to(row, new_col);
             self.insert_str(&text);
         }
+        self.ensure_cursor_visible();
     }
 
     /// Paste before cursor (vim 'P' command)
@@ -2134,6 +2141,7 @@ impl Editor {
         } else {
             self.insert_str(&text);
         }
+        self.ensure_cursor_visible();
     }
 
     // Text manipulation
