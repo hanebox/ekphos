@@ -3808,6 +3808,10 @@ impl App {
     }
 
     pub fn create_note_from_wiki_target(&mut self, target: &str) -> bool {
+        if target.starts_with('/') || target.starts_with('\\') {
+            return false;
+        }
+
         let notes_path = self.config.notes_path();
         let file_path = notes_path.join(format!("{}.md", target));
 
