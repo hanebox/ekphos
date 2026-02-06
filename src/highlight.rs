@@ -76,12 +76,17 @@ impl Highlighter {
         let mut highlighter = HighlightLines::new(syntax, theme);
 
         let result: Vec<Vec<Span<'static>>> = content
-            .lines()
+            .split('\n')
             .map(|line| {
-                match highlighter.highlight_line(line, &self.syntax_set) {
+                let line_with_newline = format!("{}\n", line);
+                match highlighter.highlight_line(&line_with_newline, &self.syntax_set) {
                     Ok(ranges) => ranges
                         .into_iter()
-                        .map(|(style, text)| self.style_to_span(text, style))
+                        .map(|(style, text)| {
+                            let cleaned = text.trim_end_matches('\n');
+                            self.style_to_span(cleaned, style)
+                        })
+                        .filter(|span| !span.content.is_empty())
                         .collect(),
                     Err(_) => vec![Span::raw(line.to_string())],
                 }
@@ -143,5 +148,42 @@ impl Highlighter {
 impl Default for Highlighter {
     fn default() -> Self {
         Self::new("base16-ocean.dark")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_highlight_block_trailing_empty_line() {
+        let h = Highlighter::default();
+        let content = "line1\nline2\n";
+        let result = h.highlight_block(content, "txt");
+        assert_eq!(result.len(), 3, "Should produce 3 lines including trailing empty");
+    }
+
+    #[test]
+    fn test_highlight_block_cjk_no_panic() {
+        let h = Highlighter::default();
+        let content = "print(\"你好世界\")\nx = \"测试\"";
+        let result = h.highlight_block(content, "python");
+        assert_eq!(result.len(), 2);
+        assert!(!result[0].is_empty());
+        assert!(!result[1].is_empty());
+    }
+
+    #[test]
+    fn test_highlight_block_c_with_cjk_comments() {
+        let h = Highlighter::default();
+        let content = "#include \"user/user.h\"\nint main(int argc, char *argv[]) {\n    // 错误检查\n    if (argc != 2) {\n        printf(\"hello\");\n    }\n}";
+        let result = h.highlight_block(content, "c");
+        assert_eq!(result.len(), 7);
+        let line_after_cjk = &result[3];
+        eprintln!("Line 3 spans: {:?}", line_after_cjk.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>());
+        assert!(line_after_cjk.len() > 1,
+            "Line after CJK comment should have multiple highlighted spans, got {} span(s): {:?}",
+            line_after_cjk.len(),
+            line_after_cjk.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>());
     }
 }

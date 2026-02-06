@@ -1099,4 +1099,30 @@ mod tests {
         assert!(bold.is_some(), "Should find bold");
         assert_eq!(bold.unwrap().start_col, 3, "Bold should start at column 3 (after '你好 ')");
     }
+
+    #[test]
+    fn test_cjk_code_block_content() {
+        let colors = HighlightColors::default();
+
+        let content = "```python\nprint(\"你好世界\")\nx = \"测试\"\n```";
+        let (highlights, _) = compute_all_highlights(content, &colors);
+        let row1 = highlights.iter().find(|h| h.row == 1 && h.highlight_type == HighlightType::CodeBlock);
+        assert!(row1.is_some(), "CJK content line should have CodeBlock highlight");
+        assert_eq!(row1.unwrap().end_col, 13, "End col should count chars, not bytes");
+        let row2 = highlights.iter().find(|h| h.row == 2 && h.highlight_type == HighlightType::CodeBlock);
+        assert!(row2.is_some(), "Second CJK line should have CodeBlock highlight");
+        assert_eq!(row2.unwrap().end_col, 8, "End col should count chars, not bytes");
+    }
+
+    #[test]
+    fn test_cjk_blockquote() {
+        let colors = HighlightColors::default();
+
+        let content = "> 你好世界";
+        let (highlights, _) = compute_all_highlights(content, &colors);
+        let bq = highlights.iter().find(|h| h.highlight_type == HighlightType::Blockquote);
+        assert!(bq.is_some(), "Should find blockquote highlight");
+        assert_eq!(bq.unwrap().start_col, 0);
+        assert_eq!(bq.unwrap().end_col, 1);
+    }
 }

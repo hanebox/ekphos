@@ -1041,7 +1041,8 @@ impl Editor {
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
                 self.code_block_rows.insert(row);
-                let start = line.find("```").unwrap_or(0);
+                let byte_start = line.find("```").unwrap_or(0);
+                let start = line[..byte_start].chars().count();
                 self.highlight_index.insert(HighlightRange::new(
                     row,
                     start,
@@ -1104,7 +1105,8 @@ impl Editor {
 
         if is_code_fence {
             self.code_block_rows.insert(row);
-            let start = line.find("```").unwrap_or(0);
+            let byte_start = line.find("```").unwrap_or(0);
+            let start = line[..byte_start].chars().count();
             self.highlight_index.insert(HighlightRange::new(
                 row,
                 start,
@@ -1175,7 +1177,8 @@ impl Editor {
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
                 self.code_block_rows.insert(row);
-                let start = line.find("```").unwrap_or(0);
+                let byte_start = line.find("```").unwrap_or(0);
+                let start = line[..byte_start].chars().count();
                 self.highlight_index.insert(HighlightRange::new(
                     row,
                     start,
@@ -1258,7 +1261,8 @@ impl Editor {
         }
 
         if line.trim_start().starts_with('>') {
-            let start = line.find('>').unwrap_or(0);
+            let byte_start = line.find('>').unwrap_or(0);
+            let start = line[..byte_start].chars().count();
             self.highlight_index.insert(HighlightRange::new(
                 row,
                 start,
