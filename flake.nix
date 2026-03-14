@@ -30,11 +30,11 @@
           buildInputs = with pkgs; [
             # Clipboard support (arboard/clipboard-rs)
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            xorg.libxcb
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
+            libxcb
+            libx11
+            libxcursor
+            libxrandr
+            libxi
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             darwin.apple_sdk.frameworks.AppKit
           ];
