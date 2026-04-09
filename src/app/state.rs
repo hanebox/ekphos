@@ -3013,15 +3013,94 @@ impl App {
     }
 
     #[allow(dead_code)]
-    pub fn open_current_link(&self) {
+    pub fn open_current_link(&mut self) {
         if let Some(url) = self.current_item_link() {
-            #[cfg(target_os = "macos")]
-            let _ = Command::new("open").arg(&url).spawn();
-            #[cfg(target_os = "linux")]
-            let _ = Command::new("xdg-open").arg(&url).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+            self.open_link(&url);
         }
+    }
+
+    /// Open a link - navigates internally for .md files, opens externally otherwise
+    pub fn open_link(&mut self, url: &str) {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            let (path_part, heading) = if let Some(hash_pos) = url.find('#') {
+                (&url[..hash_pos], Some(&url[hash_pos + 1..]))
+            } else {
+                (url, None)
+            };
+
+            if path_part.ends_with(".md") {
+                let base_dir = self.current_note()
+                    .and_then(|n| n.file_path.as_ref())
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.config.notes_path());
+
+                let resolved = base_dir.join(path_part);
+                if let Ok(canonical) = resolved.canonicalize() {
+                    // Find matching note by canonical path
+                    let found = self.notes.iter().enumerate().find_map(|(idx, note)| {
+                        note.file_path.as_ref()
+                            .and_then(|fp| fp.canonicalize().ok())
+                            .filter(|cp| *cp == canonical)
+                            .map(|_| idx)
+                    });
+
+                    if let Some(note_idx) = found {
+                        // Expand parent folders
+                        if let Some(note) = self.notes.get(note_idx) {
+                            if let Some(ref file_path) = note.file_path {
+                                let notes_root = self.config.notes_path();
+                                let mut current = file_path.parent();
+                                let mut needs_rebuild = false;
+                                while let Some(parent) = current {
+                                    if parent == notes_root {
+                                        break;
+                                    }
+                                    if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                                        self.folder_states.insert(parent.to_path_buf(), true);
+                                        needs_rebuild = true;
+                                    }
+                                    current = parent.parent();
+                                }
+                                if needs_rebuild {
+                                    Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                                    self.rebuild_sidebar_items();
+                                }
+                            }
+                        }
+
+                        for (idx, item) in self.sidebar_items.iter().enumerate() {
+                            if let SidebarItemKind::Note { note_index } = &item.kind {
+                                if *note_index == note_idx {
+                                    self.end_buffer_search();
+                                    self.selected_sidebar_index = idx;
+                                    self.selected_note = note_idx;
+                                    self.push_navigation_history(note_idx);
+                                    self.content_cursor = 0;
+                                    self.content_scroll_offset = 0;
+                                    self.selected_link_index = 0;
+                                    self.update_content_items();
+                                    self.update_outline();
+
+                                    if let Some(heading_text) = heading {
+                                        self.navigate_to_heading(heading_text);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(url).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(url).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(["/c", "start", "", url]).spawn();
     }
 
     // ==================== Wiki Link Support ====================
