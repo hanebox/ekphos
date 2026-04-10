@@ -38,6 +38,67 @@ pub struct BlockInsertState {
 
 use super::welcome_notes::{GETTING_STARTED_CONTENT, DEMO_NOTE_CONTENT};
 
+/// Convert a heading into a link-fragment slug: lowercased, whitespace
+/// collapsed to dashes, punctuation stripped (GitHub-style). Matches the
+/// `[text](./file.md#sub-section1)` form used for jumping to headings.
+fn slugify_heading(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for ch in s.trim().chars() {
+        if ch.is_alphanumeric() {
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+            last_dash = false;
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Decode `%XX` escapes in a URL fragment, leaving other bytes intact.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// If the line is a markdown ATX heading (`#` through `######`), return the
+/// heading text with any trailing `#`s stripped.
+fn heading_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let hash_count = trimmed.chars().take_while(|c| *c == '#').count();
+    if hash_count == 0 || hash_count > 6 {
+        return None;
+    }
+    let rest = &trimmed[hash_count..];
+    if !rest.starts_with(' ') && !rest.is_empty() {
+        return None;
+    }
+    Some(rest.trim_start().trim_end_matches(|c: char| c == '#' || c.is_whitespace()))
+}
+
 fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| {
@@ -3028,6 +3089,14 @@ impl App {
                 (url, None)
             };
 
+            // Same-file anchor: [text](#section)
+            if path_part.is_empty() {
+                if let Some(heading_text) = heading {
+                    self.navigate_to_heading(heading_text);
+                }
+                return;
+            }
+
             if path_part.ends_with(".md") {
                 let base_dir = self.current_note()
                     .and_then(|n| n.file_path.as_ref())
@@ -3547,24 +3616,21 @@ impl App {
         false
     }
 
-    /// Navigate to a heading in the current note's content
+    /// Navigate to a heading in the current note's content.
+    ///
+    /// Matches against the GitHub-style heading slug (lowercased, whitespace
+    /// to dashes, punctuation stripped). Also handles `%`-encoded fragments.
     fn navigate_to_heading(&mut self, heading: &str) {
-        let heading_lower = heading.to_lowercase();
+        let decoded = percent_decode(heading);
+        let target_slug = slugify_heading(&decoded);
+        if target_slug.is_empty() {
+            return;
+        }
 
         for (idx, item) in self.content_items.iter().enumerate() {
             if let ContentItem::TextLine(line) = item {
-                let title = if line.starts_with("### ") {
-                    Some(line.trim_start_matches("### "))
-                } else if line.starts_with("## ") {
-                    Some(line.trim_start_matches("## "))
-                } else if line.starts_with("# ") {
-                    Some(line.trim_start_matches("# "))
-                } else {
-                    None
-                };
-
-                if let Some(title) = title {
-                    if title.to_lowercase() == heading_lower {
+                if let Some(title) = heading_text(line) {
+                    if slugify_heading(title) == target_slug {
                         self.content_cursor = idx;
                         self.content_scroll_offset = idx.saturating_sub(2);
                         return;
