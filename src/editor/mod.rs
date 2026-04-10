@@ -27,6 +27,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use unicode_width::UnicodeWidthChar;
 
+use clipboard_rs::{Clipboard as ClipboardTrait, ClipboardContext};
+
 #[inline]
 fn char_display_width(ch: char, tab_width: u16) -> u16 {
     if ch == '\t' {
@@ -586,8 +588,8 @@ impl Editor {
         if let Some(text) = self.visual_line_selected_text() {
             self.clipboard = Some(text.clone());
             self.clipboard_linewise = true;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&text);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(text.clone());
             }
         }
     }
@@ -612,8 +614,8 @@ impl Editor {
             let clipboard_text = deleted_lines.join("\n") + "\n";
             self.clipboard = Some(clipboard_text.clone());
             self.clipboard_linewise = true;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&clipboard_text);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(clipboard_text.clone());
             }
 
             let cursor_before = self.cursor.pos();
@@ -678,8 +680,8 @@ impl Editor {
         if let Some(text) = self.visual_block_selected_text() {
             self.clipboard = Some(text.clone());
             self.clipboard_linewise = false;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&text);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(text.clone());
             }
         }
     }
@@ -718,8 +720,8 @@ impl Editor {
             let clipboard_text = deleted_lines.join("\n");
             self.clipboard = Some(clipboard_text.clone());
             self.clipboard_linewise = false;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&clipboard_text);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(clipboard_text.clone());
             }
 
             let cursor_before = self.cursor.pos();
@@ -1969,8 +1971,8 @@ impl Editor {
         if let Some(text) = self.selected_text() {
             self.clipboard = Some(text.clone());
             self.clipboard_linewise = false;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&text);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(text.clone());
             }
         }
     }
@@ -1981,8 +1983,8 @@ impl Editor {
             let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
             self.clipboard = Some(deleted.clone());
             self.clipboard_linewise = false;
-            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                let _ = clipboard.set_text(&deleted);
+            if let Ok(ctx) = ClipboardContext::new() {
+                let _ = ctx.set_text(deleted.clone());
             }
             self.wrap_cache.invalidate_from(start.row);
 
@@ -2010,8 +2012,8 @@ impl Editor {
 
         // Copy to clipboard
         self.clipboard = Some(deleted_text.clone());
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(&deleted_text);
+        if let Ok(ctx) = ClipboardContext::new() {
+            let _ = ctx.set_text(deleted_text.clone());
         }
 
         // Delete the line
@@ -2042,7 +2044,7 @@ impl Editor {
 
     pub fn paste(&mut self) {
         let text = self.clipboard.clone().or_else(|| {
-            arboard::Clipboard::new().ok()?.get_text().ok()
+            ClipboardContext::new().ok()?.get_text().ok()
         });
         if let Some(text) = text {
             self.insert_str(&text);
@@ -2056,8 +2058,8 @@ impl Editor {
         // Try internal clipboard first, then fall back to system clipboard
         let (text, linewise) = if let Some(text) = self.clipboard.clone() {
             (text, self.clipboard_linewise)
-        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            if let Ok(text) = clipboard.get_text() {
+        } else if let Ok(ctx) = ClipboardContext::new() {
+            if let Ok(text) = ctx.get_text() {
                 // For system clipboard, detect linewise by checking if ends with newline
                 let linewise = text.ends_with('\n');
                 (text, linewise)
@@ -2108,8 +2110,8 @@ impl Editor {
     pub fn paste_before(&mut self) {
         let (text, linewise) = if let Some(text) = self.clipboard.clone() {
             (text, self.clipboard_linewise)
-        } else if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            if let Ok(text) = clipboard.get_text() {
+        } else if let Ok(ctx) = ClipboardContext::new() {
+            if let Ok(text) = ctx.get_text() {
                 // For system clipboard, detect linewise by checking if ends with newline
                 let linewise = text.ends_with('\n');
                 (text, linewise)
