@@ -545,6 +545,7 @@ impl ThemeFile {
         let content = match name {
             "ekphos-dawn" => include_str!("../themes/ekphos-dawn.toml"),
             "dracula" => include_str!("../themes/dracula.toml"),
+            "kanagawa" => include_str!("../themes/kanagawa.toml"),
             _ => return None,
         };
         Self::load_from_str(content)

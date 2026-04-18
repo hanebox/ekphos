@@ -1,0 +1,96 @@
+# Kanagawa Theme
+# Inspired by rebelot/kanagawa.nvim
+
+[base]
+background = "#1f1f28"
+background_secondary = "#2a2a37"
+foreground = "#dcd7ba"
+muted = "#727169"
+
+[accent]
+primary = "#76946a"
+secondary = "#ffa066"
+
+[semantic]
+error = "#c34043"
+warning = "#c0a36e"
+success = "#76946a"
+info = "#6a9589"
+
+[ui]
+border = "#363646"
+border_focused = "#76946a"
+selection = "#2d4f67"
+cursor = "#dcd7ba"
+
+# Status bar component
+[ui.statusbar]
+background = "#1f1f28"
+foreground = "#dcd7ba"
+brand = "#76946a"
+mode = "#727169"
+separator = "#363646"
+
+# Dialog/popup component
+[ui.dialog]
+background = "#1f1f28"
+border = "#76946a"
+title = "#76946a"
+text = "#dcd7ba"
+
+# Sidebar component
+[ui.sidebar]
+background = "#1f1f28"
+item = "#dcd7ba"
+item_selected = "#ffa066"
+folder = "#7fb4ca"
+folder_expanded = "#7fb4ca"
+
+# Content view component
+[ui.content]
+background = "#1f1f28"
+text = "#dcd7ba"
+heading1 = "#76946a"
+heading2 = "#76946a"
+heading3 = "#c0a36e"
+heading4 = "#ffa066"
+link = "#6a9589"
+link_invalid = "#c34043"
+code = "#76946a"
+code_background = "#2a2a37"
+blockquote = "#727169"
+list_marker = "#ffa066"
+tag = "#c0a36e"
+tag_background = "#2d4f67"
+
+# Outline component
+[ui.outline]
+background = "#1f1f28"
+heading1 = "#76946a"
+heading2 = "#76946a"
+heading3 = "#c0a36e"
+heading4 = "#ffa066"
+
+# Search component
+[ui.search]
+background = "#2a2a37"
+border = "#76946a"
+input = "#dcd7ba"
+match_highlight = "#c0a36e"
+match_current = "#ffa066"
+match_count = "#727169"
+
+# Editor highlighting component
+[ui.editor]
+heading1 = "#76946a"
+heading2 = "#76946a"
+heading3 = "#c0a36e"
+heading4 = "#ffa066"
+heading5 = "#6a9589"
+heading6 = "#727169"
+code = "#76946a"
+link = "#6a9589"
+blockquote = "#727169"
+list_marker = "#ffa066"
+bold = "#ffa066"
+italic = "#7fb4ca"
