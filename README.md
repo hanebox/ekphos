@@ -10,7 +10,7 @@ An open source, lightweight, fast, terminal-based markdown research tool built w
 
 ## Documentation
 
-**Go to [docs.ekphos.xyz](https://docs.ekphos.xyz)**
+**Go to [Documentation](https://ekphos.netlify.app/docs)**
 
 ## Quick Start
 
