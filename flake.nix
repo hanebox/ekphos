@@ -17,7 +17,7 @@
           pname = "ekphos";
           version = "0.20.10";
 
-          src = ./.;
+          src = self;
 
           cargoLock = {
             lockFile = ./Cargo.lock;
@@ -30,11 +30,11 @@
           buildInputs = with pkgs; [
             # Clipboard support (arboard/clipboard-rs)
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            xorg.libxcb
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
+            libxcb
+            libX11
+            libXcursor
+            libXrandr
+            libXi
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             darwin.apple_sdk.frameworks.AppKit
           ];
@@ -57,11 +57,11 @@
             rustfmt
             pkg-config
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            xorg.libxcb
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
+            libxcb
+            libX11
+            libXcursor
+            libXrandr
+            libXi
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             darwin.apple_sdk.frameworks.AppKit
           ];
