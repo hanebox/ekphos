@@ -440,11 +440,11 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                 }
             }
-            ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
+            ContentItem::TableRow { cells, is_separator, is_header, column_widths, alignments } => {
                 let has_link = !is_separator
                     && (is_cursor_line || is_hovered)
                     && !app.item_links_at(item_idx).is_empty();
-                render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line, has_link);
+                render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, &alignments, chunks[chunk_idx], is_cursor_line, has_link);
             }
             ContentItem::Details { summary, content_lines, id } => {
                 let is_open = app.details_open_states.get(&id).copied().unwrap_or(false);
@@ -561,11 +561,12 @@ fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
         }
         if chars[pos] == '[' {
             if let Some((bracket_end, paren_end)) = find_markdown_link(&chars, pos) {
-                let url_len = paren_end - bracket_end - 2; 
+                let url_len = paren_end - bracket_end - 2;
                 if paren_end < up_to_pos {
-                    shrinkage += 1 + url_len + 2; 
+                    // Full `[label](url)` seen before up_to_pos: strips `[` + `](` + url + `)` = 4 + url_len.
+                    shrinkage += url_len + 4;
                 } else if bracket_end < up_to_pos {
-                    shrinkage += 1; 
+                    shrinkage += 1;
                 }
                 pos = paren_end + 1;
                 continue;
@@ -644,7 +645,8 @@ fn find_markdown_link(chars: &[char], start: usize) -> Option<(usize, usize)> {
 /// Calculate the adjusted column for a table cell
 /// Raw format: "| cell1 | cell2 |"
 /// Rendered:   "▶ │ cell1 │ cell2 │" with cells padded to column widths
-fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[usize]) -> usize {
+fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[usize], alignments: &[crate::app::Alignment]) -> usize {
+    use crate::app::Alignment;
     let mut rendered_pos = 3;
     let mut raw_pos = 0;
 
@@ -667,7 +669,13 @@ fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[us
                 .take(char_offset_in_raw_cell.min(cell_char_len))
                 .map(|c| c.width().unwrap_or(1))
                 .sum();
-            let content_padding = (col_width.saturating_sub(cell_display_width)) / 2;
+            let pad = col_width.saturating_sub(cell_display_width);
+            let alignment = alignments.get(cell_idx).copied().unwrap_or(Alignment::Left);
+            let content_padding = match alignment {
+                Alignment::Left => 0,
+                Alignment::Right => pad,
+                Alignment::Center => pad / 2,
+            };
             let rendered_content_start = rendered_pos + 1 + content_padding; // +1 for leading space
 
             return rendered_content_start + display_offset;
@@ -715,11 +723,11 @@ fn apply_content_search_highlights(
                 // Calculate the rendered column position based on content type
                 // Use display width for CJK character support
                 let adjusted_col = match &app.content_items.get(item_idx) {
-                    Some(ContentItem::TableRow { cells, column_widths, is_separator, .. }) => {
+                    Some(ContentItem::TableRow { cells, column_widths, alignments, is_separator, .. }) => {
                         if *is_separator {
                             continue;
                         }
-                        calc_table_adjusted_col(m.start_col, cells, column_widths)
+                        calc_table_adjusted_col(m.start_col, cells, column_widths, alignments)
                     }
                     Some(ContentItem::TextLine(line)) => {
                         let line = normalize_whitespace(line);
@@ -1799,6 +1807,7 @@ fn render_table_row(
     is_separator: bool,
     is_header: bool,
     column_widths: &[usize],
+    alignments: &[crate::app::Alignment],
     area: Rect,
     is_cursor: bool,
     has_link: bool,
@@ -1812,12 +1821,24 @@ fn render_table_row(
     ];
 
     if is_separator {
+        use crate::app::Alignment;
         for (i, &width) in column_widths.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("┼", Style::default().fg(border_color)));
             }
-            let dashes = "─".repeat(width + 2);
+            // Reflect alignment visually in the separator row (`:` markers where colons would
+            // appear in the source). Width accounts for two padding spaces either side.
+            let total = width + 2;
+            let alignment = alignments.get(i).copied().unwrap_or(Alignment::Left);
+            let (left_mark, right_mark) = match alignment {
+                Alignment::Left => (":", "─"),
+                Alignment::Right => ("─", ":"),
+                Alignment::Center => (":", ":"),
+            };
+            let dashes = "─".repeat(total.saturating_sub(2));
+            spans.push(Span::styled(left_mark.to_string(), Style::default().fg(border_color)));
             spans.push(Span::styled(dashes, Style::default().fg(border_color)));
+            spans.push(Span::styled(right_mark.to_string(), Style::default().fg(border_color)));
         }
     } else {
         let default_style = if is_header {
@@ -1836,8 +1857,12 @@ fn render_table_row(
             let visible = cell_visible_width(&expanded_cell);
             let width = column_widths.get(i).copied().unwrap_or(visible);
             let pad = width.saturating_sub(visible);
-            let left_pad = pad / 2;
-            let right_pad = pad - left_pad;
+            let alignment = alignments.get(i).copied().unwrap_or(crate::app::Alignment::Left);
+            let (left_pad, right_pad) = match alignment {
+                crate::app::Alignment::Left => (0, pad),
+                crate::app::Alignment::Right => (pad, 0),
+                crate::app::Alignment::Center => (pad / 2, pad - pad / 2),
+            };
 
             spans.push(Span::styled(format!(" {}", " ".repeat(left_pad)), default_style));
 
@@ -2229,4 +2254,42 @@ fn render_frontmatter_line(
 
     let paragraph = Paragraph::new(Line::from(spans)).style(style);
     f.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_visible_width_plain_text() {
+        assert_eq!(cell_visible_width("Plain URL"), 9);
+    }
+
+    #[test]
+    fn cell_visible_width_strips_markdown_link() {
+        // `[label](url)` -> `label`. A prior off-by-one counted the closing `)` toward visible.
+        assert_eq!(cell_visible_width("[Top 5](https://x.test)"), 5);
+    }
+
+    #[test]
+    fn cell_visible_width_strips_bold_italic_code() {
+        assert_eq!(cell_visible_width("**bold text**"), 9);
+        assert_eq!(cell_visible_width("*em*"), 2);
+        assert_eq!(cell_visible_width("`code`"), 4);
+    }
+
+    #[test]
+    fn cell_visible_width_mixed_text_and_link() {
+        // "one [a](u) two" renders as "one a two" = 9 visible chars.
+        assert_eq!(cell_visible_width("one [a](https://u.test) two"), 9);
+    }
+
+    #[test]
+    fn cell_visible_width_multiple_links_same_cell() {
+        // Pins the off-by-one fix: before the fix, each link inflated visible by 1,
+        // so a 2-link cell miscounted by 2 and tables with uneven link counts
+        // misaligned their borders.
+        // "[a](u1) [b](u2)" -> "a b" = 3 visible chars.
+        assert_eq!(cell_visible_width("[a](https://u1.test) [b](https://u2.test)"), 3);
+    }
 }

@@ -212,6 +212,27 @@ pub struct ImageState {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl Alignment {
+    /// Classify a GFM table separator cell (e.g. `:---`, `---:`, `:---:`, `---`)
+    /// into its alignment. Any cell without a leading `:` is treated as Left
+    /// (matches GFM's default-left convention).
+    pub fn from_separator_cell(cell: &str) -> Alignment {
+        let t = cell.trim();
+        match (t.starts_with(':'), t.ends_with(':')) {
+            (true, true) => Alignment::Center,
+            (false, true) => Alignment::Right,
+            _ => Alignment::Left,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     TextLine(String),
@@ -219,7 +240,7 @@ pub enum ContentItem {
     CodeLine(String),
     CodeFence(String),
     TaskItem { text: String, checked: bool, line_index: usize },
-    TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
+    TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize>, alignments: Vec<Alignment> },
     Details { summary: String, content_lines: Vec<String>, id: usize },
     FrontmatterLine { key: String, value: String },
     FrontmatterDelimiter,
@@ -2214,6 +2235,20 @@ impl App {
 
                     let separator_idx = table_rows.iter().position(|(_, is_sep)| *is_sep);
 
+                    // Derive per-column alignment from the separator row. Tables without
+                    // a separator fall back to Left (GFM default).
+                    let mut alignments: Vec<Alignment> = vec![Alignment::Left; num_cols];
+                    if let Some(sep_idx) = separator_idx {
+                        if let Some((sep_cells, _)) = table_rows.get(sep_idx) {
+                            for (col_idx, cell) in sep_cells.iter().enumerate() {
+                                if col_idx >= alignments.len() {
+                                    break;
+                                }
+                                alignments[col_idx] = Alignment::from_separator_cell(cell);
+                            }
+                        }
+                    }
+
                     for (row_idx, (cells, is_separator)) in table_rows.into_iter().enumerate() {
                         let is_header = separator_idx.map(|sep_idx| row_idx < sep_idx).unwrap_or(false);
                         self.content_items.push(ContentItem::TableRow {
@@ -2221,6 +2256,7 @@ impl App {
                             is_separator,
                             is_header,
                             column_widths: column_widths.clone(),
+                            alignments: alignments.clone(),
                         });
                         self.content_item_source_lines.push(table_start_line + row_idx);
                     }
@@ -2641,13 +2677,19 @@ impl App {
     /// Extract `[text](url)` links from each table cell and map positions into the
     /// row's rendered column space. Simple scenarios only: at most one markdown link
     /// per cell, and the link's pre-prefix can contain inline formatting but no other links.
-    fn extract_simple_table_links(cells: &[String], column_widths: &[usize]) -> Vec<(String, String, usize, usize)> {
+    fn extract_simple_table_links(cells: &[String], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
         let mut links = Vec::new();
         let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
         for (i, cell) in cells.iter().enumerate() {
             let width = column_widths.get(i).copied().unwrap_or_else(|| crate::ui::cell_visible_width(cell));
             let visible = crate::ui::cell_visible_width(cell);
-            let left_pad = width.saturating_sub(visible) / 2;
+            let pad = width.saturating_sub(visible);
+            let alignment = alignments.get(i).copied().unwrap_or(Alignment::Left);
+            let left_pad = match alignment {
+                Alignment::Left => 0,
+                Alignment::Right => pad,
+                Alignment::Center => pad / 2,
+            };
             let cell_start = col_cursor + 1 /* leading space */ + left_pad;
 
             if let Some(br_start) = cell.find('[') {
@@ -2686,11 +2728,11 @@ impl App {
         let text = match self.content_items.get(index) {
             Some(ContentItem::TextLine(line)) => line.as_str(),
             Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
-            Some(ContentItem::TableRow { cells, is_separator, column_widths, .. }) => {
+            Some(ContentItem::TableRow { cells, is_separator, column_widths, alignments, .. }) => {
                 if *is_separator {
                     return Vec::new();
                 }
-                return Self::extract_simple_table_links(cells, column_widths);
+                return Self::extract_simple_table_links(cells, column_widths, alignments);
             }
             _ => return Vec::new(),
         };
@@ -5911,5 +5953,77 @@ fn fuzzy_match(text: &str, query: &str) -> Option<i32> {
         Some(score + consecutive_bonus)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alignment_from_separator_cell_classifies_each_form() {
+        assert_eq!(Alignment::from_separator_cell("---"), Alignment::Left);
+        assert_eq!(Alignment::from_separator_cell(":---"), Alignment::Left);
+        assert_eq!(Alignment::from_separator_cell("---:"), Alignment::Right);
+        assert_eq!(Alignment::from_separator_cell(":---:"), Alignment::Center);
+        // Surrounding whitespace should not change classification.
+        assert_eq!(Alignment::from_separator_cell("  :---:  "), Alignment::Center);
+    }
+
+    #[test]
+    fn extract_simple_table_links_single_link_in_second_cell() {
+        // Row: "| Name | [Top 5](https://x.test) |"
+        // Cells (already trimmed during parse): ["Name", "[Top 5](https://x.test)"]
+        // Column widths follow visible width: cell 0 = 4, cell 1 = 6 ("Top 5").
+        let cells = vec!["Name".to_string(), "[Top 5](https://x.test)".to_string()];
+        let widths = vec![4, 6];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+
+        assert_eq!(links.len(), 1);
+        let (label, url, start, end) = &links[0];
+        assert_eq!(label, "Top 5");
+        assert_eq!(url, "https://x.test");
+        // Layout within content area (prefix `  │` not counted):
+        //   cell 0 occupies " Name " (cols 0..=5), "│" at 6, cell 1 opens at 7 with " " leading.
+        //   Left-aligned, so label starts at 7 + 1 = 8.
+        assert_eq!(*start, 8);
+        assert_eq!(*end, 8 + "Top 5".chars().count());
+    }
+
+    #[test]
+    fn extract_simple_table_links_respects_right_alignment() {
+        // Right-aligned cell: label sits flush against the right edge.
+        // Cells: ["X", "[a](u)"]; widths: [3, 5]; alignment: [Left, Right].
+        // Cell 0 occupies " X   " (1 + width 3 + 1 = 5 chars) + "│" -> col_cursor = 6.
+        // Cell 1 visible = 1 ("a"), pad = 4, Right -> left_pad = 4.
+        // Link starts at col_cursor(6) + 1 (leading space) + 4 (left_pad) = 11.
+        let cells = vec!["X".to_string(), "[a](u)".to_string()];
+        let widths = vec![3, 5];
+        let alignments = vec![Alignment::Left, Alignment::Right];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "a");
+        assert_eq!(links[0].2, 11);
+        assert_eq!(links[0].3, 12);
+    }
+
+    #[test]
+    fn extract_simple_table_links_ignores_wiki_link() {
+        // `[[wiki]]` is not a markdown link; should not be emitted here.
+        let cells = vec!["X".to_string(), "[[wiki]]".to_string()];
+        let widths = vec![3, 4];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_simple_table_links_skips_link_with_empty_url() {
+        let cells = vec!["[label]()".to_string()];
+        let widths = vec![5];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert!(links.is_empty());
     }
 }
