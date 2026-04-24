@@ -441,7 +441,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             ContentItem::TableRow { cells, is_separator, is_header, column_widths } => {
-                render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line);
+                let has_link = !is_separator
+                    && (is_cursor_line || is_hovered)
+                    && !app.item_links_at(item_idx).is_empty();
+                render_table_row(f, &app.theme, &cells, is_separator, is_header, &column_widths, chunks[chunk_idx], is_cursor_line, has_link);
             }
             ContentItem::Details { summary, content_lines, id } => {
                 let is_open = app.details_open_states.get(&id).copied().unwrap_or(false);
@@ -462,6 +465,13 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     if app.buffer_search.active && !app.buffer_search.matches.is_empty() {
         apply_content_search_highlights(f, app, &visible_indices, &chunks);
     }
+}
+
+/// Visible width of a table cell after inline markdown shrinks
+/// (e.g. `[label](url)` -> `label`). Used both for column layout and render padding.
+pub(crate) fn cell_visible_width(cell: &str) -> usize {
+    let total = cell.chars().count();
+    total.saturating_sub(calc_formatting_shrinkage(cell, total))
 }
 
 /// Calculate how many characters are removed by inline formatting before a given position
@@ -1791,6 +1801,7 @@ fn render_table_row(
     column_widths: &[usize],
     area: Rect,
     is_cursor: bool,
+    has_link: bool,
 ) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let border_color = theme.border;
@@ -1809,26 +1820,50 @@ fn render_table_row(
             spans.push(Span::styled(dashes, Style::default().fg(border_color)));
         }
     } else {
+        let default_style = if is_header {
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.foreground)
+        };
+        let text_color = theme.content.text;
+
         for (i, cell) in cells.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("│", Style::default().fg(border_color)));
             }
 
             let expanded_cell = expand_tabs(cell);
-            let width = column_widths.get(i).copied().unwrap_or(expanded_cell.chars().count());
-            let cell_content = format!(" {:^width$} ", expanded_cell, width = width);
+            let visible = cell_visible_width(&expanded_cell);
+            let width = column_widths.get(i).copied().unwrap_or(visible);
+            let pad = width.saturating_sub(visible);
+            let left_pad = pad / 2;
+            let right_pad = pad - left_pad;
 
-            let cell_style = if is_header {
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
+            spans.push(Span::styled(format!(" {}", " ".repeat(left_pad)), default_style));
 
-            spans.push(Span::styled(cell_content, cell_style));
+            // `parse_inline_formatting` is generic over the validator's closure type.
+            // We don't need wiki-link validation in tables — a fn-pointer type satisfies `F: Fn(&str) -> bool`.
+            let inline = parse_inline_formatting::<fn(&str) -> bool>(&expanded_cell, theme, None, None);
+            for sp in inline {
+                // Restyle plain-text spans (those the inline parser emits with the default body color)
+                // so headers get bold+info. Links/code/wiki keep their own styles.
+                let is_plain = sp.style.bg.is_none()
+                    && sp.style.add_modifier.is_empty()
+                    && sp.style.sub_modifier.is_empty()
+                    && (sp.style.fg.is_none() || sp.style.fg == Some(text_color.into()));
+                let style = if is_plain { default_style } else { sp.style };
+                spans.push(Span::styled(sp.content.into_owned(), style));
+            }
+
+            spans.push(Span::styled(format!("{} ", " ".repeat(right_pad)), default_style));
         }
     }
 
     spans.push(Span::styled("│", Style::default().fg(border_color)));
+
+    if has_link {
+        spans.push(Span::styled(" Open ↗", Style::default().fg(theme.content.link)));
+    }
 
     let styled_line = Line::from(spans);
 

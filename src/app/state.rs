@@ -2202,7 +2202,7 @@ impl App {
                         if !is_sep {
                             for (col_idx, cell) in cells.iter().enumerate() {
                                 if col_idx < column_widths.len() {
-                                    column_widths[col_idx] = column_widths[col_idx].max(cell.chars().count());
+                                    column_widths[col_idx] = column_widths[col_idx].max(crate::ui::cell_visible_width(cell));
                                 }
                             }
                         }
@@ -2638,12 +2638,60 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
+    /// Extract `[text](url)` links from each table cell and map positions into the
+    /// row's rendered column space. Simple scenarios only: at most one markdown link
+    /// per cell, and the link's pre-prefix can contain inline formatting but no other links.
+    fn extract_simple_table_links(cells: &[String], column_widths: &[usize]) -> Vec<(String, String, usize, usize)> {
+        let mut links = Vec::new();
+        let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
+        for (i, cell) in cells.iter().enumerate() {
+            let width = column_widths.get(i).copied().unwrap_or_else(|| crate::ui::cell_visible_width(cell));
+            let visible = crate::ui::cell_visible_width(cell);
+            let left_pad = width.saturating_sub(visible) / 2;
+            let cell_start = col_cursor + 1 /* leading space */ + left_pad;
+
+            if let Some(br_start) = cell.find('[') {
+                if !cell[br_start..].starts_with("[[") {
+                    if let Some(br_end_rel) = cell[br_start + 1..].find(']') {
+                        let br_end = br_start + 1 + br_end_rel;
+                        if cell[br_end..].starts_with("](") {
+                            if let Some(pr_end_rel) = cell[br_end + 2..].find(')') {
+                                let pr_end = br_end + 2 + pr_end_rel;
+                                let label = &cell[br_start + 1..br_end];
+                                let url = &cell[br_end + 2..pr_end];
+                                if !url.is_empty() {
+                                    let display = if label.is_empty() { url.to_string() } else { label.to_string() };
+                                    let pre_visible = crate::ui::cell_visible_width(&cell[..br_start]);
+                                    let start = cell_start + pre_visible;
+                                    let end = start + display.chars().count();
+                                    links.push((display, url.to_string(), start, end));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            col_cursor += 1 + width + 1; // " " + width + " "
+            if i + 1 < cells.len() {
+                col_cursor += 1; // "│" between cells
+            }
+        }
+        links
+    }
+
     /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
     /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
     pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
         let text = match self.content_items.get(index) {
             Some(ContentItem::TextLine(line)) => line.as_str(),
             Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            Some(ContentItem::TableRow { cells, is_separator, column_widths, .. }) => {
+                if *is_separator {
+                    return Vec::new();
+                }
+                return Self::extract_simple_table_links(cells, column_widths);
+            }
             _ => return Vec::new(),
         };
 
@@ -2940,7 +2988,8 @@ impl App {
                 }
                 len
             }
-            Some(ContentItem::TaskItem { .. }) => 6, 
+            Some(ContentItem::TaskItem { .. }) => 6,
+            Some(ContentItem::TableRow { .. }) => 3, // "  " cursor indicator + "│" left border
             _ => 2,
         }
     }
@@ -4591,8 +4640,11 @@ impl App {
 
     pub fn has_unsaved_changes(&self) -> bool {
         if let Some(note) = self.notes.get(self.selected_note) {
-            let current_content = self.editor.lines().join("\n");
-            current_content != note.content
+            // Compare line-by-line with the same semantics `enter_edit_mode` uses
+            // (`str::lines()` drops trailing newlines). Comparing the raw strings instead
+            // fires a false positive whenever the file ends with "\n" — which is most files.
+            let note_lines: Vec<&str> = note.content.lines().collect();
+            self.editor.lines() != note_lines
         } else {
             false
         }
