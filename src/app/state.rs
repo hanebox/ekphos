@@ -2674,40 +2674,14 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
-    /// Parse the first `[label](url)` at any position in `s`, skipping wiki-link form `[[...]]`.
-    /// Returns `(display, url, raw_start_byte)` — display is the label, or the URL if the label is empty.
-    fn find_first_bracket_link(s: &str) -> Option<(String, String, usize)> {
-        let br_start = match s.find('[') {
-            Some(p) => p,
-            None => return None,
-        };
-        if s[br_start..].starts_with("[[") {
-            return None;
-        }
-        let br_end_rel = match s[br_start + 1..].find(']') {
-            Some(p) => p,
-            None => return None,
-        };
-        let br_end = br_start + 1 + br_end_rel;
-        if !s[br_end..].starts_with("](") {
-            return None;
-        }
-        let pr_end_rel = match s[br_end + 2..].find(')') {
-            Some(p) => p,
-            None => return None,
-        };
-        let pr_end = br_end + 2 + pr_end_rel;
-        let label = &s[br_start + 1..br_end];
-        let url = &s[br_end + 2..pr_end];
-        if url.is_empty() {
-            return None;
-        }
-        let display = if label.is_empty() { url.to_string() } else { label.to_string() };
-        Some((display, url.to_string(), br_start))
-    }
-
-    /// Extract `[text](url)` and bare URL links from each table cell and map positions into the
-    /// row's rendered column space. Simple scenarios only: one link per cell.
+    /// Extract all `[text](url)` and bare URL links from each table cell, mapping positions
+    /// into the row's rendered column space. Walks every cell end-to-end so multiple links
+    /// per cell are all navigable.
+    ///
+    /// Rendered positions assume natural column widths and a single-line row. When a table
+    /// wraps (capped widths, multi-line rows), keyboard Enter-to-open still works because it
+    /// only uses the URL; mouse click accuracy on wrapped lines is not guaranteed by this
+    /// method's output.
     fn extract_simple_table_links(cells: &[String], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
         let mut links = Vec::new();
         let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
@@ -2723,25 +2697,28 @@ impl App {
             };
             let cell_start = col_cursor + 1 /* leading space */ + left_pad;
 
-            // Find the first link in the cell — bracket form `[label](url)` takes priority,
-            // else fall back to a bare `http(s)://` scan. One link per cell (simple scope).
-            let mut found: Option<(String, String, usize)> = Self::find_first_bracket_link(cell);
-            if found.is_none() {
-                let mut scan = 0;
-                while scan < cell.len() {
-                    if let Some(url_len) = crate::ui::detect_bare_url_len(cell, scan) {
-                        let url = cell[scan..scan + url_len].to_string();
-                        found = Some((url.clone(), url, scan));
-                        break;
-                    }
-                    scan += 1;
+            // Walk the cell: at each position, try to recognise a bracket link first (so a
+            // bare URL inside its `(url)` portion is not double-emitted), then a bare URL.
+            let mut scan = 0;
+            while scan < cell.len() {
+                if let Some((display, url, raw_start, raw_end)) = Self::bracket_link_at(cell, scan) {
+                    let pre_visible = crate::ui::cell_visible_width(&cell[..raw_start]);
+                    let start = cell_start + pre_visible;
+                    let end = start + display.chars().count();
+                    links.push((display, url, start, end));
+                    scan = raw_end;
+                    continue;
                 }
-            }
-            if let Some((display, url, raw_start)) = found {
-                let pre_visible = crate::ui::cell_visible_width(&cell[..raw_start]);
-                let start = cell_start + pre_visible;
-                let end = start + display.chars().count();
-                links.push((display, url, start, end));
+                if let Some(url_len) = crate::ui::detect_bare_url_len(cell, scan) {
+                    let url = cell[scan..scan + url_len].to_string();
+                    let pre_visible = crate::ui::cell_visible_width(&cell[..scan]);
+                    let start = cell_start + pre_visible;
+                    let end = start + url.chars().count();
+                    links.push((url.clone(), url, start, end));
+                    scan += url_len;
+                    continue;
+                }
+                scan += 1;
             }
 
             col_cursor += 1 + width + 1; // " " + width + " "
@@ -2750,6 +2727,39 @@ impl App {
             }
         }
         links
+    }
+
+    /// Parse `[label](url)` anchored at byte offset `at` in `s`, skipping wiki-link form `[[...]]`.
+    /// Returns `(display, url, raw_start, raw_end_exclusive)` where display is the label (or url
+    /// if label is empty). Returns None if no bracket link starts exactly at `at`.
+    fn bracket_link_at(s: &str, at: usize) -> Option<(String, String, usize, usize)> {
+        let rest = match s.get(at..) {
+            Some(r) => r,
+            None => return None,
+        };
+        if !rest.starts_with('[') || rest.starts_with("[[") {
+            return None;
+        }
+        let br_end_rel = match rest[1..].find(']') {
+            Some(p) => p,
+            None => return None,
+        };
+        let br_end = 1 + br_end_rel;
+        if !rest[br_end..].starts_with("](") {
+            return None;
+        }
+        let pr_end_rel = match rest[br_end + 2..].find(')') {
+            Some(p) => p,
+            None => return None,
+        };
+        let pr_end = br_end + 2 + pr_end_rel;
+        let label = &rest[1..br_end];
+        let url = &rest[br_end + 2..pr_end];
+        if url.is_empty() {
+            return None;
+        }
+        let display = if label.is_empty() { url.to_string() } else { label.to_string() };
+        Some((display, url.to_string(), at, at + pr_end + 1))
     }
 
     /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
@@ -6098,15 +6108,29 @@ mod tests {
     }
 
     #[test]
-    fn extract_simple_table_links_prefers_bracket_over_bare_in_same_cell() {
-        // One-link-per-cell scope: a bracket link in the cell claims it; the trailing
-        // bare URL is not emitted.
+    fn extract_simple_table_links_emits_both_bracket_and_bare_in_same_cell() {
+        // A cell with both a bracket link and a trailing bare URL emits both,
+        // in source order. Bracket link's URL is not re-emitted as a bare URL.
         let cells = vec!["[label](https://a) https://b.test".to_string()];
         let widths = vec![33];
         let alignments = vec![Alignment::Left];
         let links = App::extract_simple_table_links(&cells, &widths, &alignments);
-        assert_eq!(links.len(), 1);
+        assert_eq!(links.len(), 2);
         assert_eq!(links[0].0, "label");
         assert_eq!(links[0].1, "https://a");
+        assert_eq!(links[1].0, "https://b.test");
+        assert_eq!(links[1].1, "https://b.test");
+    }
+
+    #[test]
+    fn extract_simple_table_links_multiple_bracket_links_in_same_cell() {
+        // Multiple `[text](url)` in one cell should all be emitted.
+        let cells = vec!["[alpha](u1) and [beta](u2)".to_string()];
+        let widths = vec![16];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0, "alpha");
+        assert_eq!(links[1].0, "beta");
     }
 }

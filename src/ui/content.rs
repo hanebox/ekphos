@@ -186,7 +186,27 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     base_height + (inline_images.len() as u16 * INLINE_THUMBNAIL_HEIGHT)
                 }
             }
-            ContentItem::TableRow { .. } => 1u16,
+            ContentItem::TableRow { cells, is_separator, column_widths, .. } => {
+                if *is_separator {
+                    1u16
+                } else {
+                    // Budget must match render_table_row exactly. render uses area.width
+                    // (= inner_area.width after chunk split), not `available_width`, which
+                    // carries a 4-char list-prefix margin that tables don't need.
+                    let n = column_widths.len();
+                    let overhead = 3 + 3 * n;
+                    let budget = (inner_area.width as usize).saturating_sub(overhead);
+                    let capped = cap_column_widths(column_widths, budget);
+                    let text_color = theme.content.text;
+                    let row_lines = cells.iter().enumerate().map(|(i, cell)| {
+                        let w = capped.get(i).copied().unwrap_or(0);
+                        let expanded = expand_tabs(cell);
+                        let spans = parse_inline_formatting::<fn(&str) -> bool>(&expanded, theme, None, None);
+                        distribute_spans_across_lines(spans, w, text_color).len()
+                    }).max().unwrap_or(1).max(1);
+                    (row_lines as u16).min(max_item_height)
+                }
+            }
             ContentItem::Details { content_lines, id, .. } => {
                 let is_open = details_states.get(id).copied().unwrap_or(false);
                 if is_open {
@@ -472,6 +492,207 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 pub(crate) fn cell_visible_width(cell: &str) -> usize {
     let total = cell.chars().count();
     total.saturating_sub(calc_formatting_shrinkage(cell, total))
+}
+
+/// Per-column minimum width when shrinking a wide table to fit the terminal.
+const TABLE_COLUMN_MIN_WIDTH: usize = 8;
+
+/// Given the "natural" width of each column (max content width) and the available
+/// budget for content (= terminal area minus borders/padding), return capped widths
+/// that sum to at most `available`. Shrinks the widest column(s) first so narrow
+/// columns keep their full width whenever possible. Each column stays at or above
+/// `TABLE_COLUMN_MIN_WIDTH` unless its natural width is already below that.
+pub(crate) fn cap_column_widths(natural: &[usize], available: usize) -> Vec<usize> {
+    let mut widths: Vec<usize> = natural.to_vec();
+    if widths.is_empty() {
+        return widths;
+    }
+    loop {
+        let total: usize = widths.iter().sum();
+        if total <= available {
+            return widths;
+        }
+        // Pick the widest column that can still shrink.
+        let mut target: Option<usize> = None;
+        let mut max_w: usize = 0;
+        for (i, &w) in widths.iter().enumerate() {
+            let floor = TABLE_COLUMN_MIN_WIDTH.min(natural[i]);
+            if w > floor && w > max_w {
+                max_w = w;
+                target = Some(i);
+            }
+        }
+        match target {
+            Some(i) => widths[i] -= 1,
+            None => return widths, // every column already at its floor; can't shrink further
+        }
+    }
+}
+
+/// Distribute a pre-parsed list of inline spans across visual lines of at most
+/// `width` display columns each.
+///
+/// Original span structure is preserved — each span carries its own whitespace
+/// (a plain-text span that reads `" then "` keeps its leading and trailing
+/// space, so adjacent styled spans sit against punctuation without any injected
+/// space). Plain-text spans can be broken at internal whitespace if needed;
+/// styled spans (links, bold, italic, code, wiki) are atomic — they fit on one
+/// line or start a new line, overflowing as a single span if wider than `width`.
+///
+/// Use this downstream of `parse_inline_formatting` so the parser stays the
+/// single source of truth for what counts as a markdown construct:
+/// ```ignore
+/// let spans = parse_inline_formatting(cell, theme, None, None::<fn(&str) -> bool>);
+/// let lines = distribute_spans_across_lines(spans, width, theme.content.text);
+/// ```
+///
+/// The returned lines own their content (`Span<'static>`).
+pub(crate) fn distribute_spans_across_lines(
+    spans: Vec<Span<'_>>,
+    width: usize,
+    plain_text_color: ratatui::style::Color,
+) -> Vec<Vec<Span<'static>>> {
+    if width == 0 {
+        let owned: Vec<Span<'static>> = spans
+            .into_iter()
+            .map(|s| Span::styled(s.content.into_owned(), s.style))
+            .collect();
+        return vec![owned];
+    }
+
+    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_visible: usize = 0;
+
+    for span in spans {
+        let style = span.style;
+        let span_visible = UnicodeWidthStr::width(span.content.as_ref());
+        let is_plain = is_plain_text_span(&style, plain_text_color);
+
+        if !is_plain {
+            // Atomic span: must stay together.
+            if current_visible > 0 && current_visible + span_visible > width {
+                lines.push(std::mem::take(&mut current));
+                current_visible = 0;
+            }
+            current.push(Span::styled(span.content.into_owned(), style));
+            current_visible += span_visible;
+            continue;
+        }
+
+        // Plain-text span: may need breaking at internal whitespace.
+        let mut rest: &str = span.content.as_ref();
+        while !rest.is_empty() {
+            // If we're at the start of a fresh line, discard leading whitespace
+            // (lines shouldn't start with a space, unless the content IS just spaces).
+            if current_visible == 0 {
+                let trimmed = rest.trim_start();
+                if trimmed.is_empty() {
+                    break;
+                }
+                rest = trimmed;
+            }
+
+            let rest_visible = UnicodeWidthStr::width(rest);
+            if current_visible + rest_visible <= width {
+                // Whole remainder fits on current line.
+                current.push(Span::styled(rest.to_string(), style));
+                current_visible += rest_visible;
+                break;
+            }
+
+            // Need to break within `rest`. Find the longest prefix that fits AND ends at
+            // a whitespace boundary.
+            let remaining_budget = width.saturating_sub(current_visible);
+            let (head, tail) = split_plain_at_whitespace(rest, remaining_budget);
+
+            if !head.is_empty() {
+                current.push(Span::styled(head.to_string(), style));
+                lines.push(std::mem::take(&mut current));
+                current_visible = 0;
+                rest = tail;
+                continue;
+            }
+
+            // No whitespace break fits in the budget. If there's content on the current
+            // line, flush it so the next iteration tries with a fresh full-width line.
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_visible = 0;
+                continue;
+            }
+
+            // Empty line and no whitespace break — hard-break the first word at
+            // display-width boundaries.
+            let (forced_head, forced_tail) = take_width(rest, width);
+            if forced_head.is_empty() {
+                // Degenerate: push the first char and move on.
+                let first_char = rest.chars().next().unwrap();
+                let first_len = first_char.len_utf8();
+                current.push(Span::styled(rest[..first_len].to_string(), style));
+                current_visible += UnicodeWidthChar::width(first_char).unwrap_or(1);
+                rest = &rest[first_len..];
+            } else {
+                lines.push(vec![Span::styled(forced_head.to_string(), style)]);
+                rest = forced_tail;
+            }
+        }
+    }
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Return `(head, tail)` where `head` is the longest prefix of `s` whose display
+/// width does not exceed `max_width` AND which ends at a whitespace boundary.
+/// `tail` has leading whitespace stripped. Returns `("", s)` if no such prefix
+/// exists.
+fn split_plain_at_whitespace(s: &str, max_width: usize) -> (&str, &str) {
+    let mut best_end: Option<usize> = None;
+    let mut width_before_pos: usize = 0;
+
+    for (pos, ch) in s.char_indices() {
+        if ch.is_whitespace() {
+            if width_before_pos <= max_width {
+                best_end = Some(pos);
+            } else {
+                break;
+            }
+        }
+        width_before_pos += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+
+    match best_end {
+        Some(end) => (&s[..end], s[end..].trim_start()),
+        None => ("", s),
+    }
+}
+
+/// Spans emitted by `parse_inline_formatting` for ordinary text carry only the
+/// default content colour (no modifiers, no background). Use that as the "is
+/// this plain text?" fingerprint so we know which spans can be broken at
+/// whitespace during wrapping.
+fn is_plain_text_span(style: &Style, plain_color: ratatui::style::Color) -> bool {
+    style.bg.is_none()
+        && style.add_modifier.is_empty()
+        && style.sub_modifier.is_empty()
+        && (style.fg.is_none() || style.fg == Some(plain_color.into()))
+}
+
+/// Split a string into a `(head, tail)` pair where `head` has display width `<= width`.
+/// Used by `wrap_cell` for hard-breaking over-width words.
+fn take_width(s: &str, width: usize) -> (&str, &str) {
+    let mut w = 0usize;
+    for (i, ch) in s.char_indices() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if w + cw > width {
+            return (&s[..i], &s[i..]);
+        }
+        w += cw;
+    }
+    (s, "")
 }
 
 /// If `text[start..]` begins with a bare `http://` or `https://` URL, return the
@@ -1889,46 +2110,97 @@ fn render_table_row(
     cells: &[String],
     is_separator: bool,
     is_header: bool,
-    column_widths: &[usize],
+    natural_widths: &[usize],
     alignments: &[crate::app::Alignment],
     area: Rect,
     is_cursor: bool,
     has_link: bool,
 ) {
-    let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let border_color = theme.border;
+    let row_bg = if is_cursor {
+        Style::default().bg(theme.selection)
+    } else {
+        Style::default()
+    };
 
-    let mut spans = vec![
-        Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
-        Span::styled("│", Style::default().fg(border_color)),
-    ];
+    // Cap widths against the row's available render width.
+    // Row overhead: "  " (2) + leading │ (1) + per cell " content " (+2) + per-cell │ (N-1 between + 1 trailing) = 3 + 3N.
+    let n = natural_widths.len();
+    let overhead = 3 + 3 * n;
+    let budget = (area.width as usize).saturating_sub(overhead);
+    let widths = cap_column_widths(natural_widths, budget);
 
     if is_separator {
-        // Plain horizontal rule — alignment is already visible in how data rows are padded,
-        // so we don't render colon markers from the source.
-        for (i, &width) in column_widths.iter().enumerate() {
+        // Separator is always a single line.
+        let mut spans = vec![
+            Span::styled(if is_cursor { "▶ " } else { "  " }, Style::default().fg(theme.warning)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ];
+        for (i, &width) in widths.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("┼", Style::default().fg(border_color)));
             }
             let dashes = "─".repeat(width + 2);
             spans.push(Span::styled(dashes, Style::default().fg(border_color)));
         }
-    } else {
-        let default_style = if is_header {
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.foreground)
-        };
-        let text_color = theme.content.text;
+        spans.push(Span::styled("│", Style::default().fg(border_color)));
+        let line_area = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
+        let paragraph = Paragraph::new(Line::from(spans)).style(row_bg);
+        f.render_widget(paragraph, line_area);
+        return;
+    }
 
-        for (i, cell) in cells.iter().enumerate() {
+    let text_color = theme.content.text;
+
+    // Parse each cell as inline markdown ONCE, then distribute the resulting spans
+    // across visual lines. Parsing the whole cell keeps `parse_inline_formatting` as
+    // the single source of truth for what counts as a construct — multi-word atoms
+    // like `**warp decode**` or `[Top 5 Things](url)` are recognised correctly, no
+    // matter how the wrap boundary falls.
+    let per_cell_lines: Vec<Vec<Vec<Span<'static>>>> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let w = widths.get(i).copied().unwrap_or(0);
+            let expanded = expand_tabs(c);
+            let spans = parse_inline_formatting::<fn(&str) -> bool>(&expanded, theme, None, None);
+            distribute_spans_across_lines(spans, w, text_color)
+        })
+        .collect();
+    let row_height = per_cell_lines
+        .iter()
+        .map(|lines| lines.len())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let default_style = if is_header {
+        Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+
+    for line_idx in 0..row_height {
+        // Cursor indicator shows only on the first visual line of the row.
+        let cursor_indicator = if is_cursor && line_idx == 0 { "▶ " } else { "  " };
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ];
+
+        for (i, cell_lines) in per_cell_lines.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("│", Style::default().fg(border_color)));
             }
-
-            let expanded_cell = expand_tabs(cell);
-            let visible = cell_visible_width(&expanded_cell);
-            let width = column_widths.get(i).copied().unwrap_or(visible);
+            let line_spans_slice: &[Span<'static>] = cell_lines
+                .get(line_idx)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let width = widths.get(i).copied().unwrap_or(0);
+            let visible: usize = line_spans_slice
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
             let pad = width.saturating_sub(visible);
             let alignment = alignments.get(i).copied().unwrap_or(crate::app::Alignment::Left);
             let (left_pad, right_pad) = match alignment {
@@ -1939,42 +2211,36 @@ fn render_table_row(
 
             spans.push(Span::styled(format!(" {}", " ".repeat(left_pad)), default_style));
 
-            // `parse_inline_formatting` is generic over the validator's closure type.
-            // We don't need wiki-link validation in tables — a fn-pointer type satisfies `F: Fn(&str) -> bool`.
-            let inline = parse_inline_formatting::<fn(&str) -> bool>(&expanded_cell, theme, None, None);
-            for sp in inline {
-                // Restyle plain-text spans (those the inline parser emits with the default body color)
-                // so headers get bold+info. Links/code/wiki keep their own styles.
-                let is_plain = sp.style.bg.is_none()
-                    && sp.style.add_modifier.is_empty()
-                    && sp.style.sub_modifier.is_empty()
-                    && (sp.style.fg.is_none() || sp.style.fg == Some(text_color.into()));
-                let style = if is_plain { default_style } else { sp.style };
-                spans.push(Span::styled(sp.content.into_owned(), style));
+            for sp in line_spans_slice.iter().cloned() {
+                let style = if is_plain_text_span(&sp.style, text_color) {
+                    default_style
+                } else {
+                    sp.style
+                };
+                spans.push(Span::styled(sp.content, style));
             }
 
             spans.push(Span::styled(format!("{} ", " ".repeat(right_pad)), default_style));
         }
+
+        spans.push(Span::styled("│", Style::default().fg(border_color)));
+        // "Open ↗" hint only on the first line, same as the cursor indicator.
+        if has_link && line_idx == 0 {
+            spans.push(Span::styled(" Open ↗", Style::default().fg(theme.content.link)));
+        }
+
+        if (area.y + line_idx as u16) >= area.y + area.height {
+            break;
+        }
+        let line_area = Rect {
+            x: area.x,
+            y: area.y + line_idx as u16,
+            width: area.width,
+            height: 1,
+        };
+        let paragraph = Paragraph::new(Line::from(spans)).style(row_bg);
+        f.render_widget(paragraph, line_area);
     }
-
-    spans.push(Span::styled("│", Style::default().fg(border_color)));
-
-    if has_link {
-        spans.push(Span::styled(" Open ↗", Style::default().fg(theme.content.link)));
-    }
-
-    let styled_line = Line::from(spans);
-
-    let style = if is_cursor {
-        Style::default().bg(theme.selection)
-    } else {
-        Style::default()
-    };
-
-    let paragraph = Paragraph::new(styled_line)
-        .style(style)
-        .wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
 }
 
 fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool, is_hovered: bool) {
@@ -2395,5 +2661,152 @@ mod tests {
     fn cell_visible_width_counts_bare_url_one_to_one() {
         // Bare URL is not shrunk — visible width equals its character count.
         assert_eq!(cell_visible_width("visit https://x.test"), 20);
+    }
+
+    #[test]
+    fn cap_column_widths_leaves_narrow_columns_alone() {
+        // Natural sum = 7 + 12 + 500 = 519; budget = 107 (like a ~120-col terminal).
+        // Expect narrow columns untouched, Description shrunk to fill what's left.
+        let natural = vec![7, 12, 500];
+        let capped = cap_column_widths(&natural, 107);
+        assert_eq!(capped[0], 7);
+        assert_eq!(capped[1], 12);
+        assert_eq!(capped[0] + capped[1] + capped[2], 107);
+    }
+
+    #[test]
+    fn cap_column_widths_no_shrink_when_it_fits() {
+        let natural = vec![4, 6, 10];
+        assert_eq!(cap_column_widths(&natural, 50), vec![4, 6, 10]);
+    }
+
+    #[test]
+    fn cap_column_widths_respects_min_floor() {
+        // If available is absurdly small, columns bottom out at TABLE_COLUMN_MIN_WIDTH
+        // (unless their natural width is already below that — those stay at natural).
+        let natural = vec![3, 50, 50]; // 3 is below the floor; leave it alone
+        let capped = cap_column_widths(&natural, 5);
+        assert_eq!(capped[0], 3);
+        assert_eq!(capped[1], TABLE_COLUMN_MIN_WIDTH);
+        assert_eq!(capped[2], TABLE_COLUMN_MIN_WIDTH);
+    }
+
+    // --- distribute_spans_across_lines ---
+    // Tests use Style::default() for "plain" spans and a non-default modifier
+    // (BOLD) as a proxy for any styled span (links/bold/code/etc.), matching
+    // how `parse_inline_formatting` emits them.
+
+    fn plain_color() -> ratatui::style::Color {
+        ratatui::style::Color::Reset
+    }
+
+    fn plain(content: &'static str) -> Span<'static> {
+        Span::styled(content.to_string(), Style::default())
+    }
+
+    fn atomic(content: &'static str) -> Span<'static> {
+        // Any non-default style qualifies the span as "atomic" to our logic.
+        Span::styled(content.to_string(), Style::default().add_modifier(Modifier::BOLD))
+    }
+
+    fn line_text(line: &[Span<'static>]) -> String {
+        line.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn distribute_plain_text_wraps_at_word_boundary() {
+        // "alpha beta gamma delta" at width 10: "alpha beta" = 10 fits, "gamma delta" = 11
+        // does not, so "gamma" and "delta" each get their own line.
+        let lines = distribute_spans_across_lines(
+            vec![plain("alpha beta gamma delta")],
+            10,
+            plain_color(),
+        );
+        let texts: Vec<String> = lines.iter().map(|l| line_text(l)).collect();
+        assert_eq!(
+            texts,
+            vec!["alpha beta".to_string(), "gamma".to_string(), "delta".to_string()]
+        );
+    }
+
+    #[test]
+    fn distribute_hard_breaks_over_wide_plain_word() {
+        let lines = distribute_spans_across_lines(
+            vec![plain("supercalifragilisticexpialidocious")],
+            10,
+            plain_color(),
+        );
+        assert!(lines.len() >= 4);
+        for l in &lines {
+            let width: usize = l.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+            assert!(width <= 10, "line {:?} exceeds width", line_text(l));
+        }
+    }
+
+    #[test]
+    fn distribute_keeps_atomic_span_on_one_line_even_when_wider_than_column() {
+        // A styled span wider than the column is accepted as overflow — splitting its
+        // content would corrupt the rendered markdown construct.
+        let lines = distribute_spans_across_lines(vec![atomic("VeryLongStyledContent")], 10, plain_color());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "VeryLongStyledContent");
+    }
+
+    #[test]
+    fn distribute_packs_plain_then_atomic_on_same_line_when_it_fits() {
+        // "see" (plain, 3) + "blog" (atomic, 4) -> "see blog" on one line, width 20.
+        let lines = distribute_spans_across_lines(
+            vec![plain("see "), atomic("blog")],
+            20,
+            plain_color(),
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "see blog");
+    }
+
+    #[test]
+    fn distribute_breaks_to_new_line_when_atomic_would_overflow() {
+        // "a short prefix " (plain, 15 incl. trailing space) + "XXXXXXX" atomic (7):
+        // 15+7=22 > 18 budget, so atomic starts on a new line. The plain span's
+        // trailing space is preserved on line 1 (invisible when rendered).
+        let lines = distribute_spans_across_lines(
+            vec![plain("a short prefix "), atomic("XXXXXXX")],
+            18,
+            plain_color(),
+        );
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]).trim_end(), "a short prefix");
+        assert_eq!(line_text(&lines[1]), "XXXXXXX");
+    }
+
+    #[test]
+    fn distribute_empty_input_returns_one_empty_line() {
+        let lines = distribute_spans_across_lines(Vec::new(), 10, plain_color());
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].is_empty());
+    }
+
+    #[test]
+    fn distribute_width_zero_returns_one_line_owned() {
+        // When width is 0 we don't wrap — caller decides how to handle.
+        let lines = distribute_spans_across_lines(vec![plain("hello world")], 0, plain_color());
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn distribute_does_not_inject_space_between_atomic_and_adjacent_punctuation() {
+        // Reproduces the `two kernels: \`gate+up\`, then \`down\`` case. Previously
+        // the flatten-to-words step lost the fact that "," had no leading space,
+        // and we injected one, bumping the visible width and forcing an extra wrap.
+        // With span-preserving distribution, no space is injected.
+        let spans = vec![
+            plain("two kernels: "),
+            atomic("gate+up"),
+            plain(", then "),
+            atomic("down"),
+        ];
+        let lines = distribute_spans_across_lines(spans, 31, plain_color());
+        assert_eq!(lines.len(), 1, "got {:?}", lines.iter().map(|l| line_text(l)).collect::<Vec<_>>());
+        assert_eq!(line_text(&lines[0]), "two kernels: gate+up, then down");
     }
 }
