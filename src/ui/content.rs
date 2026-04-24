@@ -1904,24 +1904,14 @@ fn render_table_row(
     ];
 
     if is_separator {
-        use crate::app::Alignment;
+        // Plain horizontal rule — alignment is already visible in how data rows are padded,
+        // so we don't render colon markers from the source.
         for (i, &width) in column_widths.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("┼", Style::default().fg(border_color)));
             }
-            // Reflect alignment visually in the separator row (`:` markers where colons would
-            // appear in the source). Width accounts for two padding spaces either side.
-            let total = width + 2;
-            let alignment = alignments.get(i).copied().unwrap_or(Alignment::Left);
-            let (left_mark, right_mark) = match alignment {
-                Alignment::Left => (":", "─"),
-                Alignment::Right => ("─", ":"),
-                Alignment::Center => (":", ":"),
-            };
-            let dashes = "─".repeat(total.saturating_sub(2));
-            spans.push(Span::styled(left_mark.to_string(), Style::default().fg(border_color)));
+            let dashes = "─".repeat(width + 2);
             spans.push(Span::styled(dashes, Style::default().fg(border_color)));
-            spans.push(Span::styled(right_mark.to_string(), Style::default().fg(border_color)));
         }
     } else {
         let default_style = if is_header {
