@@ -474,6 +474,48 @@ pub(crate) fn cell_visible_width(cell: &str) -> usize {
     total.saturating_sub(calc_formatting_shrinkage(cell, total))
 }
 
+/// If `text[start..]` begins with a bare `http://` or `https://` URL, return the
+/// byte length of the URL (trailing sentence punctuation stripped). Used for
+/// GFM-style autolinking both in rendering and in the Enter-to-open path.
+pub(crate) fn detect_bare_url_len(text: &str, start: usize) -> Option<usize> {
+    let rest = match text.get(start..) {
+        Some(s) => s,
+        None => return None,
+    };
+    let scheme_len = if rest.starts_with("https://") {
+        8
+    } else if rest.starts_with("http://") {
+        7
+    } else {
+        return None;
+    };
+
+    // Walk from the scheme end until we hit a terminator or the string end.
+    let mut end = rest.len();
+    for (idx, ch) in rest[scheme_len..].char_indices() {
+        if ch.is_whitespace() || matches!(ch, ')' | ']' | '>' | '<' | '"' | '\'' | '|') {
+            end = scheme_len + idx;
+            break;
+        }
+    }
+
+    // Strip trailing sentence punctuation so `https://x.test.` -> `https://x.test`.
+    while end > scheme_len {
+        let last = rest[..end].chars().last().unwrap();
+        if matches!(last, '.' | ',' | ';' | ':' | '!' | '?') {
+            end -= last.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if end > scheme_len {
+        Some(end)
+    } else {
+        None
+    }
+}
+
 /// Calculate how many characters are removed by inline formatting before a given position
 /// This accounts for **bold**, *italic*, ~~strikethrough~~, `code`, [[wiki links]], and [markdown](links)
 fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
@@ -569,6 +611,16 @@ fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
                     shrinkage += 1;
                 }
                 pos = paren_end + 1;
+                continue;
+            }
+        }
+        // Bare URL: rendered 1:1 (no shrinkage), but skip so inner chars aren't reprocessed.
+        if chars[pos] == 'h' {
+            let byte_pos: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
+            if let Some(url_len) = detect_bare_url_len(text, byte_pos) {
+                // `pos` is a char index, `url_len` is bytes — convert by counting chars in the slice.
+                let url_char_count = text[byte_pos..byte_pos + url_len].chars().count();
+                pos += url_char_count;
                 continue;
             }
         }
@@ -838,6 +890,37 @@ where
     let content_theme = &theme.content;
 
     while let Some((i, c)) = chars.next() {
+        // Bare URL autolink (http:// or https://). Must run before the char-dispatch branches
+        // so `h` starting a URL is recognised and consumed as a single link span.
+        if c == 'h' {
+            if let Some(url_len) = detect_bare_url_len(text, i) {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                let is_selected = selected_link == Some(link_index);
+                let style = if is_selected {
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.warning)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(content_theme.link)
+                        .add_modifier(Modifier::UNDERLINED)
+                };
+                spans.push(Span::styled(&text[i..i + url_len], style));
+                link_index += 1;
+                // Advance the char iterator past the URL. Count chars (not bytes) in case
+                // the URL contains non-ASCII (e.g. IDN host).
+                let url_chars = text[i..i + url_len].chars().count();
+                for _ in 1..url_chars {
+                    chars.next();
+                }
+                current_start = i + url_len;
+                continue;
+            }
+        }
+
         // Check for **bold** or *italic*
         if c == '*' {
             if let Some(&(_, '*')) = chars.peek() {
@@ -2291,5 +2374,36 @@ mod tests {
         // misaligned their borders.
         // "[a](u1) [b](u2)" -> "a b" = 3 visible chars.
         assert_eq!(cell_visible_width("[a](https://u1.test) [b](https://u2.test)"), 3);
+    }
+
+    #[test]
+    fn detect_bare_url_basic() {
+        assert_eq!(detect_bare_url_len("see https://example.com now", 4), Some(19));
+        assert_eq!(detect_bare_url_len("http://a.test", 0), Some(13));
+    }
+
+    #[test]
+    fn detect_bare_url_strips_trailing_punctuation() {
+        // GFM: the trailing `.` should not be part of the URL.
+        assert_eq!(detect_bare_url_len("visit https://example.com.", 6), Some(19));
+    }
+
+    #[test]
+    fn detect_bare_url_stops_at_delimiters() {
+        // "https://x.test" = 14 chars; the `)` / `>` terminator is not included.
+        assert_eq!(detect_bare_url_len("(https://x.test)", 1), Some(14));
+        assert_eq!(detect_bare_url_len("<https://x.test>", 1), Some(14));
+    }
+
+    #[test]
+    fn detect_bare_url_no_match_returns_none() {
+        assert_eq!(detect_bare_url_len("nothing here", 0), None);
+        assert_eq!(detect_bare_url_len("http:/broken", 0), None);  // missing second slash
+    }
+
+    #[test]
+    fn cell_visible_width_counts_bare_url_one_to_one() {
+        // Bare URL is not shrunk — visible width equals its character count.
+        assert_eq!(cell_visible_width("visit https://x.test"), 20);
     }
 }

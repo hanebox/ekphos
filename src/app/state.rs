@@ -2674,9 +2674,40 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
-    /// Extract `[text](url)` links from each table cell and map positions into the
-    /// row's rendered column space. Simple scenarios only: at most one markdown link
-    /// per cell, and the link's pre-prefix can contain inline formatting but no other links.
+    /// Parse the first `[label](url)` at any position in `s`, skipping wiki-link form `[[...]]`.
+    /// Returns `(display, url, raw_start_byte)` — display is the label, or the URL if the label is empty.
+    fn find_first_bracket_link(s: &str) -> Option<(String, String, usize)> {
+        let br_start = match s.find('[') {
+            Some(p) => p,
+            None => return None,
+        };
+        if s[br_start..].starts_with("[[") {
+            return None;
+        }
+        let br_end_rel = match s[br_start + 1..].find(']') {
+            Some(p) => p,
+            None => return None,
+        };
+        let br_end = br_start + 1 + br_end_rel;
+        if !s[br_end..].starts_with("](") {
+            return None;
+        }
+        let pr_end_rel = match s[br_end + 2..].find(')') {
+            Some(p) => p,
+            None => return None,
+        };
+        let pr_end = br_end + 2 + pr_end_rel;
+        let label = &s[br_start + 1..br_end];
+        let url = &s[br_end + 2..pr_end];
+        if url.is_empty() {
+            return None;
+        }
+        let display = if label.is_empty() { url.to_string() } else { label.to_string() };
+        Some((display, url.to_string(), br_start))
+    }
+
+    /// Extract `[text](url)` and bare URL links from each table cell and map positions into the
+    /// row's rendered column space. Simple scenarios only: one link per cell.
     fn extract_simple_table_links(cells: &[String], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
         let mut links = Vec::new();
         let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
@@ -2692,26 +2723,25 @@ impl App {
             };
             let cell_start = col_cursor + 1 /* leading space */ + left_pad;
 
-            if let Some(br_start) = cell.find('[') {
-                if !cell[br_start..].starts_with("[[") {
-                    if let Some(br_end_rel) = cell[br_start + 1..].find(']') {
-                        let br_end = br_start + 1 + br_end_rel;
-                        if cell[br_end..].starts_with("](") {
-                            if let Some(pr_end_rel) = cell[br_end + 2..].find(')') {
-                                let pr_end = br_end + 2 + pr_end_rel;
-                                let label = &cell[br_start + 1..br_end];
-                                let url = &cell[br_end + 2..pr_end];
-                                if !url.is_empty() {
-                                    let display = if label.is_empty() { url.to_string() } else { label.to_string() };
-                                    let pre_visible = crate::ui::cell_visible_width(&cell[..br_start]);
-                                    let start = cell_start + pre_visible;
-                                    let end = start + display.chars().count();
-                                    links.push((display, url.to_string(), start, end));
-                                }
-                            }
-                        }
+            // Find the first link in the cell — bracket form `[label](url)` takes priority,
+            // else fall back to a bare `http(s)://` scan. One link per cell (simple scope).
+            let mut found: Option<(String, String, usize)> = Self::find_first_bracket_link(cell);
+            if found.is_none() {
+                let mut scan = 0;
+                while scan < cell.len() {
+                    if let Some(url_len) = crate::ui::detect_bare_url_len(cell, scan) {
+                        let url = cell[scan..scan + url_len].to_string();
+                        found = Some((url.clone(), url, scan));
+                        break;
                     }
+                    scan += 1;
                 }
+            }
+            if let Some((display, url, raw_start)) = found {
+                let pre_visible = crate::ui::cell_visible_width(&cell[..raw_start]);
+                let start = cell_start + pre_visible;
+                let end = start + display.chars().count();
+                links.push((display, url, start, end));
             }
 
             col_cursor += 1 + width + 1; // " " + width + " "
@@ -2739,6 +2769,9 @@ impl App {
 
         let mut links = Vec::new();
         let mut search_start = 0;
+        // Raw byte ranges claimed by bracket-style links/images. Used to skip bare URLs
+        // that fall inside a `(url)` portion so we don't double-emit.
+        let mut claimed: Vec<(usize, usize)> = Vec::new();
 
         while search_start < text.len() {
             let remaining = &text[search_start..];
@@ -2779,6 +2812,7 @@ impl App {
                             }
 
                             search_start = abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+                            claimed.push((abs_img_pos, search_start));
                             continue;
                         }
                     }
@@ -2823,6 +2857,7 @@ impl App {
                             }
 
                             search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                            claimed.push((abs_img_pos, search_start));
                             continue;
                         }
                     }
@@ -2866,11 +2901,31 @@ impl App {
                         }
 
                         search_start = abs_bracket_pos + bracket_end + 2 + paren_end + 1;
+                        claimed.push((abs_bracket_pos, search_start));
                         continue;
                     }
                 }
             }
             break;
+        }
+
+        // Bare URL autolink pass. Skips URLs that fall inside already-claimed bracket-link
+        // ranges so e.g. `[click](https://x)` doesn't double-emit the URL inside the parens.
+        let mut pos = 0;
+        while pos < text.len() {
+            if let Some(url_len) = crate::ui::detect_bare_url_len(text, pos) {
+                let end = pos + url_len;
+                let overlaps = claimed.iter().any(|(s, e)| pos < *e && end > *s);
+                if !overlaps {
+                    let url = text[pos..end].to_string();
+                    let rendered_start = Self::calc_rendered_pos(text, pos);
+                    let rendered_end = rendered_start + url.chars().count();
+                    links.push((url.clone(), url, rendered_start, rendered_end));
+                }
+                pos = end;
+            } else {
+                pos += 1;
+            }
         }
 
         links
@@ -6025,5 +6080,33 @@ mod tests {
         let alignments = vec![Alignment::Left];
         let links = App::extract_simple_table_links(&cells, &widths, &alignments);
         assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_simple_table_links_bare_url_in_cell() {
+        // Cell 0 occupies " X   " + "│" -> col_cursor=6.
+        // Cell 1 (Left): URL starts at 6 + 1 + 0 = 7, ends at 7 + 19 = 26.
+        let cells = vec!["X".to_string(), "https://example.com".to_string()];
+        let widths = vec![3, 19];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "https://example.com");
+        assert_eq!(links[0].1, "https://example.com");
+        assert_eq!(links[0].2, 7);
+        assert_eq!(links[0].3, 26);
+    }
+
+    #[test]
+    fn extract_simple_table_links_prefers_bracket_over_bare_in_same_cell() {
+        // One-link-per-cell scope: a bracket link in the cell claims it; the trailing
+        // bare URL is not emitted.
+        let cells = vec!["[label](https://a) https://b.test".to_string()];
+        let widths = vec![33];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "label");
+        assert_eq!(links[0].1, "https://a");
     }
 }

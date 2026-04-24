@@ -20,7 +20,7 @@ use ratatui::{
 use crate::app::{App, ContextMenuState, DialogState, SearchPickerState, Mode, WikiAutocompleteState};
 
 pub use content::render_content;
-pub(crate) use content::cell_visible_width;
+pub(crate) use content::{cell_visible_width, detect_bare_url_len};
 pub use dialogs::{
     render_create_folder_dialog, render_create_note_dialog, render_create_note_in_folder_dialog,
     render_create_wiki_note_dialog, render_delete_confirm_dialog, render_delete_folder_confirm_dialog,
