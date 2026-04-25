@@ -488,10 +488,16 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Visible width of a table cell after inline markdown shrinks
-/// (e.g. `[label](url)` -> `label`). Used both for column layout and render padding.
+/// (e.g. `[label](url)` -> `label`). Measured in *display columns*, so wide
+/// characters (CJK, emoji) contribute their full terminal width — not just 1
+/// char each. Markdown markers stripped by `calc_formatting_shrinkage` are all
+/// ASCII (1 col each), so subtracting their char-count from the display width
+/// gives the visible-content's display width.
 pub(crate) fn cell_visible_width(cell: &str) -> usize {
-    let total = cell.chars().count();
-    total.saturating_sub(calc_formatting_shrinkage(cell, total))
+    let display_width = UnicodeWidthStr::width(cell);
+    let total_chars = cell.chars().count();
+    let marker_chars = calc_formatting_shrinkage(cell, total_chars);
+    display_width.saturating_sub(marker_chars)
 }
 
 /// Per-column minimum width when shrinking a wide table to fit the terminal.
@@ -2661,6 +2667,18 @@ mod tests {
     fn cell_visible_width_counts_bare_url_one_to_one() {
         // Bare URL is not shrunk — visible width equals its character count.
         assert_eq!(cell_visible_width("visit https://x.test"), 20);
+    }
+
+    #[test]
+    fn cell_visible_width_counts_emoji_as_two_columns() {
+        // 🟡 is one char but displays as 2 columns in a terminal. The char-count
+        // version under-counted: 1 (emoji) + 11 ("In-Progress") = 12, so column
+        // widths were reserved at 12 cols while the cell actually renders in 13.
+        // That off-by-one forced an unnecessary wrap.
+        assert_eq!(cell_visible_width("🟡In-Progress"), 13);
+        assert_eq!(cell_visible_width("🟡"), 2);
+        // ASCII control: still matches char count.
+        assert_eq!(cell_visible_width("In-Progress"), 11);
     }
 
     #[test]
