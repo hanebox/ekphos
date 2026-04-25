@@ -212,6 +212,27 @@ pub struct ImageState {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl Alignment {
+    /// Classify a GFM table separator cell (e.g. `:---`, `---:`, `:---:`, `---`)
+    /// into its alignment. Any cell without a leading `:` is treated as Left
+    /// (matches GFM's default-left convention).
+    pub fn from_separator_cell(cell: &str) -> Alignment {
+        let t = cell.trim();
+        match (t.starts_with(':'), t.ends_with(':')) {
+            (true, true) => Alignment::Center,
+            (false, true) => Alignment::Right,
+            _ => Alignment::Left,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     TextLine(String),
@@ -219,7 +240,7 @@ pub enum ContentItem {
     CodeLine(String),
     CodeFence(String),
     TaskItem { text: String, checked: bool, line_index: usize },
-    TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize> },
+    TableRow { cells: Vec<String>, is_separator: bool, is_header: bool, column_widths: Vec<usize>, alignments: Vec<Alignment> },
     Details { summary: String, content_lines: Vec<String>, id: usize },
     FrontmatterLine { key: String, value: String },
     FrontmatterDelimiter,
@@ -2202,7 +2223,7 @@ impl App {
                         if !is_sep {
                             for (col_idx, cell) in cells.iter().enumerate() {
                                 if col_idx < column_widths.len() {
-                                    column_widths[col_idx] = column_widths[col_idx].max(cell.chars().count());
+                                    column_widths[col_idx] = column_widths[col_idx].max(crate::ui::cell_visible_width(cell));
                                 }
                             }
                         }
@@ -2214,6 +2235,20 @@ impl App {
 
                     let separator_idx = table_rows.iter().position(|(_, is_sep)| *is_sep);
 
+                    // Derive per-column alignment from the separator row. Tables without
+                    // a separator fall back to Left (GFM default).
+                    let mut alignments: Vec<Alignment> = vec![Alignment::Left; num_cols];
+                    if let Some(sep_idx) = separator_idx {
+                        if let Some((sep_cells, _)) = table_rows.get(sep_idx) {
+                            for (col_idx, cell) in sep_cells.iter().enumerate() {
+                                if col_idx >= alignments.len() {
+                                    break;
+                                }
+                                alignments[col_idx] = Alignment::from_separator_cell(cell);
+                            }
+                        }
+                    }
+
                     for (row_idx, (cells, is_separator)) in table_rows.into_iter().enumerate() {
                         let is_header = separator_idx.map(|sep_idx| row_idx < sep_idx).unwrap_or(false);
                         self.content_items.push(ContentItem::TableRow {
@@ -2221,6 +2256,7 @@ impl App {
                             is_separator,
                             is_header,
                             column_widths: column_widths.clone(),
+                            alignments: alignments.clone(),
                         });
                         self.content_item_source_lines.push(table_start_line + row_idx);
                     }
@@ -2638,17 +2674,114 @@ impl App {
         !self.item_all_links_at(self.content_cursor).is_empty()
     }
 
+    /// Extract all `[text](url)` and bare URL links from each table cell, mapping positions
+    /// into the row's rendered column space. Walks every cell end-to-end so multiple links
+    /// per cell are all navigable.
+    ///
+    /// Rendered positions assume natural column widths and a single-line row. When a table
+    /// wraps (capped widths, multi-line rows), keyboard Enter-to-open still works because it
+    /// only uses the URL; mouse click accuracy on wrapped lines is not guaranteed by this
+    /// method's output.
+    fn extract_simple_table_links(cells: &[String], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
+        let mut links = Vec::new();
+        let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
+        for (i, cell) in cells.iter().enumerate() {
+            let width = column_widths.get(i).copied().unwrap_or_else(|| crate::ui::cell_visible_width(cell));
+            let visible = crate::ui::cell_visible_width(cell);
+            let pad = width.saturating_sub(visible);
+            let alignment = alignments.get(i).copied().unwrap_or(Alignment::Left);
+            let left_pad = match alignment {
+                Alignment::Left => 0,
+                Alignment::Right => pad,
+                Alignment::Center => pad / 2,
+            };
+            let cell_start = col_cursor + 1 /* leading space */ + left_pad;
+
+            // Walk the cell: at each position, try to recognise a bracket link first (so a
+            // bare URL inside its `(url)` portion is not double-emitted), then a bare URL.
+            let mut scan = 0;
+            while scan < cell.len() {
+                if let Some((display, url, raw_start, raw_end)) = Self::bracket_link_at(cell, scan) {
+                    let pre_visible = crate::ui::cell_visible_width(&cell[..raw_start]);
+                    let start = cell_start + pre_visible;
+                    let end = start + display.chars().count();
+                    links.push((display, url, start, end));
+                    scan = raw_end;
+                    continue;
+                }
+                if let Some(url_len) = crate::ui::detect_bare_url_len(cell, scan) {
+                    let url = cell[scan..scan + url_len].to_string();
+                    let pre_visible = crate::ui::cell_visible_width(&cell[..scan]);
+                    let start = cell_start + pre_visible;
+                    let end = start + url.chars().count();
+                    links.push((url.clone(), url, start, end));
+                    scan += url_len;
+                    continue;
+                }
+                scan += 1;
+            }
+
+            col_cursor += 1 + width + 1; // " " + width + " "
+            if i + 1 < cells.len() {
+                col_cursor += 1; // "│" between cells
+            }
+        }
+        links
+    }
+
+    /// Parse `[label](url)` anchored at byte offset `at` in `s`, skipping wiki-link form `[[...]]`.
+    /// Returns `(display, url, raw_start, raw_end_exclusive)` where display is the label (or url
+    /// if label is empty). Returns None if no bracket link starts exactly at `at`.
+    fn bracket_link_at(s: &str, at: usize) -> Option<(String, String, usize, usize)> {
+        let rest = match s.get(at..) {
+            Some(r) => r,
+            None => return None,
+        };
+        if !rest.starts_with('[') || rest.starts_with("[[") {
+            return None;
+        }
+        let br_end_rel = match rest[1..].find(']') {
+            Some(p) => p,
+            None => return None,
+        };
+        let br_end = 1 + br_end_rel;
+        if !rest[br_end..].starts_with("](") {
+            return None;
+        }
+        let pr_end_rel = match rest[br_end + 2..].find(')') {
+            Some(p) => p,
+            None => return None,
+        };
+        let pr_end = br_end + 2 + pr_end_rel;
+        let label = &rest[1..br_end];
+        let url = &rest[br_end + 2..pr_end];
+        if url.is_empty() {
+            return None;
+        }
+        let display = if label.is_empty() { url.to_string() } else { label.to_string() };
+        Some((display, url.to_string(), at, at + pr_end + 1))
+    }
+
     /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
     /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
     pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
         let text = match self.content_items.get(index) {
             Some(ContentItem::TextLine(line)) => line.as_str(),
             Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            Some(ContentItem::TableRow { cells, is_separator, column_widths, alignments, .. }) => {
+                if *is_separator {
+                    return Vec::new();
+                }
+                return Self::extract_simple_table_links(cells, column_widths, alignments);
+            }
             _ => return Vec::new(),
         };
 
         let mut links = Vec::new();
         let mut search_start = 0;
+        // Raw byte ranges claimed by bracket-style links/images. Used to skip bare URLs
+        // that fall inside a `(url)` portion so we don't double-emit.
+        let mut claimed: Vec<(usize, usize)> = Vec::new();
 
         while search_start < text.len() {
             let remaining = &text[search_start..];
@@ -2689,6 +2822,7 @@ impl App {
                             }
 
                             search_start = abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+                            claimed.push((abs_img_pos, search_start));
                             continue;
                         }
                     }
@@ -2733,6 +2867,7 @@ impl App {
                             }
 
                             search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                            claimed.push((abs_img_pos, search_start));
                             continue;
                         }
                     }
@@ -2776,11 +2911,31 @@ impl App {
                         }
 
                         search_start = abs_bracket_pos + bracket_end + 2 + paren_end + 1;
+                        claimed.push((abs_bracket_pos, search_start));
                         continue;
                     }
                 }
             }
             break;
+        }
+
+        // Bare URL autolink pass. Skips URLs that fall inside already-claimed bracket-link
+        // ranges so e.g. `[click](https://x)` doesn't double-emit the URL inside the parens.
+        let mut pos = 0;
+        while pos < text.len() {
+            if let Some(url_len) = crate::ui::detect_bare_url_len(text, pos) {
+                let end = pos + url_len;
+                let overlaps = claimed.iter().any(|(s, e)| pos < *e && end > *s);
+                if !overlaps {
+                    let url = text[pos..end].to_string();
+                    let rendered_start = Self::calc_rendered_pos(text, pos);
+                    let rendered_end = rendered_start + url.chars().count();
+                    links.push((url.clone(), url, rendered_start, rendered_end));
+                }
+                pos = end;
+            } else {
+                pos += 1;
+            }
         }
 
         links
@@ -2940,7 +3095,8 @@ impl App {
                 }
                 len
             }
-            Some(ContentItem::TaskItem { .. }) => 6, 
+            Some(ContentItem::TaskItem { .. }) => 6,
+            Some(ContentItem::TableRow { .. }) => 3, // "  " cursor indicator + "│" left border
             _ => 2,
         }
     }
@@ -4591,8 +4747,11 @@ impl App {
 
     pub fn has_unsaved_changes(&self) -> bool {
         if let Some(note) = self.notes.get(self.selected_note) {
-            let current_content = self.editor.lines().join("\n");
-            current_content != note.content
+            // Compare line-by-line with the same semantics `enter_edit_mode` uses
+            // (`str::lines()` drops trailing newlines). Comparing the raw strings instead
+            // fires a false positive whenever the file ends with "\n" — which is most files.
+            let note_lines: Vec<&str> = note.content.lines().collect();
+            self.editor.lines() != note_lines
         } else {
             false
         }
@@ -5859,5 +6018,119 @@ fn fuzzy_match(text: &str, query: &str) -> Option<i32> {
         Some(score + consecutive_bonus)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alignment_from_separator_cell_classifies_each_form() {
+        assert_eq!(Alignment::from_separator_cell("---"), Alignment::Left);
+        assert_eq!(Alignment::from_separator_cell(":---"), Alignment::Left);
+        assert_eq!(Alignment::from_separator_cell("---:"), Alignment::Right);
+        assert_eq!(Alignment::from_separator_cell(":---:"), Alignment::Center);
+        // Surrounding whitespace should not change classification.
+        assert_eq!(Alignment::from_separator_cell("  :---:  "), Alignment::Center);
+    }
+
+    #[test]
+    fn extract_simple_table_links_single_link_in_second_cell() {
+        // Row: "| Name | [Top 5](https://x.test) |"
+        // Cells (already trimmed during parse): ["Name", "[Top 5](https://x.test)"]
+        // Column widths follow visible width: cell 0 = 4, cell 1 = 6 ("Top 5").
+        let cells = vec!["Name".to_string(), "[Top 5](https://x.test)".to_string()];
+        let widths = vec![4, 6];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+
+        assert_eq!(links.len(), 1);
+        let (label, url, start, end) = &links[0];
+        assert_eq!(label, "Top 5");
+        assert_eq!(url, "https://x.test");
+        // Layout within content area (prefix `  │` not counted):
+        //   cell 0 occupies " Name " (cols 0..=5), "│" at 6, cell 1 opens at 7 with " " leading.
+        //   Left-aligned, so label starts at 7 + 1 = 8.
+        assert_eq!(*start, 8);
+        assert_eq!(*end, 8 + "Top 5".chars().count());
+    }
+
+    #[test]
+    fn extract_simple_table_links_respects_right_alignment() {
+        // Right-aligned cell: label sits flush against the right edge.
+        // Cells: ["X", "[a](u)"]; widths: [3, 5]; alignment: [Left, Right].
+        // Cell 0 occupies " X   " (1 + width 3 + 1 = 5 chars) + "│" -> col_cursor = 6.
+        // Cell 1 visible = 1 ("a"), pad = 4, Right -> left_pad = 4.
+        // Link starts at col_cursor(6) + 1 (leading space) + 4 (left_pad) = 11.
+        let cells = vec!["X".to_string(), "[a](u)".to_string()];
+        let widths = vec![3, 5];
+        let alignments = vec![Alignment::Left, Alignment::Right];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "a");
+        assert_eq!(links[0].2, 11);
+        assert_eq!(links[0].3, 12);
+    }
+
+    #[test]
+    fn extract_simple_table_links_ignores_wiki_link() {
+        // `[[wiki]]` is not a markdown link; should not be emitted here.
+        let cells = vec!["X".to_string(), "[[wiki]]".to_string()];
+        let widths = vec![3, 4];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_simple_table_links_skips_link_with_empty_url() {
+        let cells = vec!["[label]()".to_string()];
+        let widths = vec![5];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn extract_simple_table_links_bare_url_in_cell() {
+        // Cell 0 occupies " X   " + "│" -> col_cursor=6.
+        // Cell 1 (Left): URL starts at 6 + 1 + 0 = 7, ends at 7 + 19 = 26.
+        let cells = vec!["X".to_string(), "https://example.com".to_string()];
+        let widths = vec![3, 19];
+        let alignments = vec![Alignment::Left, Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "https://example.com");
+        assert_eq!(links[0].1, "https://example.com");
+        assert_eq!(links[0].2, 7);
+        assert_eq!(links[0].3, 26);
+    }
+
+    #[test]
+    fn extract_simple_table_links_emits_both_bracket_and_bare_in_same_cell() {
+        // A cell with both a bracket link and a trailing bare URL emits both,
+        // in source order. Bracket link's URL is not re-emitted as a bare URL.
+        let cells = vec!["[label](https://a) https://b.test".to_string()];
+        let widths = vec![33];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0, "label");
+        assert_eq!(links[0].1, "https://a");
+        assert_eq!(links[1].0, "https://b.test");
+        assert_eq!(links[1].1, "https://b.test");
+    }
+
+    #[test]
+    fn extract_simple_table_links_multiple_bracket_links_in_same_cell() {
+        // Multiple `[text](url)` in one cell should all be emitted.
+        let cells = vec!["[alpha](u1) and [beta](u2)".to_string()];
+        let widths = vec![16];
+        let alignments = vec![Alignment::Left];
+        let links = App::extract_simple_table_links(&cells, &widths, &alignments);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0, "alpha");
+        assert_eq!(links[1].0, "beta");
     }
 }
