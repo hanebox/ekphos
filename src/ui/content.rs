@@ -141,7 +141,11 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let mut current_line_width = 0usize;
 
         for word in text.split_whitespace() {
-            let word_width = unicode_width::UnicodeWidthStr::width(word);
+            // Use the *visible* width so a single-word markdown atom like
+            // `[label](https://very-long-url)` counts as its rendered label width
+            // (~ "label") instead of its raw source. Otherwise the height calc
+            // over-reserves lines and the layout shows blank padding rows.
+            let word_width = cell_visible_width(word);
 
             if current_line_width == 0 {
                 if word_width > content_width {
