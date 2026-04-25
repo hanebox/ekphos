@@ -307,12 +307,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                             app.toggle_task_at(idx);
                         }
                         else if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
-                            #[cfg(target_os = "macos")]
-                            let _ = std::process::Command::new("open").arg(&url).spawn();
-                            #[cfg(target_os = "linux")]
-                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-                            #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+                            app.open_link(&url);
                         }
                         else if let Some(wiki_link) = app.find_clicked_wiki_link(idx, mouse_x, app.content_area.x) {
                             if wiki_link.is_valid {
@@ -2108,7 +2103,13 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Enter => {
             match app.focus {
-                Focus::Content => app.open_current_image(),
+                Focus::Content => {
+                        if app.current_item_link().is_some() {
+                            app.open_current_link();
+                        } else {
+                            app.open_current_image();
+                        }
+                    }
                 Focus::Outline => app.jump_to_outline(),
                 Focus::Sidebar => app.handle_sidebar_enter(),
             }
@@ -2124,7 +2125,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('o') => {
             if app.focus == Focus::Content {
-                app.open_current_image();
+                if app.current_item_link().is_some() {
+                    app.open_current_link();
+                } else {
+                    app.open_current_image();
+                }
             } else if app.focus == Focus::Outline {
                 // 'o' on outline just jumps to content view without edit
                 app.jump_to_outline();

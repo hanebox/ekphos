@@ -38,6 +38,67 @@ pub struct BlockInsertState {
 
 use super::welcome_notes::{GETTING_STARTED_CONTENT, DEMO_NOTE_CONTENT};
 
+/// Convert a heading into a link-fragment slug: lowercased, whitespace
+/// collapsed to dashes, punctuation stripped (GitHub-style). Matches the
+/// `[text](./file.md#sub-section1)` form used for jumping to headings.
+fn slugify_heading(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true;
+    for ch in s.trim().chars() {
+        if ch.is_alphanumeric() {
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+            last_dash = false;
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Decode `%XX` escapes in a URL fragment, leaving other bytes intact.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// If the line is a markdown ATX heading (`#` through `######`), return the
+/// heading text with any trailing `#`s stripped.
+fn heading_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let hash_count = trimmed.chars().take_while(|c| *c == '#').count();
+    if hash_count == 0 || hash_count > 6 {
+        return None;
+    }
+    let rest = &trimmed[hash_count..];
+    if !rest.starts_with(' ') && !rest.is_empty() {
+        return None;
+    }
+    Some(rest.trim_start().trim_end_matches(|c: char| c == '#' || c.is_whitespace()))
+}
+
 fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| {
@@ -3013,15 +3074,102 @@ impl App {
     }
 
     #[allow(dead_code)]
-    pub fn open_current_link(&self) {
+    pub fn open_current_link(&mut self) {
         if let Some(url) = self.current_item_link() {
-            #[cfg(target_os = "macos")]
-            let _ = Command::new("open").arg(&url).spawn();
-            #[cfg(target_os = "linux")]
-            let _ = Command::new("xdg-open").arg(&url).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("cmd").args(["/c", "start", "", &url]).spawn();
+            self.open_link(&url);
         }
+    }
+
+    /// Open a link - navigates internally for .md files, opens externally otherwise
+    pub fn open_link(&mut self, url: &str) {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            let (path_part, heading) = if let Some(hash_pos) = url.find('#') {
+                (&url[..hash_pos], Some(&url[hash_pos + 1..]))
+            } else {
+                (url, None)
+            };
+
+            // Same-file anchor: [text](#section)
+            if path_part.is_empty() {
+                if let Some(heading_text) = heading {
+                    self.navigate_to_heading(heading_text);
+                }
+                return;
+            }
+
+            if path_part.ends_with(".md") {
+                let base_dir = self.current_note()
+                    .and_then(|n| n.file_path.as_ref())
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.config.notes_path());
+
+                let resolved = base_dir.join(path_part);
+                if let Ok(canonical) = resolved.canonicalize() {
+                    // Find matching note by canonical path
+                    let found = self.notes.iter().enumerate().find_map(|(idx, note)| {
+                        note.file_path.as_ref()
+                            .and_then(|fp| fp.canonicalize().ok())
+                            .filter(|cp| *cp == canonical)
+                            .map(|_| idx)
+                    });
+
+                    if let Some(note_idx) = found {
+                        // Expand parent folders
+                        if let Some(note) = self.notes.get(note_idx) {
+                            if let Some(ref file_path) = note.file_path {
+                                let notes_root = self.config.notes_path();
+                                let mut current = file_path.parent();
+                                let mut needs_rebuild = false;
+                                while let Some(parent) = current {
+                                    if parent == notes_root {
+                                        break;
+                                    }
+                                    if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                                        self.folder_states.insert(parent.to_path_buf(), true);
+                                        needs_rebuild = true;
+                                    }
+                                    current = parent.parent();
+                                }
+                                if needs_rebuild {
+                                    Self::update_tree_expanded_states(&mut self.file_tree, &self.folder_states);
+                                    self.rebuild_sidebar_items();
+                                }
+                            }
+                        }
+
+                        for (idx, item) in self.sidebar_items.iter().enumerate() {
+                            if let SidebarItemKind::Note { note_index } = &item.kind {
+                                if *note_index == note_idx {
+                                    self.end_buffer_search();
+                                    self.selected_sidebar_index = idx;
+                                    self.selected_note = note_idx;
+                                    self.push_navigation_history(note_idx);
+                                    self.content_cursor = 0;
+                                    self.content_scroll_offset = 0;
+                                    self.selected_link_index = 0;
+                                    self.update_content_items();
+                                    self.update_outline();
+
+                                    if let Some(heading_text) = heading {
+                                        self.navigate_to_heading(heading_text);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        let _ = Command::new("open").arg(url).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = Command::new("xdg-open").arg(url).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("cmd").args(["/c", "start", "", url]).spawn();
     }
 
     // ==================== Wiki Link Support ====================
@@ -3468,24 +3616,21 @@ impl App {
         false
     }
 
-    /// Navigate to a heading in the current note's content
+    /// Navigate to a heading in the current note's content.
+    ///
+    /// Matches against the GitHub-style heading slug (lowercased, whitespace
+    /// to dashes, punctuation stripped). Also handles `%`-encoded fragments.
     fn navigate_to_heading(&mut self, heading: &str) {
-        let heading_lower = heading.to_lowercase();
+        let decoded = percent_decode(heading);
+        let target_slug = slugify_heading(&decoded);
+        if target_slug.is_empty() {
+            return;
+        }
 
         for (idx, item) in self.content_items.iter().enumerate() {
             if let ContentItem::TextLine(line) = item {
-                let title = if line.starts_with("### ") {
-                    Some(line.trim_start_matches("### "))
-                } else if line.starts_with("## ") {
-                    Some(line.trim_start_matches("## "))
-                } else if line.starts_with("# ") {
-                    Some(line.trim_start_matches("# "))
-                } else {
-                    None
-                };
-
-                if let Some(title) = title {
-                    if title.to_lowercase() == heading_lower {
+                if let Some(title) = heading_text(line) {
+                    if slugify_heading(title) == target_slug {
                         self.content_cursor = idx;
                         self.content_scroll_offset = idx.saturating_sub(2);
                         return;
