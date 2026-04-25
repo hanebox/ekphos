@@ -201,8 +201,14 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     let row_lines = cells.iter().enumerate().map(|(i, cell)| {
                         let w = capped.get(i).copied().unwrap_or(0);
                         let expanded = expand_tabs(cell);
-                        let spans = parse_inline_formatting::<fn(&str) -> bool>(&expanded, theme, None, None);
-                        distribute_spans_across_lines(spans, w, text_color).len()
+                        // `<br>` inside a cell opens a new logical line; each logical line
+                        // wraps independently and stacks vertically within the cell.
+                        let mut total: usize = 0;
+                        for logical in split_cell_by_br(&expanded) {
+                            let spans = parse_inline_formatting::<fn(&str) -> bool>(logical, theme, None, None);
+                            total += distribute_spans_across_lines(spans, w, text_color).len();
+                        }
+                        total.max(1)
                     }).max().unwrap_or(1).max(1);
                     (row_lines as u16).min(max_item_height)
                 }
@@ -699,6 +705,63 @@ fn take_width(s: &str, width: usize) -> (&str, &str) {
         w += cw;
     }
     (s, "")
+}
+
+/// Split a table cell on GFM-style line-break tags (`<br>`, `<br/>`, `<br />`,
+/// case-insensitive). Returns one slice per logical line — at least one slice,
+/// even for an empty cell.
+///
+/// Tag recognition is deliberately narrow: only the three common forms with
+/// optional single-space and trailing slash. Anything else (attributes, unusual
+/// whitespace, non-ASCII case folding) is passed through as literal text.
+pub(crate) fn split_cell_by_br(cell: &str) -> Vec<&str> {
+    let mut parts: Vec<&str> = Vec::new();
+    let bytes = cell.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < cell.len() {
+        if bytes[i] == b'<' {
+            if let Some(end) = try_match_br(bytes, i) {
+                parts.push(&cell[start..i]);
+                start = end;
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    parts.push(&cell[start..]);
+    parts
+}
+
+/// Try to match a `<br>` / `<br/>` / `<br />` tag starting at byte offset `at`.
+/// Returns the byte offset just past the closing `>` if matched, else `None`.
+fn try_match_br(bytes: &[u8], at: usize) -> Option<usize> {
+    let b = bytes;
+    if b.get(at) != Some(&b'<') {
+        return None;
+    }
+    if !matches!(b.get(at + 1), Some(b'b' | b'B')) {
+        return None;
+    }
+    if !matches!(b.get(at + 2), Some(b'r' | b'R')) {
+        return None;
+    }
+    let mut i = at + 3;
+    // Optional single space ("<br />" form).
+    if b.get(i) == Some(&b' ') {
+        i += 1;
+    }
+    // Optional self-closing slash.
+    if b.get(i) == Some(&b'/') {
+        i += 1;
+    }
+    // Must end in `>`.
+    if b.get(i) == Some(&b'>') {
+        Some(i + 1)
+    } else {
+        None
+    }
 }
 
 /// If `text[start..]` begins with a bare `http://` or `https://` URL, return the
@@ -2158,19 +2221,28 @@ fn render_table_row(
 
     let text_color = theme.content.text;
 
-    // Parse each cell as inline markdown ONCE, then distribute the resulting spans
-    // across visual lines. Parsing the whole cell keeps `parse_inline_formatting` as
-    // the single source of truth for what counts as a construct — multi-word atoms
-    // like `**warp decode**` or `[Top 5 Things](url)` are recognised correctly, no
-    // matter how the wrap boundary falls.
+    // Parse each cell as inline markdown ONCE per logical line, then distribute the
+    // resulting spans across visual lines. `<br>` tags open a new logical line —
+    // each one wraps independently; their visual lines stack within the cell.
+    // Parsing the whole logical line keeps `parse_inline_formatting` as the single
+    // source of truth for what counts as a construct (multi-word atoms like
+    // `**warp decode**` or `[Top 5 Things](url)` are recognised regardless of
+    // where wrap boundaries fall).
     let per_cell_lines: Vec<Vec<Vec<Span<'static>>>> = cells
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let w = widths.get(i).copied().unwrap_or(0);
             let expanded = expand_tabs(c);
-            let spans = parse_inline_formatting::<fn(&str) -> bool>(&expanded, theme, None, None);
-            distribute_spans_across_lines(spans, w, text_color)
+            let mut all_visual_lines: Vec<Vec<Span<'static>>> = Vec::new();
+            for logical in split_cell_by_br(&expanded) {
+                let spans = parse_inline_formatting::<fn(&str) -> bool>(logical, theme, None, None);
+                all_visual_lines.extend(distribute_spans_across_lines(spans, w, text_color));
+            }
+            if all_visual_lines.is_empty() {
+                all_visual_lines.push(Vec::new());
+            }
+            all_visual_lines
         })
         .collect();
     let row_height = per_cell_lines
@@ -2809,6 +2881,33 @@ mod tests {
         // When width is 0 we don't wrap — caller decides how to handle.
         let lines = distribute_spans_across_lines(vec![plain("hello world")], 0, plain_color());
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn split_cell_by_br_basic_variants() {
+        assert_eq!(split_cell_by_br("no break"), vec!["no break"]);
+        assert_eq!(split_cell_by_br("a<br>b"), vec!["a", "b"]);
+        assert_eq!(split_cell_by_br("a<br/>b"), vec!["a", "b"]);
+        assert_eq!(split_cell_by_br("a<br />b"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn split_cell_by_br_case_insensitive() {
+        assert_eq!(split_cell_by_br("A<BR>B"), vec!["A", "B"]);
+        assert_eq!(split_cell_by_br("A<Br/>B"), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn split_cell_by_br_multiple_and_empty_segments() {
+        assert_eq!(split_cell_by_br("<br>head<br>mid<br>"), vec!["", "head", "mid", ""]);
+    }
+
+    #[test]
+    fn split_cell_by_br_malformed_tag_passes_through() {
+        // No closing `>` — treat literally.
+        assert_eq!(split_cell_by_br("a<br b"), vec!["a<br b"]);
+        // Different tag — not a break.
+        assert_eq!(split_cell_by_br("a<brief>b"), vec!["a<brief>b"]);
     }
 
     #[test]
