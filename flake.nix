@@ -28,7 +28,7 @@
           ];
 
           buildInputs = with pkgs; [
-            # Clipboard support (arboard/clipboard-rs)
+            # Clipboard support (clipboard-rs)
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             xorg.libxcb
             xorg.libX11
