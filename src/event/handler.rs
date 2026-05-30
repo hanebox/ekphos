@@ -362,7 +362,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                             if let Some(open_path) = open_path {
                                 #[cfg(target_os = "macos")]
                                 let _ = std::process::Command::new("open").arg(&open_path).spawn();
-                                #[cfg(target_os = "linux")]
+                                #[cfg(any(target_os = "linux", target_os = "android"))]
                                 let _ = std::process::Command::new("xdg-open").arg(&open_path).spawn();
                                 #[cfg(target_os = "windows")]
                                 let _ = std::process::Command::new("cmd").args(["/c", "start", "", &open_path]).spawn();
