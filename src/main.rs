@@ -18,7 +18,10 @@ use std::path::PathBuf;
 
 use crossterm::{
     cursor::SetCursorStyle,
-    event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -40,17 +43,20 @@ fn check_for_updates() -> bool {
     }
     let latest = match get_latest_version() {
         Some(v) => v,
-        None => return true, 
+        None => return true,
     };
     if !is_newer_version(&latest, VERSION) {
-        return true; 
+        return true;
     }
 
     let skipped = get_skipped_version();
     let already_skipped = skipped.as_ref() == Some(&latest);
 
     println!();
-    println!("  A new version of ekphos is available: v{} (current: v{})", latest, VERSION);
+    println!(
+        "  A new version of ekphos is available: v{} (current: v{})",
+        latest, VERSION
+    );
     println!();
     println!("  To update:");
     println!("    Cargo:    cargo install ekphos");
@@ -185,10 +191,16 @@ fn reset_config_and_themes() {
     let _config = config::Config::load_or_create();
 
     println!("  Created: {}", config_path.display());
-    println!("  Created: {}", themes_dir.join("ekphos-dawn.toml").display());
+    println!(
+        "  Created: {}",
+        themes_dir.join("ekphos-dawn.toml").display()
+    );
 
     println!();
-    println!("Reset complete! Configuration restored to v{} defaults.", VERSION);
+    println!(
+        "Reset complete! Configuration restored to v{} defaults.",
+        VERSION
+    );
 }
 
 fn clean_cache() {
@@ -336,21 +348,19 @@ fn main() -> io::Result<()> {
                 eprintln!("Run 'ekphos --help' for usage information");
                 return Ok(());
             }
-            path_arg => {
-                match resolve_path(path_arg) {
-                    Some(path) => {
-                        if !path.exists() {
-                            eprintln!("Path does not exist: {}", path.display());
-                            return Ok(());
-                        }
-                        initial_path = Some(path);
-                    }
-                    None => {
-                        eprintln!("Invalid path: {}", path_arg);
+            path_arg => match resolve_path(path_arg) {
+                Some(path) => {
+                    if !path.exists() {
+                        eprintln!("Path does not exist: {}", path.display());
                         return Ok(());
                     }
+                    initial_path = Some(path);
                 }
-            }
+                None => {
+                    eprintln!("Invalid path: {}", path_arg);
+                    return Ok(());
+                }
+            },
         }
     }
 
@@ -361,13 +371,20 @@ fn main() -> io::Result<()> {
     // Setup terminal. On Unix this also redirects stdout to /dev/null and draws
     // through a dup of the terminal, so stray library output can't corrupt the UI.
     enable_raw_mode()?;
+
+    let mut app = App::new_with_path(initial_path);
+
     let mut writer = terminal_writer();
-    execute!(writer, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange, SetCursorStyle::SteadyBlock)?;
+    execute!(
+        writer,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        EnableFocusChange,
+        SetCursorStyle::SteadyBlock
+    )?;
     let backend = CrosstermBackend::new(writer);
     let mut terminal = Terminal::new(backend)?;
-
-    // Create app state
-    let mut app = App::new_with_path(initial_path);
 
     // Main loop
     let result = run_app(&mut terminal, &mut app);
