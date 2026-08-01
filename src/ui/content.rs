@@ -1612,6 +1612,185 @@ fn display_width(s: &str) -> usize {
     s.width()
 }
 
+/// Map a terminal cell in a wrapped line back to its column in the original
+/// rendered line. The link ranges stored by `App` use that unwrapped rendered
+/// coordinate space.
+///
+/// This deliberately consumes the output of `wrap_line_for_cursor` instead of
+/// approximating its word wrapping. In particular, the wrapper drops whitespace
+/// at line boundaries and repeats the visual prefix on continuation rows.
+fn rendered_col_for_wrapped_click(
+    spans: Vec<Span<'_>>,
+    available_width: usize,
+    visual_row: usize,
+    visual_col: usize,
+    theme: &Theme,
+) -> Option<usize> {
+    let mut prefix_width = 0usize;
+    let mut original_content = String::new();
+
+    for (i, span) in spans.iter().enumerate() {
+        let span_text = span.content.as_ref();
+        let span_width = display_width(span_text);
+        if i == 0
+            || (i == 1
+                && span_width <= 3
+                && !span_text.chars().any(|c| c.is_alphanumeric()))
+        {
+            prefix_width += span_width;
+        } else {
+            original_content.push_str(span_text);
+        }
+    }
+
+    let wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
+    let mut search_start = 0usize;
+
+    for (row, line) in wrapped_lines.iter().enumerate() {
+        let rendered_line: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        let mut skipped_width = 0usize;
+        let mut content_start = rendered_line.len();
+        for (byte_idx, ch) in rendered_line.char_indices() {
+            if skipped_width >= prefix_width {
+                content_start = byte_idx;
+                break;
+            }
+            skipped_width += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        if skipped_width == prefix_width && prefix_width == display_width(&rendered_line) {
+            content_start = rendered_line.len();
+        }
+
+        let row_content = &rendered_line[content_start..];
+        let relative_start = original_content.get(search_start..)?.find(row_content)?;
+        let row_start = search_start + relative_start;
+
+        if row == visual_row {
+            let row_col = visual_col.checked_sub(prefix_width)?;
+            if row_col >= display_width(row_content) {
+                return None;
+            }
+            let logical_before_row = display_width(&original_content[..row_start]);
+            return Some(prefix_width + logical_before_row + row_col);
+        }
+
+        search_start = row_start + row_content.len();
+    }
+
+    None
+}
+
+/// Convert mouse coordinates for prose/task items into the unwrapped rendered
+/// column used by link metadata. Other item types retain their existing
+/// single-row coordinate behavior.
+pub(crate) fn content_item_click_col(
+    app: &App,
+    index: usize,
+    item_area: Rect,
+    mouse_x: u16,
+    mouse_y: u16,
+) -> Option<usize> {
+    let visual_row = mouse_y.saturating_sub(item_area.y) as usize;
+    let visual_col = mouse_x.saturating_sub(item_area.x) as usize;
+    let available_width = (item_area.width as usize).saturating_sub(1);
+    let cursor_indicator = if app.content_cursor == index { "▶ " } else { "  " };
+
+    match app.content_items.get(index)? {
+        ContentItem::TextLine(raw_line) => {
+            let line = normalize_whitespace(raw_line);
+            let mut spans = if line.starts_with("- ") || line.starts_with("* ") {
+                let mut spans = vec![
+                    Span::styled(cursor_indicator, Style::default()),
+                    Span::styled("• ", Style::default()),
+                ];
+                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(
+                    &line[2..],
+                    &app.theme,
+                    None,
+                    None,
+                ));
+                spans
+            } else if line.starts_with("> ") {
+                let mut spans = vec![
+                    Span::styled(cursor_indicator, Style::default()),
+                    Span::styled("┃ ", Style::default()),
+                ];
+                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(
+                    &line[2..],
+                    &app.theme,
+                    None,
+                    None,
+                ));
+                spans
+            } else {
+                let mut spans = vec![Span::styled(cursor_indicator, Style::default())];
+                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(
+                    &line,
+                    &app.theme,
+                    None,
+                    None,
+                ));
+                spans
+            };
+
+            // `render_content_line` appends this hint while a linked item is
+            // selected or hovered. It is after all links, but including it keeps
+            // the fast-path/wrapped-path choice identical to the renderer.
+            if app.item_has_link_at(index)
+                && (app.content_cursor == index || app.mouse_hover_item == Some(index))
+            {
+                spans.push(Span::styled(" Open ↗", Style::default()));
+            }
+
+            rendered_col_for_wrapped_click(
+                spans,
+                available_width,
+                visual_row,
+                visual_col,
+                &app.theme,
+            )
+        }
+        ContentItem::TaskItem {
+            text,
+            checked,
+            indent,
+            ..
+        } => {
+            let expanded_text = expand_tabs(text);
+            let mut spans = vec![Span::styled(cursor_indicator, Style::default())];
+            if *indent > 0 {
+                spans.push(Span::styled(" ".repeat(*indent), Style::default()));
+            }
+            spans.extend([
+                Span::styled("[", Style::default()),
+                Span::styled(if *checked { "x" } else { " " }, Style::default()),
+                Span::styled("]", Style::default()),
+                Span::styled(" ", Style::default()),
+            ]);
+            spans.extend(parse_inline_formatting::<fn(&str) -> bool>(
+                &expanded_text,
+                &app.theme,
+                None,
+                None,
+            ));
+
+            rendered_col_for_wrapped_click(
+                spans,
+                available_width,
+                visual_row,
+                visual_col,
+                &app.theme,
+            )
+        }
+        _ => Some(visual_col),
+    }
+}
+
 /// Represents a word segment with its style for word-based wrapping
 struct StyledWord {
     text: String,
@@ -3055,5 +3234,44 @@ mod tests {
 
         assert!(joined.contains("函数结束"), "wrap lost the CJK head: {joined:?}");
         assert!(joined.contains("变成了悬垂指针"), "wrap lost the CJK tail: {joined:?}");
+    }
+
+    #[test]
+    fn wrapped_click_maps_to_second_row_logical_column() {
+        let theme = Theme::default();
+        let spans = vec![
+            plain("  "),
+            atomic("a"),
+            plain(" padding padding "),
+            atomic("b"),
+        ];
+
+        // With 10 content columns, the renderer produces:
+        //   row 0: "  a padding"
+        //   row 1: "  padding b"
+        // The boundary space after row 0 is trimmed visually but remains part
+        // of the unwrapped coordinate space before `b`.
+        let b_col = rendered_col_for_wrapped_click(spans.clone(), 12, 1, 10, &theme);
+        assert_eq!(b_col, Some(20));
+
+        // The same x coordinate on row 0 maps to the first row, not to `b`.
+        let first_row_col = rendered_col_for_wrapped_click(spans, 12, 0, 10, &theme);
+        assert_eq!(first_row_col, Some(10));
+    }
+
+    #[test]
+    fn wrapped_click_maps_each_half_of_wide_character() {
+        let theme = Theme::default();
+        let spans = vec![plain("  "), plain("padding padding "), atomic("界")];
+
+        // `界` is two terminal cells and wraps onto the continuation row.
+        assert_eq!(
+            rendered_col_for_wrapped_click(spans.clone(), 12, 1, 10, &theme),
+            Some(18)
+        );
+        assert_eq!(
+            rendered_col_for_wrapped_click(spans, 12, 1, 11, &theme),
+            Some(19)
+        );
     }
 }

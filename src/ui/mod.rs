@@ -21,6 +21,7 @@ use ratatui::{
 
 use crate::app::{App, ContextMenuState, DialogState, SearchPickerState, Mode, WikiAutocompleteState};
 
+pub(crate) use content::content_item_click_col;
 pub use content::render_content;
 pub(crate) use content::{cell_visible_width, detect_bare_url_len};
 pub use dialogs::{

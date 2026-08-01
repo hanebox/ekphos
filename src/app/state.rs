@@ -3300,17 +3300,19 @@ impl App {
         rendered_pos
     }
 
-    /// find which link was clicked based on column position within the content area
-    /// Returns the URL if a link was clicked, None otherwise
-    /// `col` is the column relative to the content area start
-    pub fn find_clicked_link(&self, index: usize, col: u16, content_x: u16) -> Option<String> {
+    /// Find a Markdown link using a column in the unwrapped rendered line.
+    /// Wrapped mouse coordinates are converted to this space by the UI layer.
+    pub(crate) fn find_clicked_link_at_col(
+        &self,
+        index: usize,
+        click_col: usize,
+    ) -> Option<String> {
         let links = self.item_links_at(index);
         if links.is_empty() {
             return None;
         }
 
         let prefix_len = self.get_line_prefix_len(index);
-        let click_col = (col.saturating_sub(content_x)) as usize;
 
         for (_, url, start, end) in &links {
             let adjusted_start = prefix_len + *start;
@@ -3322,14 +3324,19 @@ impl App {
 
         None
     }
-    pub fn find_clicked_wiki_link(&self, index: usize, col: u16, content_x: u16) -> Option<WikiLinkInfo> {
+
+    /// Find a wiki link using a column in the unwrapped rendered line.
+    pub(crate) fn find_clicked_wiki_link_at_col(
+        &self,
+        index: usize,
+        click_col: usize,
+    ) -> Option<WikiLinkInfo> {
         let wiki_links = self.item_wiki_links_at(index);
         if wiki_links.is_empty() {
             return None;
         }
 
         let prefix_len = self.get_line_prefix_len(index);
-        let click_col = (col.saturating_sub(content_x)) as usize;
 
         for wiki_link in wiki_links {
             let adjusted_start = prefix_len + wiki_link.start_col;
@@ -3348,13 +3355,10 @@ impl App {
 
     fn get_line_prefix_len(&self, index: usize) -> usize {
         match self.content_items.get(index) {
-            Some(ContentItem::TextLine(line)) => {
-                let mut len = 2; 
-                if line.starts_with("- ") || line.starts_with("* ") {
-                    len += 2; 
-                }
-                len
-            }
+            // Bullet markers are already counted by calc_rendered_pos because
+            // they are present in the source line, even though the renderer
+            // replaces them with a visual bullet.
+            Some(ContentItem::TextLine(_)) => 2,
             Some(ContentItem::TaskItem { indent, .. }) => 6 + indent,
             Some(ContentItem::TableRow { .. }) => 3, // "  " cursor indicator + "│" left border
             _ => 2,

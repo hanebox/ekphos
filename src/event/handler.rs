@@ -330,21 +330,35 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 } else if in_content_area {
                     let clicked_item = app.content_item_rects.iter().find(|(_, rect)| {
                         mouse_y >= rect.y && mouse_y < rect.y + rect.height
-                    }).map(|(idx, _)| *idx);
+                    }).copied();
 
-                    if let Some(idx) = clicked_item {
+                    if let Some((idx, item_rect)) = clicked_item {
                         if app.is_content_item_visible(idx) {
                             app.content_cursor = idx;
                             app.selected_link_index = 0;
                         }
 
-                        if app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x) {
+                        let clicked_rendered_col = crate::ui::content_item_click_col(
+                            app,
+                            idx,
+                            item_rect,
+                            mouse_x,
+                            mouse_y,
+                        );
+
+                        if mouse_y == item_rect.y
+                            && app.is_click_on_task_checkbox(idx, mouse_x, app.content_area.x)
+                        {
                             app.toggle_task_at(idx);
                         }
-                        else if let Some(url) = app.find_clicked_link(idx, mouse_x, app.content_area.x) {
+                        else if let Some(url) = clicked_rendered_col
+                            .and_then(|col| app.find_clicked_link_at_col(idx, col))
+                        {
                             app.open_link(&url);
                         }
-                        else if let Some(wiki_link) = app.find_clicked_wiki_link(idx, mouse_x, app.content_area.x) {
+                        else if let Some(wiki_link) = clicked_rendered_col
+                            .and_then(|col| app.find_clicked_wiki_link_at_col(idx, col))
+                        {
                             if wiki_link.is_valid {
                                 app.navigate_to_wiki_link_with_heading(&wiki_link.target, wiki_link.heading.as_deref());
                             } else {
