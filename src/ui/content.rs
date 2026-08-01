@@ -8,7 +8,9 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, ContentItem, DialogState, Focus, ImageState, Mode};
+use crate::app::{
+    normalize_image_destination, App, ContentItem, DialogState, Focus, ImageState, Mode,
+};
 use crate::config::Theme;
 
 const INLINE_THUMBNAIL_HEIGHT: u16 = 4;
@@ -2383,9 +2385,18 @@ fn render_table_row(
     }
 }
 
-fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, area: Rect, is_cursor: bool, is_hovered: bool) {
-    let is_remote = path.starts_with("http://") || path.starts_with("https://");
-    let is_pending = is_remote && app.is_image_pending(path);
+fn render_inline_image_with_cursor(
+    f: &mut Frame,
+    app: &mut App,
+    path: &str,
+    area: Rect,
+    is_cursor: bool,
+    is_hovered: bool,
+) {
+    let normalized_path = normalize_image_destination(path);
+    let is_remote =
+        normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
+    let is_pending = is_remote && app.is_image_pending(&normalized_path);
 
     let resolved_path = app.resolve_image_path(path);
     let resolved_path_str = resolved_path.as_ref()
@@ -2406,7 +2417,7 @@ fn render_inline_image_with_cursor(f: &mut Frame, app: &mut App, path: &str, are
             Some(img)
         } else if is_remote {
             if !is_pending {
-                app.start_remote_image_fetch(path);
+                app.start_remote_image_fetch(&normalized_path);
             }
             None
         } else if let Some(ref resolved) = resolved_path {
@@ -2508,21 +2519,23 @@ fn render_inline_thumbnails(
         let thumb_area = Rect {
             x: area.x + 2,
             y: area.y + y_offset,
-            width: area.width.saturating_sub(4).min(40), 
+            width: area.width.saturating_sub(4).min(40),
             height: INLINE_THUMBNAIL_HEIGHT,
         };
-        let is_remote = path.starts_with("http://") || path.starts_with("https://");
+        let normalized_path = normalize_image_destination(path);
+        let is_remote =
+            normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
         let resolved_path = app.resolve_image_path(path);
         let resolved_path_str = resolved_path.as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
 
-        let is_pending = is_remote && app.is_image_pending(path);
+        let is_pending = is_remote && app.is_image_pending(&normalized_path);
         let img = if let Some(img) = app.get_cached_image(&resolved_path_str) {
             Some(img)
         } else if is_remote {
             if !is_pending {
-                app.start_remote_image_fetch(path);
+                app.start_remote_image_fetch(&normalized_path);
             }
             None
         } else if let Some(ref resolved) = resolved_path {

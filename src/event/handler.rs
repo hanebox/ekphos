@@ -353,9 +353,11 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                             }
                         }
                         else if let Some(path) = app.item_is_image_at(idx) {
-                            let is_url = path.starts_with("http://") || path.starts_with("https://");
+                            let normalized = crate::app::normalize_image_destination(path);
+                            let is_url = normalized.starts_with("http://")
+                                || normalized.starts_with("https://");
                             let open_path = if is_url {
-                                Some(path.to_string())
+                                Some(normalized)
                             } else {
                                 app.resolve_image_path(path).map(|p| p.to_string_lossy().to_string())
                             };

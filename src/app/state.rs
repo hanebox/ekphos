@@ -116,6 +116,25 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
+/// Normalize a Markdown image destination before using it for I/O.
+///
+/// CommonMark permits destinations containing spaces when they are enclosed in
+/// angle brackets, and paths are commonly URL-encoded. Remote URLs keep their
+/// percent escapes because the HTTP client expects a URL rather than a local
+/// filesystem path.
+pub(crate) fn normalize_image_destination(destination: &str) -> String {
+    let destination = destination
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+        .unwrap_or(destination);
+
+    if destination.starts_with("http://") || destination.starts_with("https://") {
+        destination.to_string()
+    } else {
+        percent_decode(destination)
+    }
+}
+
 /// If the line is a markdown ATX heading (`#` through `######`), return the
 /// heading text with any trailing `#`s stripped.
 fn heading_text(line: &str) -> Option<&str> {
@@ -4354,14 +4373,15 @@ impl App {
     }
 
     pub fn open_path_or_url(&self, path: &str) {
-        let is_url = path.starts_with("http://") || path.starts_with("https://");
+        let normalized = normalize_image_destination(path);
+        let is_url = normalized.starts_with("http://") || normalized.starts_with("https://");
 
         let open_path = if is_url {
-            path.to_string()
+            normalized
         } else if let Some(resolved) = self.resolve_image_path(path) {
             resolved.to_string_lossy().to_string()
         } else {
-            path.to_string()
+            normalized
         };
 
         #[cfg(target_os = "macos")]
@@ -4801,6 +4821,9 @@ impl App {
     }
 
     pub fn resolve_image_path(&self, path: &str) -> Option<PathBuf> {
+        let normalized = normalize_image_destination(path);
+        let path = normalized.as_str();
+
         if path.starts_with("http://") || path.starts_with("https://") {
             return Some(PathBuf::from(path));
         }
@@ -6372,6 +6395,36 @@ fn fuzzy_match(text: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_image_destination_supports_commonmark_local_paths() {
+        assert_eq!(
+            normalize_image_destination("<attachments/Pasted image 20250916224004.png>"),
+            "attachments/Pasted image 20250916224004.png"
+        );
+        assert_eq!(
+            normalize_image_destination("attachments/Pasted%20image%2020250916224004.png"),
+            "attachments/Pasted image 20250916224004.png"
+        );
+        assert_eq!(
+            normalize_image_destination("<attachments/Pasted%20image.png>"),
+            "attachments/Pasted image.png"
+        );
+    }
+
+    #[test]
+    fn normalize_image_destination_preserves_remote_url_escapes() {
+        assert_eq!(
+            normalize_image_destination("<https://example.com/Pasted%20image.png>"),
+            "https://example.com/Pasted%20image.png"
+        );
+    }
+
+    #[test]
+    fn normalize_image_destination_strips_only_one_angle_pair() {
+        assert_eq!(normalize_image_destination("<<image.png>>"), "<image.png>");
+        assert_eq!(normalize_image_destination("<image.png"), "<image.png");
+    }
 
     #[test]
     fn alignment_from_separator_cell_classifies_each_form() {
