@@ -20,6 +20,37 @@ use ratatui::{
 };
 
 use crate::app::{App, ContextMenuState, DialogState, SearchPickerState, Mode, WikiAutocompleteState};
+use crate::config::Config;
+
+fn main_layout_constraints(
+    zen_mode: bool,
+    sidebar_collapsed: bool,
+    outline_collapsed: bool,
+    sidebar_width_percent: u16,
+    outline_width_percent: u16,
+) -> [Constraint; 3] {
+    let sidebar_constraint = if zen_mode {
+        Constraint::Length(0)
+    } else if sidebar_collapsed
+        || sidebar_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT
+    {
+        Constraint::Length(5)
+    } else {
+        Constraint::Percentage(sidebar_width_percent)
+    };
+
+    let outline_constraint = if zen_mode {
+        Constraint::Length(0)
+    } else if outline_collapsed
+        || outline_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT
+    {
+        Constraint::Length(5)
+    } else {
+        Constraint::Percentage(outline_width_percent)
+    };
+
+    [sidebar_constraint, Constraint::Min(20), outline_constraint]
+}
 
 pub(crate) use content::content_item_click_col;
 pub use content::render_content;
@@ -51,30 +82,18 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let sidebar_constraint = if app.zen_mode {
-        Constraint::Length(0)
-    } else if app.sidebar_collapsed {
-        Constraint::Length(5)
-    } else {
-        Constraint::Percentage(20)
-    };
-
-    let outline_constraint = if app.zen_mode {
-        Constraint::Length(0)
-    } else if app.outline_collapsed {
-        Constraint::Length(5)
-    } else {
-        Constraint::Percentage(20)
-    };
+    let main_constraints = main_layout_constraints(
+        app.zen_mode,
+        app.sidebar_collapsed,
+        app.outline_collapsed,
+        app.config.effective_sidebar_width_percent(),
+        app.config.effective_outline_width_percent(),
+    );
 
     // Create main layout with left sidebar, content, and right outline
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            sidebar_constraint,     
-            Constraint::Min(20),    
-            outline_constraint,    
-        ])
+        .constraints(main_constraints)
         .split(vertical_chunks[0]);
 
     // Render left sidebar (notes list)
@@ -136,4 +155,119 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Toast notifications float above everything else.
     toast::render_toast(f, app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn default_panel_layout_keeps_twenty_percent_sides_and_center_minimum() {
+        let config = Config::default();
+
+        assert_eq!(
+            main_layout_constraints(
+                false,
+                false,
+                false,
+                config.effective_sidebar_width_percent(),
+                config.effective_outline_width_percent(),
+            ),
+            [
+                Constraint::Percentage(20),
+                Constraint::Min(20),
+                Constraint::Percentage(20),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_panel_layout_uses_independent_effective_widths() {
+        let mut config = Config::default();
+        config.sidebar_width_percent = 30;
+        config.outline_width_percent = 140;
+
+        assert_eq!(
+            main_layout_constraints(
+                false,
+                false,
+                false,
+                config.effective_sidebar_width_percent(),
+                config.effective_outline_width_percent(),
+            ),
+            [
+                Constraint::Percentage(30),
+                Constraint::Min(20),
+                Constraint::Percentage(95),
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsed_panels_override_configured_widths() {
+        assert_eq!(
+            main_layout_constraints(false, true, true, 35, 45),
+            [
+                Constraint::Length(5),
+                Constraint::Min(20),
+                Constraint::Length(5),
+            ]
+        );
+    }
+
+    #[test]
+    fn widths_below_ten_percent_use_minimized_constraints() {
+        assert_eq!(
+            main_layout_constraints(false, false, false, 9, 5),
+            [
+                Constraint::Length(5),
+                Constraint::Min(20),
+                Constraint::Length(5),
+            ]
+        );
+        assert_eq!(
+            main_layout_constraints(false, false, false, 10, 10),
+            [
+                Constraint::Percentage(10),
+                Constraint::Min(20),
+                Constraint::Percentage(10),
+            ]
+        );
+    }
+
+    #[test]
+    fn zen_mode_overrides_configured_and_collapsed_widths() {
+        assert_eq!(
+            main_layout_constraints(true, true, false, 35, 45),
+            [
+                Constraint::Length(0),
+                Constraint::Min(20),
+                Constraint::Length(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn wide_layout_applies_independent_panel_percentages() {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(main_layout_constraints(false, false, false, 25, 15))
+            .split(Rect::new(0, 0, 200, 20));
+
+        assert_eq!(chunks[0].width, 50);
+        assert_eq!(chunks[1].width, 120);
+        assert_eq!(chunks[2].width, 30);
+    }
+
+    #[test]
+    fn narrow_layout_retains_center_panel_minimum() {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(main_layout_constraints(false, false, false, 95, 95))
+            .split(Rect::new(0, 0, 40, 20));
+
+        assert!(chunks[1].width >= 20);
+        assert_eq!(chunks.iter().map(|chunk| chunk.width).sum::<u16>(), 40);
+    }
 }

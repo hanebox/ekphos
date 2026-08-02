@@ -11,7 +11,7 @@ use crate::app::{App, CutItem, Focus, Mode, SidebarItemKind};
 pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let sidebar_theme = &theme.sidebar;
-    if app.sidebar_collapsed {
+    if app.is_sidebar_minimized() {
         render_collapsed_sidebar(f, app, area);
         return;
     }

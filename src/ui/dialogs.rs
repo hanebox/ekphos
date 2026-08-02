@@ -834,6 +834,14 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
             Span::styled("Toggle outline", desc_style),
         ]),
         Line::from(vec![
+            Span::styled(" <         ", key_style),
+            Span::styled("Shrink focused side panel", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(" >         ", key_style),
+            Span::styled("Grow focused side panel", desc_style),
+        ]),
+        Line::from(vec![
             Span::styled(" Ctrl+f    ", key_style),
             Span::styled("Find in buffer", desc_style),
         ]),

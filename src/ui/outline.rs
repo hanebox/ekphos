@@ -15,7 +15,7 @@ fn expand_tabs(text: &str) -> String {
 pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let outline_theme = &theme.outline;
-    if app.outline_collapsed {
+    if app.is_outline_minimized() {
         render_collapsed_outline(f, app, area);
         return;
     }

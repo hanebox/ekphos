@@ -6,6 +6,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, SearchPickerState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
+use crate::config::Config;
 use crate::editor::{CursorMove, CursorShape, Position};
 use crate::ui;
 use crate::vim::{FindState, PendingFind, PendingMacro, PendingMark, TextObject, TextObjectScope, VimMode as VimModeNew};
@@ -2072,6 +2073,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     app.pending_z = false;
     app.status_message = None;  // Clear old status message on new keystroke
 
+    if let Some(delta) = panel_resize_delta(&key) {
+        app.resize_focused_panel(delta);
+        return false;
+    }
+
     match key.code {
         KeyCode::Char('q') => return true,
         KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if !app.zen_mode => app.toggle_focus(false),
@@ -2209,10 +2215,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
             app.toggle_outline_collapsed();
         }
-        KeyCode::Char('-') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+        KeyCode::Char('-') if key.modifiers.is_empty() && app.focus != Focus::Sidebar => {
             app.navigate_back();
         }
-        KeyCode::Char('=') if app.mode == Mode::Normal && app.focus != Focus::Sidebar => {
+        KeyCode::Char('=') if key.modifiers.is_empty() && app.focus != Focus::Sidebar => {
             app.navigate_forward();
         }
         KeyCode::Char('o') => {
@@ -2375,6 +2381,22 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         _ => {}
     }
     false
+}
+
+fn panel_resize_delta(key: &crossterm::event::KeyEvent) -> Option<i64> {
+    match key.code {
+        KeyCode::Char('<')
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
+        }
+        KeyCode::Char('>')
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            Some(Config::PANEL_RESIZE_STEP_PERCENT)
+        }
+        _ => None,
+    }
 }
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
@@ -4224,5 +4246,62 @@ fn execute_vim_command(app: &mut App, command: Command) {
 
             app.update_editor_highlights();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panel_resize_delta;
+    use crate::config::Config;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn recognizes_panel_resize_shortcuts() {
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('<'), KeyModifiers::NONE)),
+            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
+        );
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(
+                KeyCode::Char('<'),
+                KeyModifiers::SHIFT,
+            )),
+            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
+        );
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE)),
+            Some(Config::PANEL_RESIZE_STEP_PERCENT)
+        );
+    }
+
+    #[test]
+    fn leaves_unmodified_history_keys_out_of_panel_resizing() {
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(KeyCode::Char('+'), KeyModifiers::CONTROL)),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_panel_resize_shortcuts_with_extra_modifiers() {
+        assert_eq!(
+            panel_resize_delta(&KeyEvent::new(
+                KeyCode::Char('<'),
+                KeyModifiers::ALT,
+            )),
+            None
+        );
     }
 }

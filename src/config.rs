@@ -17,6 +17,10 @@ pub struct Config {
     pub show_empty_dir: bool,
     #[serde(default = "default_syntax_theme")]
     pub syntax_theme: String,
+    #[serde(default = "default_sidebar_width_percent")]
+    pub sidebar_width_percent: i64,
+    #[serde(default = "default_outline_width_percent")]
+    pub outline_width_percent: i64,
     #[serde(default = "default_sidebar_collapsed")]
     pub sidebar_collapsed: bool,
     #[serde(default = "default_outline_collapsed")]
@@ -107,6 +111,12 @@ fn default_theme_name() -> String {
 fn default_syntax_theme() -> String {
     "base16-ocean.dark".to_string()
 }
+fn default_sidebar_width_percent() -> i64 {
+    20
+}
+fn default_outline_width_percent() -> i64 {
+    20
+}
 fn default_sidebar_collapsed() -> bool {
     false
 }
@@ -140,6 +150,8 @@ impl Default for Config {
             theme: default_theme_name(),
             show_empty_dir: default_show_empty_dir(),
             syntax_theme: default_syntax_theme(),
+            sidebar_width_percent: default_sidebar_width_percent(),
+            outline_width_percent: default_outline_width_percent(),
             sidebar_collapsed: default_sidebar_collapsed(),
             outline_collapsed: default_outline_collapsed(),
             folders_first: default_folders_first(),
@@ -154,6 +166,34 @@ impl Default for Config {
 }
 
 impl Config {
+    pub const MIN_PANEL_WIDTH_PERCENT: i64 = 5;
+    pub const MAX_PANEL_WIDTH_PERCENT: i64 = 95;
+    pub const MINIMIZED_PANEL_WIDTH_PERCENT: u16 = 10;
+    pub const PANEL_RESIZE_STEP_PERCENT: i64 = 5;
+
+    pub fn effective_panel_width_percent(width: i64) -> u16 {
+        width.clamp(Self::MIN_PANEL_WIDTH_PERCENT, Self::MAX_PANEL_WIDTH_PERCENT) as u16
+    }
+
+    pub fn effective_sidebar_width_percent(&self) -> u16 {
+        Self::effective_panel_width_percent(self.sidebar_width_percent)
+    }
+
+    pub fn effective_outline_width_percent(&self) -> u16 {
+        Self::effective_panel_width_percent(self.outline_width_percent)
+    }
+
+    pub fn panel_width_is_minimized(width: i64) -> bool {
+        Self::effective_panel_width_percent(width) < Self::MINIMIZED_PANEL_WIDTH_PERCENT
+    }
+
+    pub fn resized_panel_width_percent(width: i64, delta: i64) -> i64 {
+        let effective = i64::from(Self::effective_panel_width_percent(width));
+        effective
+            .saturating_add(delta)
+            .clamp(Self::MIN_PANEL_WIDTH_PERCENT, Self::MAX_PANEL_WIDTH_PERCENT)
+    }
+
     pub fn exists() -> bool {
         Self::config_path().exists()
     }
@@ -960,6 +1000,90 @@ fn parse_hex_color(hex: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_widths_default_when_missing_from_toml() {
+        let config: Config = toml::from_str("notes_dir = '/tmp/notes'").unwrap();
+
+        assert_eq!(config.sidebar_width_percent, 20);
+        assert_eq!(config.outline_width_percent, 20);
+    }
+
+    #[test]
+    fn panel_widths_deserialize_custom_toml_values() {
+        let config: Config =
+            toml::from_str("sidebar_width_percent = 35\noutline_width_percent = 45\n").unwrap();
+
+        assert_eq!(config.sidebar_width_percent, 35);
+        assert_eq!(config.outline_width_percent, 45);
+    }
+
+    #[test]
+    fn panel_widths_are_serialized() {
+        let mut config = Config::default();
+        config.sidebar_width_percent = 30;
+        config.outline_width_percent = 40;
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+
+        assert!(serialized.contains("sidebar_width_percent = 30"));
+        assert!(serialized.contains("outline_width_percent = 40"));
+    }
+
+    #[test]
+    fn effective_panel_width_is_clamped() {
+        assert_eq!(Config::effective_panel_width_percent(i64::MIN), 5);
+        assert_eq!(Config::effective_panel_width_percent(-10), 5);
+        assert_eq!(Config::effective_panel_width_percent(5), 5);
+        assert_eq!(Config::effective_panel_width_percent(55), 55);
+        assert_eq!(Config::effective_panel_width_percent(95), 95);
+        assert_eq!(Config::effective_panel_width_percent(i64::MAX), 95);
+    }
+
+    #[test]
+    fn panel_widths_below_ten_percent_are_minimized() {
+        assert!(Config::panel_width_is_minimized(-10));
+        assert!(Config::panel_width_is_minimized(5));
+        assert!(Config::panel_width_is_minimized(9));
+        assert!(!Config::panel_width_is_minimized(10));
+        assert!(!Config::panel_width_is_minimized(20));
+    }
+
+    #[test]
+    fn panel_width_resize_uses_five_point_steps() {
+        assert_eq!(
+            Config::resized_panel_width_percent(20, -Config::PANEL_RESIZE_STEP_PERCENT),
+            15
+        );
+        assert_eq!(
+            Config::resized_panel_width_percent(20, Config::PANEL_RESIZE_STEP_PERCENT),
+            25
+        );
+    }
+
+    #[test]
+    fn panel_width_resize_stops_at_bounds() {
+        assert_eq!(
+            Config::resized_panel_width_percent(5, -Config::PANEL_RESIZE_STEP_PERCENT),
+            5
+        );
+        assert_eq!(
+            Config::resized_panel_width_percent(5, Config::PANEL_RESIZE_STEP_PERCENT),
+            10
+        );
+        assert_eq!(
+            Config::resized_panel_width_percent(95, Config::PANEL_RESIZE_STEP_PERCENT),
+            95
+        );
+        assert_eq!(
+            Config::resized_panel_width_percent(-100, Config::PANEL_RESIZE_STEP_PERCENT),
+            10
+        );
+        assert_eq!(
+            Config::resized_panel_width_percent(100, -Config::PANEL_RESIZE_STEP_PERCENT),
+            90
+        );
+    }
 
     #[test]
     fn parse_hex_color_valid() {

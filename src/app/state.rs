@@ -4501,6 +4501,75 @@ impl App {
         self.outline_collapsed = !self.outline_collapsed;
     }
 
+    pub fn is_sidebar_minimized(&self) -> bool {
+        self.sidebar_collapsed
+            || Config::panel_width_is_minimized(self.config.sidebar_width_percent)
+    }
+
+    pub fn is_outline_minimized(&self) -> bool {
+        self.outline_collapsed
+            || Config::panel_width_is_minimized(self.config.outline_width_percent)
+    }
+
+    pub fn resize_focused_panel(&mut self, delta: i64) {
+        if self.zen_mode {
+            self.status_message = Some("Panel resizing is unavailable in zen mode".to_string());
+            return;
+        }
+
+        let (panel_name, collapsed, current_width) = match self.focus {
+            Focus::Sidebar => (
+                "Sidebar",
+                self.sidebar_collapsed,
+                self.config.sidebar_width_percent,
+            ),
+            Focus::Outline => (
+                "Outline",
+                self.outline_collapsed,
+                self.config.outline_width_percent,
+            ),
+            Focus::Content => {
+                self.status_message = Some("Focus the sidebar or outline to resize".to_string());
+                return;
+            }
+        };
+
+        if collapsed {
+            self.status_message = Some(format!("{} is collapsed", panel_name));
+            return;
+        }
+
+        let effective_width = i64::from(Config::effective_panel_width_percent(current_width));
+        let resized_width = Config::resized_panel_width_percent(current_width, delta);
+        if resized_width == effective_width {
+            let boundary = if delta < 0 { "minimum" } else { "maximum" };
+            self.status_message = Some(format!(
+                "{} width is already at the {} ({}%)",
+                panel_name, boundary, effective_width
+            ));
+            return;
+        }
+
+        match self.focus {
+            Focus::Sidebar => self.config.sidebar_width_percent = resized_width,
+            Focus::Outline => self.config.outline_width_percent = resized_width,
+            Focus::Content => unreachable!(),
+        }
+        let minimized = if Config::panel_width_is_minimized(resized_width) {
+            " (minimized)"
+        } else {
+            ""
+        };
+        self.status_message = Some(format!(
+            "{} width: {}%{}",
+            panel_name, resized_width, minimized
+        ));
+
+        if let Err(error) = self.config.save() {
+            self.show_error_toast(format!("Could not save panel width: {}", error));
+        }
+    }
+
     pub fn toggle_zen_mode(&mut self) {
         self.zen_mode = !self.zen_mode;
         if self.zen_mode {
