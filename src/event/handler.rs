@@ -4,7 +4,11 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, SearchPickerState, Focus, Mode, SidebarItemKind, VimMode, WikiAutocompleteMode, WikiAutocompleteState};
+use crate::app::{
+    App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType,
+    DialogState, Focus, LinkInfo, Mode, SearchPickerState, SidebarItemKind, VimMode,
+    WikiAutocompleteMode, WikiAutocompleteState,
+};
 use crate::clipboard::{self, ClipboardContent};
 use crate::config::Config;
 use crate::editor::{CursorMove, CursorShape, Position};
@@ -53,6 +57,34 @@ fn update_cursor_style(app: &mut App) {
         _ => CursorShape::Block,
     };
     app.editor.set_cursor_shape(editor_shape);
+}
+
+/// Activate the currently selected text link, wiki link, or inline image.
+/// Returns false when the content item has no selectable target.
+fn open_selected_content_target(app: &mut App) -> bool {
+    let Some(link) = app.current_selected_link() else {
+        return false;
+    };
+
+    match link {
+        LinkInfo::Markdown { url, .. } => app.open_link(&url),
+        LinkInfo::Image { path, .. } => app.open_path_or_url(&path),
+        LinkInfo::Wiki {
+            target,
+            heading,
+            is_valid,
+            ..
+        } => {
+            if is_valid {
+                app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
+            } else {
+                app.pending_wiki_target = Some(target);
+                app.dialog = DialogState::CreateWikiNote;
+            }
+        }
+    }
+
+    true
 }
 
 pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, app: &mut App) -> io::Result<()> {
@@ -262,12 +294,24 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
         match mouse.kind {
             MouseEventKind::Moved => {
                 if in_content_area {
+                    let hovered_inline_image = app.inline_image_rects.iter().find(|image| {
+                        mouse_x >= image.rect.x
+                            && mouse_x < image.rect.x + image.rect.width
+                            && mouse_y >= image.rect.y
+                            && mouse_y < image.rect.y + image.rect.height
+                    });
+                    app.mouse_hover_inline_image = hovered_inline_image
+                        .map(|image| (image.item_index, image.selection_index));
+
                     let hovered_item = app.content_item_rects.iter().find(|(_, rect)| {
                         mouse_y >= rect.y && mouse_y < rect.y + rect.height
                     }).map(|(idx, _)| *idx);
 
                     if let Some(idx) = hovered_item {
-                        if app.item_has_link_at(idx) || app.item_is_image_at(idx).is_some() {
+                        if app.mouse_hover_inline_image.is_some()
+                            || app.item_has_link_at(idx)
+                            || app.item_is_image_at(idx).is_some()
+                        {
                             app.mouse_hover_item = Some(idx);
                         } else {
                             app.mouse_hover_item = None;
@@ -277,6 +321,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }
                 } else {
                     app.mouse_hover_item = None;
+                    app.mouse_hover_inline_image = None;
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -329,6 +374,21 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
                         app.jump_to_outline();
                     }
                 } else if in_content_area {
+                    let clicked_inline_image = app.inline_image_rects.iter().find(|image| {
+                        mouse_x >= image.rect.x
+                            && mouse_x < image.rect.x + image.rect.width
+                            && mouse_y >= image.rect.y
+                            && mouse_y < image.rect.y + image.rect.height
+                    }).cloned();
+
+                    if let Some(image) = clicked_inline_image {
+                        app.focus = Focus::Content;
+                        app.content_cursor = image.item_index;
+                        app.selected_link_index = image.selection_index;
+                        app.open_path_or_url(&image.path);
+                        return;
+                    }
+
                     let clicked_item = app.content_item_rects.iter().find(|(_, rect)| {
                         mouse_y >= rect.y && mouse_y < rect.y + rect.height
                     }).copied();
@@ -2202,12 +2262,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Enter => {
             match app.focus {
                 Focus::Content => {
-                        if app.current_item_link().is_some() {
-                            app.open_current_link();
-                        } else {
-                            app.open_current_image();
-                        }
+                    if !open_selected_content_target(app) {
+                        app.open_current_image();
                     }
+                }
                 Focus::Outline => app.jump_to_outline(),
                 Focus::Sidebar => app.handle_sidebar_enter(),
             }
@@ -2223,9 +2281,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         }
         KeyCode::Char('o') => {
             if app.focus == Focus::Content {
-                if app.current_item_link().is_some() {
-                    app.open_current_link();
-                } else {
+                if !open_selected_content_target(app) {
                     app.open_current_image();
                 }
             } else if app.focus == Focus::Outline {
@@ -2252,21 +2308,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
                     if app.is_task_checkbox_selected() {
                         app.toggle_current_task();
-                    } else if let Some(link) = app.current_selected_link() {
-                        match link {
-                            crate::app::LinkInfo::Markdown { url, .. } => {
-                                app.open_path_or_url(&url);
-                            }
-                            crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
-                                if is_valid {
-                                    app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
-                                } else {
-                                    app.pending_wiki_target = Some(target);
-                                    app.dialog = DialogState::CreateWikiNote;
-                                }
-                            }
-                        }
-                    } else {
+                    } else if !open_selected_content_target(app) {
                         // No links in task, just toggle
                         app.toggle_current_task();
                     }
@@ -2274,20 +2316,8 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                     app.toggle_current_details();
                 } else if app.is_heading_at(app.content_cursor) {
                     app.toggle_current_heading_fold();
-                } else if let Some(link) = app.current_selected_link() {
-                    match link {
-                        crate::app::LinkInfo::Markdown { url, .. } => {
-                            app.open_path_or_url(&url);
-                        }
-                        crate::app::LinkInfo::Wiki { target, heading, is_valid, .. } => {
-                            if is_valid {
-                                app.navigate_to_wiki_link_with_heading(&target, heading.as_deref());
-                            } else {
-                                app.pending_wiki_target = Some(target);
-                                app.dialog = DialogState::CreateWikiNote;
-                            }
-                        }
-                    }
+                } else {
+                    open_selected_content_target(app);
                 }
             }
         }

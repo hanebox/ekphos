@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use image::DynamicImage;
 use ratatui::{
-    layout::Rect,
+    layout::{Rect, Size},
     style::Style,
     widgets::{Block, Borders, ListState},
 };
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
+use ratatui_image::{picker::Picker, sliced::SlicedProtocol};
 
 use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
@@ -333,7 +333,15 @@ pub struct OutlineItem {
 }
 
 pub struct ImageState {
-    pub image: StatefulProtocol,
+    pub image: SlicedProtocol,
+    pub size: Size,
+}
+
+#[derive(Debug, Clone)]
+pub struct InlineImageRect {
+    pub item_index: usize,
+    pub selection_index: usize,
+    pub rect: Rect,
     pub path: String,
 }
 
@@ -370,6 +378,32 @@ pub enum ContentItem {
     FrontmatterLine { key: String, value: String },
     FrontmatterDelimiter,
     TagBadges { tags: Vec<String>, date: Option<String> },
+}
+
+/// Return the destination when a source line contains exactly one Markdown image.
+/// Images mixed with text or followed by another image stay on the prose line so
+/// the content renderer can lay them out as inline, wrapping thumbnails.
+fn standalone_image_path(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("![") || trimmed.starts_with("!![") {
+        return None;
+    }
+
+    let bracket_end = trimmed[1..].find("](")?;
+    let destination_start = 1 + bracket_end + 2;
+    let paren_end = trimmed[destination_start..].find(')')?;
+    let destination_end = destination_start + paren_end;
+
+    if destination_end + 1 != trimmed.len() {
+        return None;
+    }
+
+    let path = &trimmed[destination_start..destination_end];
+    (!path.is_empty()).then_some(path)
+}
+
+fn is_inside_inline_code(text: &str, position: usize) -> bool {
+    text[..position].chars().filter(|&ch| ch == '`').count() % 2 == 1
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -588,6 +622,11 @@ pub enum LinkInfo {
         start_col: usize,
         end_col: usize,
     },
+    Image {
+        path: String,
+        start_col: usize,
+        end_col: usize,
+    },
     Wiki {
         target: String,
         heading: Option<String>,
@@ -601,6 +640,7 @@ impl LinkInfo {
     pub fn start_col(&self) -> usize {
         match self {
             LinkInfo::Markdown { start_col, .. } => *start_col,
+            LinkInfo::Image { start_col, .. } => *start_col,
             LinkInfo::Wiki { start_col, .. } => *start_col,
         }
     }
@@ -650,7 +690,9 @@ pub struct App {
     pub editor: Editor,
     pub picker: Option<Picker>,
     pub image_cache_dir: PathBuf,
-    pub current_image: Option<ImageState>,
+    /// Persistent terminal protocol state for each rendered image placement.
+    /// Keeping this across frames prevents protocol IDs from changing on scroll.
+    pub image_states: HashMap<String, ImageState>,
     pub pending_images: HashSet<String>,
     pub image_sender: Sender<(String, DynamicImage)>,
     pub image_receiver: Receiver<(String, DynamicImage)>,
@@ -693,6 +735,8 @@ pub struct App {
     pub outline_area: Rect,
     pub mouse_hover_item: Option<usize>,
     pub content_item_rects: Vec<(usize, Rect)>,
+    pub inline_image_rects: Vec<InlineImageRect>,
+    pub mouse_hover_inline_image: Option<(usize, usize)>,
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
     pub heading_fold_states: HashMap<usize, bool>,  // content_item index -> is_folded
@@ -852,7 +896,7 @@ impl App {
             editor,
             picker,
             image_cache_dir: get_image_cache_dir(),
-            current_image: None,
+            image_states: HashMap::new(),
             pending_images: HashSet::new(),
             image_sender,
             image_receiver,
@@ -895,6 +939,8 @@ impl App {
             outline_area: Rect::default(),
             mouse_hover_item: None,
             content_item_rects: Vec::new(),
+            inline_image_rects: Vec::new(),
+            mouse_hover_inline_image: None,
             selected_link_index: 0,
             details_open_states: HashMap::new(),
             heading_fold_states: HashMap::new(),
@@ -1040,7 +1086,7 @@ impl App {
             editor,
             picker,
             image_cache_dir: get_image_cache_dir(),
-            current_image: None,
+            image_states: HashMap::new(),
             pending_images: HashSet::new(),
             image_sender,
             image_receiver,
@@ -1083,6 +1129,8 @@ impl App {
             outline_area: Rect::default(),
             mouse_hover_item: None,
             content_item_rects: Vec::new(),
+            inline_image_rects: Vec::new(),
+            mouse_hover_inline_image: None,
             selected_link_index: 0,
             details_open_states: HashMap::new(),
             heading_fold_states: HashMap::new(),
@@ -1668,7 +1716,7 @@ impl App {
                 self.end_buffer_search();
             }
             self.selected_note = new_note_idx;
-            self.current_image = None;
+            self.image_states.clear();
         }
     }
 
@@ -2287,6 +2335,9 @@ impl App {
     pub fn update_content_items(&mut self) {
         self.content_items.clear();
         self.content_item_source_lines.clear();
+        self.image_states.clear();
+        self.inline_image_rects.clear();
+        self.mouse_hover_inline_image = None;
         self.details_open_states.clear();
         self.heading_fold_states.clear();
 
@@ -2372,19 +2423,14 @@ impl App {
                     continue;
                 }
 
-                // Check for image
-                if line.starts_with("![") && line.contains("](") && line.contains(')') {
-                    if let Some(start) = line.find("](") {
-                        if let Some(end) = line[start..].find(')') {
-                            let path = &line[start + 2..start + end];
-                            if !path.is_empty() {
-                                self.content_items.push(ContentItem::Image(path.to_string()));
-                                self.content_item_source_lines.push(line_index);
-                                i += 1;
-                                continue;
-                            }
-                        }
-                    }
+                // A line containing exactly one image gets the larger standalone
+                // treatment. Multiple images on the same source line remain inline
+                // and flow next to one another in the content renderer.
+                if let Some(path) = standalone_image_path(line) {
+                    self.content_items.push(ContentItem::Image(path.to_string()));
+                    self.content_item_source_lines.push(line_index);
+                    i += 1;
+                    continue;
                 }
 
                 let trimmed = line.trim_start();
@@ -2837,14 +2883,26 @@ impl App {
 
     pub fn item_all_links_at(&self, index: usize) -> Vec<LinkInfo> {
         let mut all_links = Vec::new();
+        let inline_images = self.inline_image_links_at(index);
 
         for (text, url, start, end) in self.item_links_at(index) {
-            all_links.push(LinkInfo::Markdown {
-                text,
-                url,
-                start_col: start,
-                end_col: end,
-            });
+            if inline_images
+                .iter()
+                .any(|(path, start_col)| path == &url && *start_col == start)
+            {
+                all_links.push(LinkInfo::Image {
+                    path: url,
+                    start_col: start,
+                    end_col: end,
+                });
+            } else {
+                all_links.push(LinkInfo::Markdown {
+                    text,
+                    url,
+                    start_col: start,
+                    end_col: end,
+                });
+            }
         }
         for wiki in self.item_wiki_links_at(index) {
             all_links.push(LinkInfo::Wiki {
@@ -2858,6 +2916,88 @@ impl App {
 
         all_links.sort_by_key(|link| link.start_col());
         all_links
+    }
+
+    /// Inline preview images on a content item, paired with the selection index
+    /// used by `[` / `]`. Task items reserve selection zero for the checkbox.
+    pub fn item_inline_image_selections_at(&self, index: usize) -> Vec<(String, usize)> {
+        let all_links = self.item_all_links_at(index);
+        let is_task = matches!(
+            self.content_items.get(index),
+            Some(ContentItem::TaskItem { .. })
+        );
+        Self::inline_image_selections_for_links(all_links, is_task)
+    }
+
+    fn inline_image_selections_for_links(
+        all_links: Vec<LinkInfo>,
+        is_task: bool,
+    ) -> Vec<(String, usize)> {
+        let task_offset = usize::from(is_task && !all_links.is_empty());
+
+        all_links
+            .into_iter()
+            .enumerate()
+            .filter_map(|(link_index, link)| match link {
+                LinkInfo::Image { path, .. } => Some((path, link_index + task_offset)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Extract single-bang Markdown images which are rendered as previews. The
+    /// returned column is the position in the formatted text after Markdown
+    /// syntax has been removed; images themselves occupy no text cells.
+    fn inline_image_links_at(&self, index: usize) -> Vec<(String, usize)> {
+        let text = match self.content_items.get(index) {
+            Some(ContentItem::TextLine(line)) => line.as_str(),
+            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            _ => return Vec::new(),
+        };
+
+        Self::inline_image_links_in_text(text)
+    }
+
+    fn inline_image_links_in_text(text: &str) -> Vec<(String, usize)> {
+        let mut images = Vec::new();
+        let mut search_start = 0;
+
+        while search_start < text.len() {
+            let remaining = &text[search_start..];
+            let Some(image_offset) = remaining.find("![") else {
+                break;
+            };
+            let image_start = search_start + image_offset;
+
+            // `!![alt](url)` is intentionally a text-only link. Markdown-like
+            // syntax inside inline code is literal and must not create a preview.
+            let is_double_bang = image_start > 0
+                && text.as_bytes().get(image_start - 1) == Some(&b'!');
+            let is_inline_code = is_inside_inline_code(text, image_start);
+            if is_double_bang || is_inline_code {
+                search_start = image_start + 2;
+                continue;
+            }
+
+            let from_image = &text[image_start..];
+            let Some(bracket_end) = from_image[1..].find("](") else {
+                search_start = image_start + 2;
+                continue;
+            };
+            let destination = &from_image[1 + bracket_end + 2..];
+            let Some(paren_end) = destination.find(')') else {
+                search_start = image_start + 2;
+                continue;
+            };
+
+            let path = &destination[..paren_end];
+            if !path.is_empty() {
+                images.push((path.to_string(), Self::calc_rendered_pos(text, image_start)));
+            }
+            search_start = image_start + 1 + bracket_end + 2 + paren_end + 1;
+        }
+
+        images
     }
 
     fn is_current_task_item(&self) -> bool {
@@ -2922,10 +3062,6 @@ impl App {
                 self.selected_link_index -= 1;
             }
         }
-    }
-
-    pub fn item_link_at(&self, index: usize) -> Option<String> {
-        self.item_links_at(index).first().map(|(_, url, _, _)| url.clone())
     }
 
     /// Check if the current line has any links or wikilinks
@@ -3063,6 +3199,14 @@ impl App {
                         if let Some(paren_end) = after_bracket.find(')') {
                             let alt_text = &from_img[3..2 + bracket_end];
                             let url = &after_bracket[..paren_end];
+                            let image_end =
+                                abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+
+                            if is_inside_inline_code(text, abs_img_pos) {
+                                search_start = image_end;
+                                claimed.push((abs_img_pos, search_start));
+                                continue;
+                            }
 
                             if !url.is_empty() {
                                 let display_text = if alt_text.is_empty() {
@@ -3081,7 +3225,7 @@ impl App {
                                 ));
                             }
 
-                            search_start = abs_img_pos + 2 + bracket_end + 2 + paren_end + 1;
+                            search_start = image_end;
                             claimed.push((abs_img_pos, search_start));
                             continue;
                         }
@@ -3108,6 +3252,14 @@ impl App {
                         if let Some(paren_end) = after_bracket.find(')') {
                             let alt_text = &from_img[2..1 + bracket_end];
                             let url = &after_bracket[..paren_end];
+                            let image_end =
+                                abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+
+                            if is_inside_inline_code(text, abs_img_pos) {
+                                search_start = image_end;
+                                claimed.push((abs_img_pos, search_start));
+                                continue;
+                            }
 
                             if !url.is_empty() {
                                 let display_text = if alt_text.is_empty() {
@@ -3116,7 +3268,9 @@ impl App {
                                     format!("[img: {}]", alt_text)
                                 };
                                 let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
-                                let rendered_end = rendered_start + display_text.chars().count();
+                                // Preview images do not occupy cells in the prose line;
+                                // their selectable region is the thumbnail rect instead.
+                                let rendered_end = rendered_start;
 
                                 links.push((
                                     display_text,
@@ -3126,7 +3280,7 @@ impl App {
                                 ));
                             }
 
-                            search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
+                            search_start = image_end;
                             claimed.push((abs_img_pos, search_start));
                             continue;
                         }
@@ -3152,6 +3306,14 @@ impl App {
                     if let Some(paren_end) = after_bracket.find(')') {
                         let link_text = &from_bracket[1..bracket_end];
                         let url = &after_bracket[..paren_end];
+                        let link_end =
+                            abs_bracket_pos + bracket_end + 2 + paren_end + 1;
+
+                        if is_inside_inline_code(text, abs_bracket_pos) {
+                            search_start = link_end;
+                            claimed.push((abs_bracket_pos, search_start));
+                            continue;
+                        }
 
                         if !url.is_empty() {
                             let display_text = if link_text.is_empty() {
@@ -3170,7 +3332,7 @@ impl App {
                             ));
                         }
 
-                        search_start = abs_bracket_pos + bracket_end + 2 + paren_end + 1;
+                        search_start = link_end;
                         claimed.push((abs_bracket_pos, search_start));
                         continue;
                     }
@@ -3186,7 +3348,7 @@ impl App {
             if let Some(url_len) = crate::ui::detect_bare_url_len(text, pos) {
                 let end = pos + url_len;
                 let overlaps = claimed.iter().any(|(s, e)| pos < *e && end > *s);
-                if !overlaps {
+                if !overlaps && !is_inside_inline_code(text, pos) {
                     let url = text[pos..end].to_string();
                     let rendered_start = Self::calc_rendered_pos(text, pos);
                     let rendered_end = rendered_start + url.chars().count();
@@ -3236,17 +3398,11 @@ impl App {
                 if let Some(bracket_end) = remaining[1..].find("](") {
                     let after_bracket = &remaining[1 + bracket_end + 2..];
                     if let Some(paren_end) = after_bracket.find(')') {
-                        let alt_text = &remaining[2..1 + bracket_end];
-                        let url = &after_bracket[..paren_end];
                         let full_link_len = 1 + bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            let display_len = if alt_text.is_empty() {
-                                6 + url.chars().count() + 1 
-                            } else {
-                                6 + alt_text.chars().count() + 1 
-                            };
-                            rendered_pos += display_len;
+                            // Single-bang images are removed from the prose line and
+                            // rendered in the thumbnail flow below it.
                             i += full_link_len;
                             continue;
                         } else {
@@ -6468,6 +6624,75 @@ fn fuzzy_match(text: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_image_requires_exactly_one_image_on_the_source_line() {
+        assert_eq!(standalone_image_path("![hero](hero.png)"), Some("hero.png"));
+        assert_eq!(
+            standalone_image_path("  ![hero](hero.png)  "),
+            Some("hero.png")
+        );
+        assert_eq!(
+            standalone_image_path("![one](1.png) ![two](2.png)"),
+            None
+        );
+        assert_eq!(standalone_image_path("caption ![hero](hero.png)"), None);
+        assert_eq!(standalone_image_path("![hero](hero.png) caption"), None);
+        assert_eq!(standalone_image_path("!![hero](hero.png)"), None);
+    }
+
+    #[test]
+    fn inline_images_keep_source_order_and_zero_width_text_positions() {
+        let images = App::inline_image_links_in_text(
+            "before ![one](1.png) and ![two](2.png)",
+        );
+
+        assert_eq!(
+            images,
+            vec![("1.png".to_string(), 7), ("2.png".to_string(), 12)]
+        );
+    }
+
+    #[test]
+    fn inline_images_ignore_text_only_and_code_syntax() {
+        let images = App::inline_image_links_in_text(
+            "!![text only](one.png) `![code](two.png)` ![preview](three.png)",
+        );
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].0, "three.png");
+    }
+
+    #[test]
+    fn every_inline_image_has_its_own_selection_index() {
+        let links = vec![
+            LinkInfo::Markdown {
+                text: "docs".to_string(),
+                url: "docs.md".to_string(),
+                start_col: 0,
+                end_col: 4,
+            },
+            LinkInfo::Image {
+                path: "one.png".to_string(),
+                start_col: 5,
+                end_col: 5,
+            },
+            LinkInfo::Image {
+                path: "two.png".to_string(),
+                start_col: 6,
+                end_col: 6,
+            },
+        ];
+
+        assert_eq!(
+            App::inline_image_selections_for_links(links.clone(), false),
+            vec![("one.png".to_string(), 1), ("two.png".to_string(), 2)]
+        );
+        assert_eq!(
+            App::inline_image_selections_for_links(links, true),
+            vec![("one.png".to_string(), 2), ("two.png".to_string(), 3)]
+        );
+    }
 
     #[test]
     fn normalize_image_destination_supports_commonmark_local_paths() {

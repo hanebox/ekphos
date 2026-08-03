@@ -14,7 +14,7 @@ readme = "README.md"
 ratatui = "0.30"
 crossterm = "0.29"
 image = "0.25"
-ratatui-image = { version = "10.0", default-features = false, features = ["image-defaults", "crossterm"] }
+ratatui-image = { version = "11.0", default-features = false, features = ["image-defaults", "crossterm"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 dirs = "5.0"

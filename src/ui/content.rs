@@ -1,70 +1,148 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect, Size},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use ratatui_image::StatefulImage;
+use ratatui_image::{
+    sliced::{SignedPosition, SlicedImage, SlicedProtocol},
+    Resize,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    normalize_image_destination, App, ContentItem, DialogState, Focus, ImageState, Mode,
+    normalize_image_destination, App, ContentItem, DialogState, Focus, ImageState,
+    InlineImageRect, LinkInfo, Mode,
 };
 use crate::config::Theme;
 
-const INLINE_THUMBNAIL_HEIGHT: u16 = 4;
+const INLINE_THUMBNAIL_HORIZONTAL_PADDING: u16 = 2;
+const INLINE_THUMBNAIL_GAP: u16 = 1;
+const INLINE_THUMBNAIL_MIN_WIDTH: u16 = 12;
+const INLINE_THUMBNAIL_MAX_WIDTH: u16 = 40;
 
-fn is_inside_inline_code(text: &str, position: usize) -> bool {
-    let before = &text[..position];
-    let mut inside_code = false;
-    for c in before.chars() {
-        if c == '`' {
-            inside_code = !inside_code;
-        }
-    }
-    inside_code
+fn standalone_image_state_key(item_index: usize, resolved_path: &str) -> String {
+    format!("standalone:{item_index}:{resolved_path}")
 }
 
-fn extract_inline_images(text: &str) -> Vec<String> {
-    let mut images = Vec::new();
-    let mut search_start = 0;
+fn inline_image_state_key(
+    item_index: usize,
+    selection_index: usize,
+    resolved_path: &str,
+) -> String {
+    format!("inline:{item_index}:{selection_index}:{resolved_path}")
+}
 
-    while search_start < text.len() {
-        let remaining = &text[search_start..];
-        if let Some(img_pos) = remaining.find("![") {
-            let abs_img_pos = search_start + img_pos;
-
-            // skip double-bang images they don't get thumbnails
-            if abs_img_pos > 0 && text.as_bytes().get(abs_img_pos - 1) == Some(&b'!') {
-                search_start = abs_img_pos + 2;
-                continue;
-            }
-            if is_inside_inline_code(text, abs_img_pos) {
-                search_start = abs_img_pos + 2;
-                continue;
-            }
-
-            let from_img = &text[abs_img_pos..];
-
-            if let Some(bracket_end) = from_img[1..].find("](") {
-                let after_bracket = &from_img[1 + bracket_end + 2..];
-                if let Some(paren_end) = after_bracket.find(')') {
-                    let url = &after_bracket[..paren_end];
-                    if !url.is_empty() {
-                        images.push(url.to_string());
-                    }
-                    search_start = abs_img_pos + 1 + bracket_end + 2 + paren_end + 1;
-                    continue;
-                }
-            }
-            search_start = abs_img_pos + 2;
-        } else {
-            break;
-        }
+fn ensure_image_state(
+    app: &mut App,
+    state_key: &str,
+    resolved_path: Option<&std::path::Path>,
+    resolved_path_str: &str,
+    normalized_path: &str,
+    is_remote: bool,
+    is_pending: bool,
+    size: Size,
+) {
+    let needs_rebuild = app
+        .image_states
+        .get(state_key)
+        .is_none_or(|state| state.size != size);
+    if !needs_rebuild || size.width == 0 || size.height == 0 {
+        return;
     }
 
-    images
+    app.image_states.remove(state_key);
+
+    let img = if let Some(img) = app.get_cached_image(resolved_path_str) {
+        Some(img)
+    } else if is_remote {
+        if !is_pending {
+            app.start_remote_image_fetch(normalized_path);
+        }
+        None
+    } else if let Some(resolved) = resolved_path {
+        if let Ok(img) = image::open(resolved) {
+            app.cache_image(resolved_path_str, img);
+            app.get_cached_image(resolved_path_str)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let (Some(img), Some(picker)) = (img, app.picker.as_ref()) else {
+        return;
+    };
+    let Ok(image) = SlicedProtocol::new_with_resize(picker, img, size, Resize::Fit(None)) else {
+        return;
+    };
+
+    app.image_states
+        .insert(state_key.to_string(), ImageState { image, size });
+}
+
+fn inline_thumbnail_width(area_width: u16, image_height: u16) -> u16 {
+    let available_width = area_width.saturating_sub(INLINE_THUMBNAIL_HORIZONTAL_PADDING * 2);
+    image_height
+        .saturating_mul(2)
+        .max(INLINE_THUMBNAIL_MIN_WIDTH)
+        .min(INLINE_THUMBNAIL_MAX_WIDTH)
+        .min(available_width.max(1))
+}
+
+fn inline_thumbnails_per_row(area_width: u16, image_height: u16) -> usize {
+    let available_width = area_width.saturating_sub(INLINE_THUMBNAIL_HORIZONTAL_PADDING * 2);
+    let thumbnail_width = inline_thumbnail_width(area_width, image_height);
+    usize::from(
+        available_width
+            .saturating_add(INLINE_THUMBNAIL_GAP)
+            / thumbnail_width.saturating_add(INLINE_THUMBNAIL_GAP).max(1),
+    )
+    .max(1)
+}
+
+fn inline_thumbnails_height(
+    image_count: usize,
+    area_width: u16,
+    image_height: u16,
+) -> u16 {
+    if image_count == 0 {
+        return 0;
+    }
+
+    let per_row = inline_thumbnails_per_row(area_width, image_height);
+    let rows = image_count.saturating_add(per_row - 1) / per_row;
+    u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_mul(image_height)
+}
+
+fn image_frame_borders(visible_height: u16, configured_height: u16) -> Borders {
+    let mut borders = Borders::LEFT | Borders::RIGHT;
+    if visible_height > 1 {
+        borders |= Borders::TOP;
+    }
+    if visible_height >= configured_height {
+        borders |= Borders::BOTTOM;
+    }
+    borders
+}
+
+fn visible_item_height(total_height: u16, viewport_height: u16, item_height: u16) -> u16 {
+    viewport_height
+        .saturating_sub(total_height)
+        .min(item_height)
+}
+
+fn inline_prose_text(text: &str, theme: &Theme) -> String {
+    parse_inline_formatting::<fn(&str) -> bool>(text, theme, None, None)
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
@@ -168,6 +246,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         inner
     };
     app.editor_area = if app.zen_mode { inner_area } else { area };
+    app.inline_image_rects.clear();
 
     if app.content_items.is_empty() {
         return;
@@ -176,6 +255,11 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let cursor = app.content_cursor;
     let available_width = inner_area.width.saturating_sub(4) as usize;
     let max_item_height = inner_area.height.max(1);
+    let standalone_image_height = app.config.effective_image_height();
+    let inline_image_height = app.config.effective_inline_image_height();
+    let inline_image_selections: Vec<Vec<(String, usize)>> = (0..app.content_items.len())
+        .map(|index| app.item_inline_image_selections_at(index))
+        .collect();
 
     let calc_wrapped_height = |text: &str, prefix_len: usize| -> u16 {
         if text.is_empty() || available_width == 0 {
@@ -216,31 +300,71 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         lines.min(max_item_height)
     };
 
+    let item_text_heights: Vec<u16> = app
+        .content_items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| match item {
+            ContentItem::TextLine(line) => {
+                if inline_image_selections[idx].is_empty() {
+                    calc_wrapped_height(line, 4)
+                } else {
+                    let prose_source = line
+                        .strip_prefix("- ")
+                        .or_else(|| line.strip_prefix("* "))
+                        .or_else(|| line.strip_prefix("> "))
+                        .unwrap_or(line);
+                    let prose = inline_prose_text(prose_source, theme);
+                    if prose.is_empty() {
+                        0
+                    } else {
+                        calc_wrapped_height(&prose, 4)
+                    }
+                }
+            }
+            ContentItem::TaskItem { text, indent, .. } => {
+                if inline_image_selections[idx].is_empty() {
+                    calc_wrapped_height(text, 6 + *indent)
+                } else {
+                    let prose = inline_prose_text(text, theme);
+                    calc_wrapped_height(&prose, 6 + *indent)
+                }
+            }
+            _ => 0,
+        })
+        .collect();
+
     let details_states = &app.details_open_states;
     let get_item_height = |idx: usize, item: &ContentItem| -> u16 {
         match item {
-            ContentItem::TextLine(line) => {
-                let base_height = calc_wrapped_height(line, 4);
-                let inline_images = extract_inline_images(line);
+            ContentItem::TextLine(_) => {
+                let inline_images = &inline_image_selections[idx];
                 if inline_images.is_empty() {
-                    base_height
+                    item_text_heights[idx]
                 } else {
-                    base_height + (inline_images.len() as u16 * INLINE_THUMBNAIL_HEIGHT)
+                    item_text_heights[idx].saturating_add(inline_thumbnails_height(
+                        inline_images.len(),
+                        inner_area.width,
+                        inline_image_height,
+                    ))
                 }
             }
-            ContentItem::Image(_) => 8u16,
+            ContentItem::Image(_) => standalone_image_height,
             ContentItem::CodeLine(line) => {
                 code_line_height(line, code_block_highlights.get(&idx), inner_area.width, theme)
                     .min(max_item_height)
             }
             ContentItem::CodeFence(_) => 1u16,
-            ContentItem::TaskItem { text, indent, .. } => {
-                let base_height = calc_wrapped_height(text, 6 + *indent);
-                let inline_images = extract_inline_images(text);
+            ContentItem::TaskItem { .. } => {
+                let inline_images = &inline_image_selections[idx];
                 if inline_images.is_empty() {
-                    base_height
+                    item_text_heights[idx]
                 } else {
-                    base_height + (inline_images.len() as u16 * INLINE_THUMBNAIL_HEIGHT)
+                    item_text_heights[idx].saturating_add(inline_thumbnails_height(
+                        inline_images.len(),
+                        inner_area.width,
+                        inline_image_height,
+                    ))
                 }
             }
             ContentItem::TableRow { cells, is_separator, column_widths, .. } => {
@@ -397,9 +521,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             break;
         }
         let item_height = get_item_height(i, item);
-        constraints.push(Constraint::Length(item_height));
+        let visible_height = visible_item_height(total_height, inner_area.height, item_height);
+        constraints.push(Constraint::Length(visible_height));
         visible_indices.push(i);
-        total_height += item_height;
+        total_height = total_height.saturating_add(visible_height);
     }
 
     if constraints.is_empty() {
@@ -433,9 +558,20 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 
         match item_clone {
             ContentItem::TextLine(ref line) => {
-                let has_regular_link = app.item_link_at(item_idx).is_some();
-                let has_wiki_link = !app.item_wiki_links_at(item_idx).is_empty();
-                let has_link = (is_cursor_line || is_hovered) && (has_regular_link || has_wiki_link);
+                let has_text_link = app
+                    .item_all_links_at(item_idx)
+                    .iter()
+                    .any(|link| !matches!(link, LinkInfo::Image { .. }));
+                let selected_is_image = is_cursor_line
+                    && matches!(app.current_selected_link(), Some(LinkInfo::Image { .. }));
+                let hovered_image = app
+                    .mouse_hover_inline_image
+                    .map(|(hovered_item, _)| hovered_item == item_idx)
+                    .unwrap_or(false);
+                let has_link = (is_cursor_line || is_hovered)
+                    && has_text_link
+                    && !selected_is_image
+                    && !hovered_image;
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 // Get fold state for H1-H3 headings
@@ -446,16 +582,35 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 render_content_line(f, &app.theme, line, chunks[chunk_idx], is_cursor_line, has_link, selected_link, Some(wiki_validator), fold_state);
                 if !skip_images {
-                    let inline_images = extract_inline_images(line);
+                    let inline_images = &inline_image_selections[item_idx];
                     if !inline_images.is_empty() {
-                        let text_height = calc_wrapped_height(line, 4);
-                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                        let text_height = item_text_heights[item_idx];
+                        render_inline_thumbnails(
+                            f,
+                            app,
+                            item_idx,
+                            inline_images,
+                            chunks[chunk_idx],
+                            inner_area,
+                            text_height,
+                            inline_image_height,
+                            is_cursor_line,
+                        );
                     }
                 }
             }
             ContentItem::Image(path) => {
                 if !skip_images {
-                    render_inline_image_with_cursor(f, app, &path, chunks[chunk_idx], is_cursor_line, is_hovered);
+                    render_inline_image_with_cursor(
+                        f,
+                        app,
+                        item_idx,
+                        &path,
+                        chunks[chunk_idx],
+                        inner_area,
+                        is_cursor_line,
+                        is_hovered,
+                    );
                 }
             }
             ContentItem::CodeLine(line) => {
@@ -471,10 +626,20 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 render_task_item(f, &app.theme, text, checked, indent, chunks[chunk_idx], is_cursor_line, selected_link, has_links, Some(wiki_validator));
                 if !skip_images {
-                    let inline_images = extract_inline_images(text);
+                    let inline_images = &inline_image_selections[item_idx];
                     if !inline_images.is_empty() {
-                        let text_height = calc_wrapped_height(text, 6 + indent);
-                        render_inline_thumbnails(f, app, &inline_images, chunks[chunk_idx], text_height);
+                        let text_height = item_text_heights[item_idx];
+                        render_inline_thumbnails(
+                            f,
+                            app,
+                            item_idx,
+                            inline_images,
+                            chunks[chunk_idx],
+                            inner_area,
+                            text_height,
+                            inline_image_height,
+                            is_cursor_line,
+                        );
                     }
                 }
             }
@@ -892,6 +1057,34 @@ fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
                 continue;
             }
         }
+        if chars[pos] == '!'
+            && pos + 2 < chars.len()
+            && chars[pos + 1] == '!'
+            && chars[pos + 2] == '['
+        {
+            if let Some((bracket_end, paren_end)) = find_markdown_link(&chars, pos + 2) {
+                let image_end = paren_end + 1;
+                if image_end <= up_to_pos {
+                    let full_width = image_end - pos;
+                    let alt_width = bracket_end.saturating_sub(pos + 3);
+                    shrinkage += full_width.saturating_sub(alt_width);
+                }
+                pos = image_end;
+                continue;
+            }
+        }
+        if chars[pos] == '!'
+            && pos + 1 < chars.len()
+            && chars[pos + 1] == '['
+            && (pos == 0 || chars[pos - 1] != '!')
+        {
+            if let Some((_, paren_end)) = find_markdown_link(&chars, pos + 1) {
+                let image_end = paren_end + 1;
+                shrinkage += image_end.min(up_to_pos).saturating_sub(pos);
+                pos = image_end;
+                continue;
+            }
+        }
         if pos + 1 < chars.len() && chars[pos] == '[' && chars[pos + 1] == '[' {
             if let Some(end) = find_wiki_link_end(&chars, pos + 2) {
                 if end + 1 < up_to_pos {
@@ -1196,6 +1389,7 @@ where
     let mut chars = text.char_indices().peekable();
     let mut current_start = 0;
     let mut link_index = 0;
+    let mut removed_preview_image = false;
     let content_theme = &theme.content;
 
     while let Some((i, c)) = chars.next() {
@@ -1471,6 +1665,7 @@ where
                         }
 
                         link_index += 1;
+                        removed_preview_image = true;
 
                         let total_link_len = 1 + bracket_end + 2 + paren_end + 1;
                         // total_link_len is a byte count; advance the char iterator
@@ -1596,7 +1791,31 @@ where
         spans.push(Span::styled(&text[current_start..], Style::default().fg(content_theme.text)));
     }
 
-    if spans.is_empty() {
+    if removed_preview_image {
+        while spans
+            .first()
+            .is_some_and(|span| span.content.trim().is_empty())
+        {
+            spans.remove(0);
+        }
+        while spans
+            .last()
+            .is_some_and(|span| span.content.trim().is_empty())
+        {
+            spans.pop();
+        }
+
+        if let Some(first) = spans.first_mut() {
+            let trimmed = first.content.trim_start().to_string();
+            first.content = trimmed.into();
+        }
+        if let Some(last) = spans.last_mut() {
+            let trimmed = last.content.trim_end().to_string();
+            last.content = trimmed.into();
+        }
+    }
+
+    if spans.is_empty() && !removed_preview_image {
         spans.push(Span::styled(text, Style::default().fg(content_theme.text)));
     }
 
@@ -2567,11 +2786,19 @@ fn render_table_row(
 fn render_inline_image_with_cursor(
     f: &mut Frame,
     app: &mut App,
+    item_index: usize,
     path: &str,
     area: Rect,
+    viewport: Rect,
     is_cursor: bool,
     is_hovered: bool,
 ) {
+    let configured_height = app.config.effective_image_height();
+    let configured_area = Rect {
+        height: configured_height,
+        ..area
+    };
+    let visible_area = configured_area.intersection(viewport);
     let normalized_path = normalize_image_destination(path);
     let is_remote =
         normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
@@ -2581,55 +2808,25 @@ fn render_inline_image_with_cursor(
     let resolved_path_str = resolved_path.as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string());
+    let state_key = standalone_image_state_key(item_index, &resolved_path_str);
 
     let is_cached = app.is_image_cached(&resolved_path_str);
 
-    // Check if we need to load a new image
-    let need_load = match &app.current_image {
-        Some(state) => state.path != resolved_path_str,
-        None => true,
-    };
-
-    if need_load {
-        // Load image from cache, disk, or trigger async fetch for remote
-        let img = if let Some(img) = app.get_cached_image(&resolved_path_str) {
-            Some(img)
-        } else if is_remote {
-            if !is_pending {
-                app.start_remote_image_fetch(&normalized_path);
-            }
-            None
-        } else if let Some(ref resolved) = resolved_path {
-            if let Ok(img) = image::open(resolved) {
-                app.cache_image(&resolved_path_str, img);
-                app.get_cached_image(&resolved_path_str)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let (Some(img), Some(picker)) = (img, &mut app.picker) {
-            let protocol = picker.new_resize_protocol(img);
-            app.current_image = Some(ImageState {
-                image: protocol,
-                path: resolved_path_str.clone(),
-            });
-        }
-    }
-
     // Create a bordered area for the image with cursor indicator
-    let theme = &app.theme;
+    let warning_color = app.theme.warning;
+    let info_color = app.theme.info;
+    let secondary_color = app.theme.secondary;
+    let selection_color = app.theme.selection;
+    let error_color = app.theme.error;
     let show_hint = is_cursor || is_hovered;
     let border_color = if is_cursor {
-        theme.warning
+        warning_color
     } else if is_hovered {
-        theme.info
+        info_color
     } else if is_pending {
-        theme.secondary
+        secondary_color
     } else {
-        theme.info
+        info_color
     };
 
     let title = if is_pending {
@@ -2642,34 +2839,51 @@ fn render_inline_image_with_cursor(
 
     let block = Block::default()
         .title(title)
-        .borders(Borders::ALL)
+        .borders(image_frame_borders(visible_area.height, configured_height))
         .border_style(Style::default().fg(border_color));
 
-    let inner_area = block.inner(area);
+    let inner_area = block.inner(visible_area);
+    let image_size = Size::new(
+        visible_area.width.saturating_sub(2),
+        configured_height.saturating_sub(2),
+    );
 
     // Add background highlight when cursor is on image
     if is_cursor {
-        let bg = Paragraph::new("").style(Style::default().bg(theme.selection));
-        f.render_widget(bg, area);
+        let bg = Paragraph::new("").style(Style::default().bg(selection_color));
+        f.render_widget(bg, visible_area);
     }
 
-    f.render_widget(block, area);
+    f.render_widget(block, visible_area);
 
-    if is_pending || (is_remote && !is_cached && app.current_image.as_ref().map(|s| s.path != resolved_path_str).unwrap_or(true)) {
+    ensure_image_state(
+        app,
+        &state_key,
+        resolved_path.as_deref(),
+        &resolved_path_str,
+        &normalized_path,
+        is_remote,
+        is_pending,
+        image_size,
+    );
+
+    if inner_area.width == 0 || inner_area.height == 0 || image_size.height == 0 {
+        return;
+    }
+
+    if is_pending || (is_remote && !is_cached && !app.image_states.contains_key(&state_key)) {
         let loading = Paragraph::new("  Loading remote image...")
-            .style(Style::default().fg(theme.secondary).add_modifier(Modifier::ITALIC));
+            .style(Style::default().fg(secondary_color).add_modifier(Modifier::ITALIC));
         f.render_widget(loading, inner_area);
         return;
     }
 
-    if let Some(state) = &mut app.current_image {
-        if state.path == resolved_path_str {
-            let image_widget = StatefulImage::new();
-            f.render_stateful_widget(image_widget, inner_area, &mut state.image);
-        }
+    if let Some(state) = app.image_states.get(&state_key) {
+        let image_widget = SlicedImage::new(&state.image, SignedPosition::from((0, 0)));
+        f.render_widget(image_widget, inner_area);
     } else if !is_remote {
         let placeholder = Paragraph::new("  [Image not found]")
-            .style(Style::default().fg(theme.error).add_modifier(Modifier::ITALIC));
+            .style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
         f.render_widget(placeholder, inner_area);
     }
 }
@@ -2679,28 +2893,55 @@ fn render_inline_image_with_cursor(
 fn render_inline_thumbnails(
     f: &mut Frame,
     app: &mut App,
-    images: &[String],
+    item_index: usize,
+    images: &[(String, usize)],
     area: Rect,
+    viewport: Rect,
     text_height: u16,
+    image_height: u16,
+    is_cursor_line: bool,
 ) -> u16 {
-    if images.is_empty() || app.picker.is_none() {
+    if images.is_empty() {
         return 0;
     }
     let secondary_color = app.theme.secondary;
     let error_color = app.theme.error;
-    let mut y_offset = text_height;
+    let info_color = app.theme.info;
+    let warning_color = app.theme.warning;
+    let selection_color = app.theme.selection;
+    let thumbnail_width = inline_thumbnail_width(area.width, image_height);
+    let per_row = inline_thumbnails_per_row(area.width, image_height);
 
-    for path in images {
-        if y_offset + INLINE_THUMBNAIL_HEIGHT > area.height {
+    for (image_index, (path, selection_index)) in images.iter().enumerate() {
+        let row = image_index / per_row;
+        let column = image_index % per_row;
+        let y_offset = text_height.saturating_add(
+            u16::try_from(row)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(image_height),
+        );
+        let x_offset = INLINE_THUMBNAIL_HORIZONTAL_PADDING.saturating_add(
+            u16::try_from(column)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(thumbnail_width.saturating_add(INLINE_THUMBNAIL_GAP)),
+        );
+        let configured_thumb_area = Rect {
+            x: area.x.saturating_add(x_offset),
+            y: area.y.saturating_add(y_offset),
+            width: thumbnail_width,
+            height: image_height,
+        };
+        let thumb_area = configured_thumb_area.intersection(viewport);
+        if thumb_area.height == 0 || thumb_area.width == 0 {
             break;
         }
+        app.inline_image_rects.push(InlineImageRect {
+            item_index,
+            selection_index: *selection_index,
+            rect: thumb_area,
+            path: path.clone(),
+        });
 
-        let thumb_area = Rect {
-            x: area.x + 2,
-            y: area.y + y_offset,
-            width: area.width.saturating_sub(4).min(40),
-            height: INLINE_THUMBNAIL_HEIGHT,
-        };
         let normalized_path = normalize_image_destination(path);
         let is_remote =
             normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
@@ -2708,47 +2949,75 @@ fn render_inline_thumbnails(
         let resolved_path_str = resolved_path.as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
+        let state_key = inline_image_state_key(
+            item_index,
+            *selection_index,
+            &resolved_path_str,
+        );
 
         let is_pending = is_remote && app.is_image_pending(&normalized_path);
-        let img = if let Some(img) = app.get_cached_image(&resolved_path_str) {
-            Some(img)
-        } else if is_remote {
-            if !is_pending {
-                app.start_remote_image_fetch(&normalized_path);
-            }
-            None
-        } else if let Some(ref resolved) = resolved_path {
-            if let Ok(img) = image::open(resolved) {
-                app.cache_image(&resolved_path_str, img);
-                app.get_cached_image(&resolved_path_str)
-            } else {
-                None
-            }
+        let is_selected = is_cursor_line && app.selected_link_index == *selection_index;
+        let is_hovered = app.mouse_hover_inline_image == Some((item_index, *selection_index));
+        let title = if is_pending {
+            " Loading... "
+        } else if is_selected || is_hovered {
+            " Open ↗ "
         } else {
-            None
+            ""
         };
-        if let (Some(img), Some(picker)) = (img, &mut app.picker) {
-            let protocol = picker.new_resize_protocol(img);
-            let mut thumb_state = ImageState {
-                image: protocol,
-                path: resolved_path_str.clone(),
-            };
-            let image_widget = StatefulImage::new();
-            f.render_stateful_widget(image_widget, thumb_area, &mut thumb_state.image);
+        let border_color = if is_selected {
+            warning_color
+        } else if is_hovered {
+            info_color
+        } else {
+            secondary_color
+        };
+        let block = Block::default()
+            .title(title)
+            .borders(image_frame_borders(thumb_area.height, image_height))
+            .border_style(Style::default().fg(border_color));
+        let image_area = block.inner(thumb_area);
+        let image_size = Size::new(
+            thumbnail_width.saturating_sub(2),
+            image_height.saturating_sub(2),
+        );
+
+        if is_selected {
+            let highlight = Paragraph::new("").style(Style::default().bg(selection_color));
+            f.render_widget(highlight, thumb_area);
+        }
+        f.render_widget(block, thumb_area);
+
+        ensure_image_state(
+            app,
+            &state_key,
+            resolved_path.as_deref(),
+            &resolved_path_str,
+            &normalized_path,
+            is_remote,
+            is_pending,
+            image_size,
+        );
+
+        if image_area.width == 0 || image_area.height == 0 || image_size.height == 0 {
+            continue;
+        }
+
+        if let Some(state) = app.image_states.get(&state_key) {
+            let image_widget = SlicedImage::new(&state.image, SignedPosition::from((0, 0)));
+            f.render_widget(image_widget, image_area);
         } else if is_pending {
             let loading = Paragraph::new("  ⏳ Loading...")
                 .style(Style::default().fg(secondary_color).add_modifier(Modifier::ITALIC));
-            f.render_widget(loading, thumb_area);
+            f.render_widget(loading, image_area);
         } else if !is_remote && resolved_path.is_none() {
             let not_found = Paragraph::new("  ❌ Not found")
                 .style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
-            f.render_widget(not_found, thumb_area);
+            f.render_widget(not_found, image_area);
         }
-
-        y_offset += INLINE_THUMBNAIL_HEIGHT;
     }
 
-    y_offset - text_height
+    inline_thumbnails_height(images.len(), area.width, image_height)
 }
 
 fn render_details(
@@ -2932,6 +3201,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_protocol_keys_are_stable_per_placement() {
+        assert_eq!(
+            standalone_image_state_key(7, "image.png"),
+            standalone_image_state_key(7, "image.png")
+        );
+        assert_eq!(
+            inline_image_state_key(7, 2, "image.png"),
+            inline_image_state_key(7, 2, "image.png")
+        );
+    }
+
+    #[test]
+    fn image_protocol_keys_distinguish_duplicate_placements() {
+        assert_ne!(
+            inline_image_state_key(7, 1, "image.png"),
+            inline_image_state_key(7, 2, "image.png")
+        );
+        assert_ne!(
+            standalone_image_state_key(7, "image.png"),
+            inline_image_state_key(7, 1, "image.png")
+        );
+    }
+
+    #[test]
+    fn inline_thumbnail_rows_use_configured_height() {
+        assert_eq!(inline_thumbnails_height(0, 80, 8), 0);
+        assert_eq!(inline_thumbnails_height(1, 80, 8), 8);
+        assert_eq!(inline_thumbnails_height(3, 80, 8), 8);
+    }
+
+    #[test]
+    fn inline_thumbnail_rows_wrap_at_content_boundary() {
+        // At 30 columns, 12-column thumbnails plus a one-column gap fit two per row.
+        assert_eq!(inline_thumbnails_per_row(30, 4), 2);
+        assert_eq!(inline_thumbnails_height(2, 30, 4), 4);
+        assert_eq!(inline_thumbnails_height(3, 30, 4), 8);
+    }
+
+    #[test]
+    fn inline_thumbnail_rows_saturate_on_extreme_values() {
+        assert_eq!(
+            inline_thumbnails_height(usize::MAX, u16::MAX, u16::MAX),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn inline_thumbnail_uses_the_visible_part_at_the_viewport_bottom() {
+        let image = Rect::new(2, 3, 12, 4);
+        assert_eq!(image.intersection(Rect::new(0, 0, 80, 8)).height, 4);
+        assert_eq!(image.intersection(Rect::new(0, 0, 80, 6)).height, 3);
+        assert_eq!(image.intersection(Rect::new(0, 0, 80, 5)).height, 2);
+        assert_eq!(image.intersection(Rect::new(0, 0, 80, 4)).height, 1);
+        assert_eq!(image.intersection(Rect::new(0, 0, 80, 3)).height, 0);
+    }
+
+    #[test]
+    fn clipped_image_frame_leaves_room_for_a_visible_image_row() {
+        let one_row = Block::default()
+            .borders(image_frame_borders(1, 4))
+            .inner(Rect::new(0, 0, 12, 1));
+        let partial = Block::default()
+            .borders(image_frame_borders(2, 4))
+            .inner(Rect::new(0, 0, 12, 2));
+        let complete = Block::default()
+            .borders(image_frame_borders(4, 4))
+            .inner(Rect::new(0, 0, 12, 4));
+
+        assert_eq!(one_row, Rect::new(1, 0, 10, 1));
+        assert_eq!(partial, Rect::new(1, 1, 10, 1));
+        assert_eq!(complete, Rect::new(1, 1, 10, 2));
+    }
+
+    #[test]
+    fn bottom_item_is_clipped_to_the_remaining_viewport_height() {
+        let viewport = Rect::new(0, 0, 80, 22);
+        let last_item_height = visible_item_height(20, viewport.height, 5);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(20),
+                Constraint::Length(last_item_height),
+            ])
+            .split(viewport);
+        let visible_item = chunks[1].intersection(viewport);
+        let visible_image = Rect::new(chunks[1].x + 2, chunks[1].y + 1, 12, 4)
+            .intersection(viewport);
+        let image_area = Block::default()
+            .borders(image_frame_borders(visible_image.height, 4))
+            .inner(visible_image);
+
+        assert_eq!(last_item_height, 2);
+        assert_eq!(chunks[0].height, 20);
+        assert_eq!(chunks[1].height, 2);
+        assert_eq!(visible_item.height, 2);
+        assert_eq!(visible_image.height, 1);
+        assert_eq!(image_area.height, 1);
+    }
+
+    #[test]
     fn cell_visible_width_plain_text() {
         assert_eq!(cell_visible_width("Plain URL"), 9);
     }
@@ -2962,6 +3331,28 @@ mod tests {
         // misaligned their borders.
         // "[a](u1) [b](u2)" -> "a b" = 3 visible chars.
         assert_eq!(cell_visible_width("[a](https://u1.test) [b](https://u2.test)"), 3);
+    }
+
+    #[test]
+    fn cell_visible_width_removes_preview_images_from_prose() {
+        assert_eq!(cell_visible_width("![one](1.png)"), 0);
+        assert_eq!(
+            cell_visible_width("before ![one](1.png) after"),
+            "before  after".width()
+        );
+        // Double-bang images intentionally remain text-only links.
+        assert_eq!(cell_visible_width("!![one](1.png)"), "one".width());
+    }
+
+    #[test]
+    fn image_only_source_line_has_no_blank_prose_row() {
+        let theme = Theme::default();
+        assert!(inline_prose_text("![one](1.png) ![two](2.png)", &theme).is_empty());
+        assert!(inline_prose_text("![one](1.png)![two](2.png)", &theme).is_empty());
+        assert_eq!(
+            inline_prose_text("caption ![one](1.png) ![two](2.png)", &theme),
+            "caption"
+        );
     }
 
     #[test]
