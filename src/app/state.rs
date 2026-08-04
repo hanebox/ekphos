@@ -18,6 +18,10 @@ use crate::editor::{Editor, Position};
 use crate::highlight::Highlighter;
 use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker};
 use crate::config::{Config, Theme, ThemeEntry, ThemeFile};
+use crate::graph::{
+    self, GraphEdge, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode,
+    GraphSourceNote,
+};
 use crate::search::{self, SearchIndex};
 use crate::vim::VimState;
 
@@ -267,6 +271,23 @@ pub struct GraphViewState {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub selected_node: Option<usize>,
+    pub selected_note_index: Option<usize>,
+    pub root_note_index: usize,
+    pub mode: GraphMode,
+    pub depth: usize,
+    pub link_scope: GraphLinkScope,
+    pub filter_query: String,
+    pub filter_draft: String,
+    pub filter_before_edit: String,
+    pub filter_editing: bool,
+    pub show_orphans: bool,
+    pub help_visible: bool,
+    pub total_nodes: usize,
+    pub total_edges: usize,
+    pub index_pending: bool,
+    pub layout_pending: bool,
+    pub global_positions: HashMap<usize, (f32, f32)>,
+    pub global_fingerprint: Option<u64>,
     pub viewport_x: f32,
     pub viewport_y: f32,
     pub zoom: f32,
@@ -276,7 +297,9 @@ pub struct GraphViewState {
     pub dragging_node: Option<usize>,
     pub view_width: f32,
     pub view_height: f32,
+    pub graph_area: Rect,
     pub needs_center: bool,
+    pub last_click: Option<(std::time::Instant, usize)>,
 }
 
 impl Default for GraphViewState {
@@ -285,6 +308,23 @@ impl Default for GraphViewState {
             nodes: Vec::new(),
             edges: Vec::new(),
             selected_node: None,
+            selected_note_index: None,
+            root_note_index: 0,
+            mode: GraphMode::Local,
+            depth: 1,
+            link_scope: GraphLinkScope::All,
+            filter_query: String::new(),
+            filter_draft: String::new(),
+            filter_before_edit: String::new(),
+            filter_editing: false,
+            show_orphans: true,
+            help_visible: false,
+            total_nodes: 0,
+            total_edges: 0,
+            index_pending: false,
+            layout_pending: false,
+            global_positions: HashMap::new(),
+            global_fingerprint: None,
             viewport_x: 0.0,
             viewport_y: 0.0,
             zoom: 1.0,
@@ -294,28 +334,11 @@ impl Default for GraphViewState {
             dragging_node: None,
             view_width: 100.0,
             view_height: 50.0,
+            graph_area: Rect::default(),
             needs_center: false,
+            last_click: None,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct GraphNode {
-    pub note_index: usize,
-    pub title: String,
-    pub x: f32,
-    pub y: f32,
-    pub home_x: f32,  // Original position for snap-back
-    pub home_y: f32,
-    pub vx: f32,
-    pub vy: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct GraphEdge {
-    pub from: usize,
-    pub to: usize,
-    pub bidirectional: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -680,6 +703,8 @@ pub enum CutItem {
     Folder { source_path: PathBuf, name: String },
 }
 
+pub type GraphLayoutWorkerResult = (u64, u64, Vec<(usize, f32, f32)>);
+
 pub struct App {
     pub notes: Vec<Note>,
     pub selected_note: usize,
@@ -765,6 +790,12 @@ pub struct App {
     pub help_scroll: usize,
     // Graph view state
     pub graph_view: GraphViewState,
+    pub graph_index: Option<Arc<GraphIndex>>,
+    pub graph_index_receiver: Receiver<(u64, GraphIndex)>,
+    pub graph_index_generation: u64,
+    pub graph_indexing: bool,
+    pub graph_layout_receiver: Receiver<GraphLayoutWorkerResult>,
+    pub graph_layout_generation: u64,
     // Sidebar sorting
     pub sort_mode: SortMode,
     // Navigation history (like browser back/forward)
@@ -886,6 +917,8 @@ impl App {
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
         let (content_search_sender, content_search_receiver) = mpsc::channel();
         let (_, index_receiver) = mpsc::channel();
+        let (_, graph_index_receiver) = mpsc::channel();
+        let (_, graph_layout_receiver) = mpsc::channel();
 
         let mut app = Self {
             notes: Vec::new(),
@@ -967,6 +1000,12 @@ impl App {
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            graph_index: None,
+            graph_index_receiver,
+            graph_index_generation: 0,
+            graph_indexing: false,
+            graph_layout_receiver,
+            graph_layout_generation: 0,
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
@@ -1076,6 +1115,8 @@ impl App {
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
         let (content_search_sender, content_search_receiver) = mpsc::channel();
         let (_, index_receiver) = mpsc::channel();
+        let (_, graph_index_receiver) = mpsc::channel();
+        let (_, graph_layout_receiver) = mpsc::channel();
 
         let mut app = Self {
             notes: Vec::new(),
@@ -1156,6 +1197,12 @@ impl App {
             buffer_search: BufferSearchState::new(),
             help_scroll: 0,
             graph_view: GraphViewState::default(),
+            graph_index: None,
+            graph_index_receiver,
+            graph_index_generation: 0,
+            graph_indexing: false,
+            graph_layout_receiver,
+            graph_layout_generation: 0,
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
@@ -1465,6 +1512,7 @@ impl App {
 
         self.update_content_items();
         self.update_outline();
+        self.start_graph_index_build();
     }
 
     fn build_tree(&mut self, dir: &PathBuf, depth: usize) -> Vec<FileTreeItem> {
@@ -4198,8 +4246,11 @@ impl App {
 
         self.navigation_index -= 1;
         if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
-            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
-            return true;
+            return self.go_to_note_without_history(
+                entry.note_idx,
+                Some(entry.content_cursor),
+                Some(entry.content_scroll_offset),
+            );
         }
         false
     }
@@ -4216,16 +4267,35 @@ impl App {
 
         self.navigation_index += 1;
         if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
-            self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
-            return true;
+            return self.go_to_note_without_history(
+                entry.note_idx,
+                Some(entry.content_cursor),
+                Some(entry.content_scroll_offset),
+            );
         }
         false
     }
 
-    /// go to a note without pushing to history used by back/forward to prevent infinite loop
-    fn go_to_note_without_history(&mut self, note_idx: usize, cursor: Option<usize>, scroll: Option<usize>) {
+    /// Navigate directly to a note, expanding its sidebar ancestors as needed.
+    /// Graph and search results use note indices, so activation must not depend
+    /// on the note already being visible in the flattened sidebar.
+    pub fn navigate_to_note(&mut self, note_idx: usize) -> bool {
         if note_idx >= self.notes.len() {
-            return;
+            return false;
+        }
+        self.push_navigation_history(note_idx);
+        self.go_to_note_without_history(note_idx, Some(0), Some(0))
+    }
+
+    /// go to a note without pushing to history used by back/forward to prevent infinite loop
+    fn go_to_note_without_history(
+        &mut self,
+        note_idx: usize,
+        cursor: Option<usize>,
+        scroll: Option<usize>,
+    ) -> bool {
+        if note_idx >= self.notes.len() {
+            return false;
         }
 
         if let Some(note) = self.notes.get(note_idx) {
@@ -4234,12 +4304,19 @@ impl App {
                 let mut current = file_path.parent();
                 let mut needs_rebuild = false;
                 while let Some(parent) = current {
-                    if parent == notes_root {
-                        break;
-                    }
-                    if !self.folder_states.get(&parent.to_path_buf()).copied().unwrap_or(false) {
+                    let is_root = parent == notes_root;
+                    let expanded_by_default = is_root;
+                    if !self
+                        .folder_states
+                        .get(&parent.to_path_buf())
+                        .copied()
+                        .unwrap_or(expanded_by_default)
+                    {
                         self.folder_states.insert(parent.to_path_buf(), true);
                         needs_rebuild = true;
+                    }
+                    if is_root {
+                        break;
                     }
                     current = parent.parent();
                 }
@@ -4262,10 +4339,11 @@ impl App {
                     let max_cursor = self.content_items.len().saturating_sub(1);
                     self.content_cursor = cursor.unwrap_or(0).min(max_cursor);
                     self.content_scroll_offset = scroll.unwrap_or(0).min(max_cursor);
-                    return;
+                    return true;
                 }
             }
         }
+        false
     }
 
     #[allow(dead_code)]
@@ -4278,96 +4356,256 @@ impl App {
         self.navigation_index + 1 < self.navigation_history.len()
     }
 
-    pub fn build_graph(&mut self) {
-        use unicode_width::{UnicodeWidthStr, UnicodeWidthChar};
+    /// Build the vault-wide graph index off the UI thread. Results are tagged
+    /// with a generation so a rapid reload can never install stale note IDs.
+    pub fn start_graph_index_build(&mut self) {
+        self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
+        let generation = self.graph_index_generation;
+        let sources: Vec<GraphSourceNote> = self.notes
+            .iter()
+            .enumerate()
+            .map(|(note_index, note)| GraphSourceNote {
+                note_index,
+                title: note.title.clone(),
+                path: self.get_wiki_path_for_note(note_index)
+                    .unwrap_or_else(|| note.title.clone()),
+                tags: note.frontmatter.as_ref()
+                    .map(|frontmatter| frontmatter.tags.clone())
+                    .unwrap_or_default(),
+                content: note.content.clone(),
+            })
+            .collect();
+        let (sender, receiver) = mpsc::channel();
+        self.graph_index_receiver = receiver;
+        // Note indices can be reassigned by a reload. Keep the last rendered
+        // projection on screen, but do not use an old index for new actions.
+        self.graph_index = None;
+        self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
+        self.graph_view.layout_pending = false;
+        self.graph_indexing = true;
+        self.graph_view.index_pending = true;
+        std::thread::spawn(move || {
+            let index = std::panic::catch_unwind(|| GraphIndex::build(sources)).unwrap_or_default();
+            let _ = sender.send((generation, index));
+        });
+    }
 
-        let mut nodes: Vec<GraphNode> = Vec::new();
-        let mut edges: Vec<GraphEdge> = Vec::new();
-        let mut note_to_node: HashMap<usize, usize> = HashMap::new();
-        for (note_idx, note) in self.notes.iter().enumerate() {
-            let node_idx = nodes.len();
-            note_to_node.insert(note_idx, node_idx);
+    pub fn graph_has_background_work(&self) -> bool {
+        self.graph_indexing || self.graph_view.layout_pending
+    }
 
-            let title = {
-                let display_width = note.title.width();
-                if display_width > 20 {
-                    let mut truncated = String::new();
-                    let mut current_width = 0;
-                    for ch in note.title.chars() {
-                        let ch_width = ch.width().unwrap_or(1);
-                        if current_width + ch_width > 17 {
-                            break;
-                        }
-                        truncated.push(ch);
-                        current_width += ch_width;
-                    }
-                    truncated + "..."
-                } else {
-                    note.title.clone()
-                }
-            };
-
-            nodes.push(GraphNode {
-                note_index: note_idx,
-                title,
-                x: 0.0,
-                y: 0.0,
-                home_x: 0.0,
-                home_y: 0.0,
-                vx: 0.0,
-                vy: 0.0,
-            });
+    /// Poll graph workers. Returns true when graph UI state changed.
+    pub fn poll_graph_workers(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok((generation, index)) = self.graph_index_receiver.try_recv() {
+            if generation != self.graph_index_generation {
+                continue;
+            }
+            let fingerprint_changed = self.graph_index
+                .as_ref()
+                .map(|current| current.fingerprint != index.fingerprint)
+                .or_else(|| self.graph_view.global_fingerprint.map(|fingerprint| fingerprint != index.fingerprint))
+                .unwrap_or(true);
+            self.graph_index = Some(Arc::new(index));
+            self.graph_indexing = false;
+            self.graph_view.index_pending = false;
+            if fingerprint_changed {
+                self.graph_view.global_positions.clear();
+                self.graph_view.global_fingerprint = None;
+            }
+            if self.dialog == DialogState::GraphView {
+                self.rebuild_graph_projection(true);
+                self.start_global_graph_layout();
+            }
+            changed = true;
         }
 
-        for (note_idx, note) in self.notes.iter().enumerate() {
-            let wiki_targets = self.extract_wiki_targets_from_content(&note.content);
+        while let Ok((generation, fingerprint, positions)) = self.graph_layout_receiver.try_recv() {
+            if generation != self.graph_layout_generation {
+                continue;
+            }
+            if self.graph_index.as_ref().map(|index| index.fingerprint) != Some(fingerprint) {
+                continue;
+            }
+            self.graph_view.global_positions = positions
+                .into_iter()
+                .map(|(note_index, x, y)| (note_index, (x, y)))
+                .collect();
+            self.graph_view.global_fingerprint = Some(fingerprint);
+            self.graph_view.layout_pending = false;
+            if self.dialog == DialogState::GraphView && self.graph_view.mode == GraphMode::Global {
+                self.rebuild_graph_projection(true);
+            }
+            changed = true;
+        }
+        changed
+    }
 
-            for target in wiki_targets {
-                if let Some(target_note_idx) = self.resolve_wiki_link(&target) {
-                    if let (Some(&from_node), Some(&to_node)) =
-                        (note_to_node.get(&note_idx), note_to_node.get(&target_note_idx))
-                    {
-                        let existing = edges.iter_mut().find(|e| e.from == to_node && e.to == from_node);
+    fn start_global_graph_layout(&mut self) {
+        let Some(index) = self.graph_index.clone() else { return; };
+        if self.graph_view.global_fingerprint == Some(index.fingerprint)
+            || self.graph_view.layout_pending
+        {
+            return;
+        }
+        let mut projection = index.project(
+            GraphMode::Global,
+            self.graph_view.root_note_index,
+            1,
+            GraphLinkScope::All,
+            &GraphFilter::default(),
+            true,
+        );
+        graph::apply_global_seed_layout(&mut projection.nodes);
+        self.graph_view.global_positions = projection.nodes.iter()
+            .map(|node| (node.note_index, (node.x, node.y)))
+            .collect();
+        self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
+        let generation = self.graph_layout_generation;
+        let fingerprint = index.fingerprint;
+        let cache_path = search::get_index_path(&self.config.notes_path())
+            .with_file_name("graph_layout.bin");
+        let (sender, receiver) = mpsc::channel();
+        self.graph_layout_receiver = receiver;
+        self.graph_view.layout_pending = true;
+        std::thread::spawn(move || {
+            if let Some(positions) = graph::load_layout_cache(&cache_path, fingerprint, &projection.nodes) {
+                let _ = sender.send((generation, fingerprint, positions));
+                return;
+            }
+            graph::apply_global_layout(&mut projection.nodes, &projection.edges);
+            graph::save_layout_cache(&cache_path, fingerprint, &projection.nodes);
+            let positions = projection.nodes
+                .into_iter()
+                .map(|node| (node.note_index, node.x, node.y))
+                .collect();
+            let _ = sender.send((generation, fingerprint, positions));
+        });
+    }
 
-                        if let Some(edge) = existing {
-                            edge.bidirectional = true;
-                        } else {
-                            let already_exists = edges.iter().any(|e| e.from == from_node && e.to == to_node);
-                            if !already_exists {
-                                edges.push(GraphEdge {
-                                    from: from_node,
-                                    to: to_node,
-                                    bidirectional: false,
-                                });
-                            }
+    /// Open a fresh Local graph. Session preferences remain, but the active
+    /// note always becomes the root as promised by Ctrl+G.
+    pub fn build_graph(&mut self) {
+        self.graph_view.mode = GraphMode::Local;
+        self.graph_view.root_note_index = self.selected_note;
+        self.graph_view.selected_note_index = Some(self.selected_note);
+        self.graph_view.index_pending = self.graph_index.is_none();
+        if self.graph_index.is_none() && !self.graph_indexing {
+            self.start_graph_index_build();
+        }
+        self.rebuild_graph_projection(true);
+        self.start_global_graph_layout();
+    }
+
+    pub fn rebuild_graph_projection(&mut self, refit: bool) {
+        let Some(index) = self.graph_index.clone() else {
+            self.graph_view.nodes.clear();
+            self.graph_view.edges.clear();
+            self.graph_view.total_nodes = 0;
+            self.graph_view.total_edges = 0;
+            return;
+        };
+        let filter = GraphFilter::parse(&self.graph_view.filter_query);
+        let mut projection = index.project(
+            self.graph_view.mode,
+            self.graph_view.root_note_index,
+            self.graph_view.depth,
+            self.graph_view.link_scope,
+            &filter,
+            self.graph_view.show_orphans,
+        );
+        match self.graph_view.mode {
+            GraphMode::Local => graph::apply_local_layout(&mut projection.nodes),
+            GraphMode::Global => {
+                if !self.graph_view.global_positions.is_empty() {
+                    for node in &mut projection.nodes {
+                        if let Some(&(x, y)) = self.graph_view.global_positions.get(&node.note_index) {
+                            node.x = x;
+                            node.y = y;
+                            node.home_x = x;
+                            node.home_y = y;
                         }
                     }
+                }
+                if self.graph_view.global_positions.is_empty() {
+                    graph::apply_global_seed_layout(&mut projection.nodes);
                 }
             }
         }
+        let preferred = self.graph_view.selected_note_index
+            .or(Some(self.graph_view.root_note_index));
+        let selected = preferred.and_then(|note_index| {
+            projection.nodes.iter().position(|node| node.note_index == note_index)
+        }).or(projection.root_node).or_else(|| (!projection.nodes.is_empty()).then_some(0));
+        self.graph_view.selected_node = selected;
+        self.graph_view.selected_note_index = selected.map(|idx| projection.nodes[idx].note_index);
+        self.graph_view.total_nodes = projection.total_nodes;
+        self.graph_view.total_edges = projection.total_edges;
+        self.graph_view.nodes = projection.nodes;
+        self.graph_view.edges = projection.edges;
+        self.graph_view.dirty = refit;
+        self.graph_view.needs_center = false;
+    }
 
-        self.graph_view.nodes = nodes;
-        self.graph_view.edges = edges;
-        self.graph_view.dirty = true;
-
-        if let Some(&node_idx) = note_to_node.get(&self.selected_note) {
-            self.graph_view.selected_node = Some(node_idx);
-            self.graph_view.needs_center = true;
-        } else {
-            self.graph_view.selected_node = if !self.graph_view.nodes.is_empty() { Some(0) } else { None };
+    pub fn toggle_graph_mode(&mut self) {
+        self.graph_view.mode = match self.graph_view.mode {
+            GraphMode::Local => GraphMode::Global,
+            GraphMode::Global => {
+                if let Some(note_index) = self.graph_view.selected_note_index {
+                    self.graph_view.root_note_index = note_index;
+                }
+                GraphMode::Local
+            }
+        };
+        self.rebuild_graph_projection(true);
+        if self.graph_view.mode == GraphMode::Global {
+            self.start_global_graph_layout();
         }
     }
 
-    fn extract_wiki_targets_from_content(&self, content: &str) -> Vec<String> {
-        let mut targets = Vec::new();
-        for line in content.lines() {
-            for wiki_link in self.extract_wiki_links_from_text(line) {
-                if !targets.contains(&wiki_link.target) {
-                    targets.push(wiki_link.target);
-                }
+    pub fn change_graph_depth(&mut self, delta: isize) {
+        let depth = (self.graph_view.depth as isize + delta).clamp(1, 5) as usize;
+        if depth != self.graph_view.depth {
+            self.graph_view.depth = depth;
+            if self.graph_view.mode == GraphMode::Local {
+                self.rebuild_graph_projection(true);
             }
         }
-        targets
+    }
+
+    pub fn cycle_graph_link_scope(&mut self) {
+        self.graph_view.link_scope = self.graph_view.link_scope.next();
+        if self.graph_view.mode == GraphMode::Local {
+            self.rebuild_graph_projection(true);
+        }
+    }
+
+    pub fn update_graph_filter(&mut self, query: String, refit: bool) {
+        self.graph_view.filter_query = query;
+        self.rebuild_graph_projection(refit);
+    }
+
+    pub fn toggle_graph_orphans(&mut self) {
+        self.graph_view.show_orphans = !self.graph_view.show_orphans;
+        if self.graph_view.mode == GraphMode::Global {
+            self.rebuild_graph_projection(false);
+        }
+    }
+
+    pub fn reset_graph_view(&mut self) {
+        self.graph_view.depth = 1;
+        self.graph_view.link_scope = GraphLinkScope::All;
+        self.graph_view.show_orphans = true;
+        self.graph_view.filter_query.clear();
+        self.graph_view.filter_draft.clear();
+        self.rebuild_graph_projection(true);
+    }
+
+    pub fn reroot_graph_on_selected(&mut self) {
+        let Some(note_index) = self.graph_view.selected_note_index else { return; };
+        self.graph_view.root_note_index = note_index;
+        self.graph_view.mode = GraphMode::Local;
+        self.rebuild_graph_projection(true);
     }
 
     pub fn build_wiki_suggestions(&self, query: &str) -> Vec<WikiSuggestion> {
@@ -5319,6 +5557,7 @@ impl App {
         self.mode = Mode::Normal;
         self.update_content_items();
         self.update_outline();
+        self.start_graph_index_build();
 
         // Map editor row to content_cursor using source line mapping
         self.content_cursor = self.content_cursor_for_source_line(cursor_row);

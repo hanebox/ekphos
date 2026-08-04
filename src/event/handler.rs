@@ -99,6 +99,10 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
         app.poll_content_search();
         app.poll_index_build();
 
+        if app.poll_graph_workers() {
+            needs_render = true;
+        }
+
         if app.poll_highlight_worker() {
             needs_render = true;
         }
@@ -130,6 +134,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
             || app.mouse_button_held
             || app.is_content_search_in_progress()
             || app.indexing_in_progress
+            || app.graph_has_background_work()
             || app.has_highlight_work()
             // Keep ticking while a toast is visible so it can self-expire.
             || app.toast.is_some();
@@ -1455,9 +1460,13 @@ fn handle_help_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
 /// Zoom the graph view, anchoring on the selected node or graph center
 fn zoom_graph(app: &mut App, factor: f32) {
     let old_zoom = app.graph_view.zoom;
-
-    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
-    let new_zoom = (old_zoom * factor).clamp(min_zoom, 3.0);
+    let min_zoom = graph_fit_zoom(app);
+    let new_zoom = (old_zoom * factor).clamp(min_zoom, crate::graph::GRAPH_MAX_ZOOM);
+    if new_zoom <= min_zoom * 1.0001 {
+        app.graph_view.zoom = min_zoom;
+        center_graph_bounds(app);
+        return;
+    }
     let (anchor_x, anchor_y) = if let Some(idx) = app.graph_view.selected_node {
         if idx < app.graph_view.nodes.len() {
             let node = &app.graph_view.nodes[idx];
@@ -1478,10 +1487,9 @@ fn zoom_graph(app: &mut App, factor: f32) {
     app.graph_view.viewport_y = anchor_y - screen_anchor_y / new_zoom;
 }
 
-/// Calculate minimum zoom level to keep graph filling a percentage of viewport
-fn calculate_min_zoom_for_viewport_fill(app: &App, fill_ratio: f32) -> f32 {
+fn graph_bounds(app: &App) -> Option<(f32, f32, f32, f32)> {
     if app.graph_view.nodes.is_empty() {
-        return 0.1;
+        return None;
     }
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
@@ -1492,22 +1500,41 @@ fn calculate_min_zoom_for_viewport_fill(app: &App, fill_ratio: f32) -> f32 {
         min_x = min_x.min(node.x);
         min_y = min_y.min(node.y);
         max_x = max_x.max(node.x + 3.0);
-        max_y = max_y.max(node.y + 4.0);
+        max_y = max_y.max(node.y + 3.0);
     }
+    Some((min_x, min_y, max_x, max_y))
+}
 
-    let graph_width = (max_x - min_x).max(10.0);
-    let graph_height = (max_y - min_y).max(5.0);
+fn graph_fit_zoom(app: &App) -> f32 {
+    let Some((min_x, min_y, max_x, max_y)) = graph_bounds(app) else {
+        return crate::graph::fit_zoom_for_bounds(
+            1.0,
+            1.0,
+            app.graph_view.view_width,
+            app.graph_view.view_height,
+        );
+    };
+    let graph_width = (max_x - min_x).max(3.0);
+    let graph_height = (max_y - min_y).max(2.0);
+    crate::graph::fit_zoom_for_bounds(
+        graph_width,
+        graph_height,
+        app.graph_view.view_width,
+        app.graph_view.view_height,
+    )
+}
 
-    let view_width = app.graph_view.view_width;
-    let view_height = app.graph_view.view_height;
-
-    if view_width <= 0.0 || view_height <= 0.0 {
-        return 0.1;
-    }
-
-    let zoom_x = (view_width * fill_ratio) / graph_width;
-    let zoom_y = (view_height * fill_ratio) / graph_height;
-    zoom_x.min(zoom_y).max(0.05)
+fn center_graph_bounds(app: &mut App) {
+    let Some((min_x, min_y, max_x, max_y)) = graph_bounds(app) else {
+        return;
+    };
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    app.graph_view.viewport_x =
+        center_x - app.graph_view.view_width / app.graph_view.zoom / 2.0;
+    app.graph_view.viewport_y =
+        center_y - app.graph_view.view_height / app.graph_view.zoom / 2.0;
+    app.graph_view.needs_center = false;
 }
 
 /// Calculate center of all nodes
@@ -1525,105 +1552,50 @@ fn graph_center(app: &App) -> (f32, f32) {
     (sum_x / n, sum_y / n)
 }
 
-/// Fit all nodes in the viewport (targets 80% fill for comfortable view)
+/// Fit every node inside the viewport. This is also the zoom-out boundary.
 fn fit_graph_to_screen(app: &mut App) {
-    if app.graph_view.nodes.is_empty() {
-        return;
-    }
-
-    // Calculate graph bounds
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-
-    for node in &app.graph_view.nodes {
-        min_x = min_x.min(node.x);
-        min_y = min_y.min(node.y);
-        max_x = max_x.max(node.x + 3.0);
-        max_y = max_y.max(node.y + 4.0);
-    }
-
-    let graph_width = (max_x - min_x).max(10.0);
-    let graph_height = (max_y - min_y).max(5.0);
-
-    let view_width = app.graph_view.view_width;
-    let view_height = app.graph_view.view_height;
-
-    if view_width <= 0.0 || view_height <= 0.0 {
-        return;
-    }
-
-    // Target 80% of viewport for comfortable fit
-    let target_fill = 0.8;
-    let zoom_x = (view_width * target_fill) / graph_width;
-    let zoom_y = (view_height * target_fill) / graph_height;
-
-    // Clamp to reasonable range, minimum is 40% fill
-    let min_zoom = calculate_min_zoom_for_viewport_fill(app, 0.4);
-    let fit_zoom = zoom_x.min(zoom_y).min(2.0).max(min_zoom);
-
-    app.graph_view.zoom = fit_zoom;
-
-    // Center viewport on graph center
-    let center_x = (min_x + max_x) / 2.0;
-    let center_y = (min_y + max_y) / 2.0;
-
-    app.graph_view.viewport_x = center_x - (view_width / fit_zoom / 2.0);
-    app.graph_view.viewport_y = center_y - (view_height / fit_zoom / 2.0);
-}
-
-/// Repel other nodes away from the dragged node, with snap-back to home positions
-fn repel_nodes_from(app: &mut App, node_idx: usize) {
-    if node_idx >= app.graph_view.nodes.len() {
-        return;
-    }
-
-    app.graph_view.nodes[node_idx].home_x = app.graph_view.nodes[node_idx].x;
-    app.graph_view.nodes[node_idx].home_y = app.graph_view.nodes[node_idx].y;
-
-    let dragged_x = app.graph_view.nodes[node_idx].x;
-    let dragged_y = app.graph_view.nodes[node_idx].y;
-
-    let repel_radius: f32 = 30.0;
-    let repel_strength: f32 = 10.0;
-    let snap_back_strength: f32 = 0.12;
-    for i in 0..app.graph_view.nodes.len() {
-        if i == node_idx {
-            continue;
-        }
-
-        let other = &app.graph_view.nodes[i];
-        let other_x = other.x;
-        let other_y = other.y;
-        let home_x = other.home_x;
-        let home_y = other.home_y;
-
-        let dist_x = other_x - dragged_x;
-        let dist_y = other_y - dragged_y;
-        let dist = (dist_x * dist_x + dist_y * dist_y).sqrt();
-
-        if dist < repel_radius && dist > 0.1 {
-            let force = ((repel_radius - dist) / repel_radius) * repel_strength;
-            let push_x = (dist_x / dist) * force;
-            let push_y = (dist_y / dist) * force;
-            app.graph_view.nodes[i].x += push_x;
-            app.graph_view.nodes[i].y += push_y;
-        } else {
-            let to_home_x = home_x - other_x;
-            let to_home_y = home_y - other_y;
-            let home_dist = (to_home_x * to_home_x + to_home_y * to_home_y).sqrt();
-            if home_dist > 0.5 {
-                let snap_x = to_home_x * snap_back_strength;
-                let snap_y = to_home_y * snap_back_strength;
-                app.graph_view.nodes[i].x += snap_x;
-                app.graph_view.nodes[i].y += snap_y;
-            }
-        }
-    }
+    app.graph_view.zoom = graph_fit_zoom(app);
+    center_graph_bounds(app);
 }
 
 fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.graph_view.filter_editing {
+        match key.code {
+            KeyCode::Esc => {
+                let previous = app.graph_view.filter_before_edit.clone();
+                app.graph_view.filter_draft = previous.clone();
+                app.graph_view.filter_editing = false;
+                app.update_graph_filter(previous, false);
+            }
+            KeyCode::Enter => {
+                let query = app.graph_view.filter_draft.clone();
+                app.graph_view.filter_editing = false;
+                app.update_graph_filter(query, false);
+                if app.graph_view.selected_node.is_some() {
+                    center_on_selected_node(app);
+                }
+            }
+            KeyCode::Backspace => {
+                app.graph_view.filter_draft.pop();
+                let query = app.graph_view.filter_draft.clone();
+                app.update_graph_filter(query, false);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.graph_view.filter_draft.clear();
+                app.update_graph_filter(String::new(), false);
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.graph_view.filter_draft.push(ch);
+                let query = app.graph_view.filter_draft.clone();
+                app.update_graph_filter(query, false);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
         if let Some(node_idx) = app.graph_view.selected_node {
             if node_idx < app.graph_view.nodes.len() {
@@ -1631,22 +1603,18 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
                 match key.code {
                     KeyCode::Char('h') => {
                         app.graph_view.nodes[node_idx].x -= move_amount;
-                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('j') => {
                         app.graph_view.nodes[node_idx].y += move_amount;
-                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('k') => {
                         app.graph_view.nodes[node_idx].y -= move_amount;
-                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     KeyCode::Char('l') => {
                         app.graph_view.nodes[node_idx].x += move_amount;
-                        repel_nodes_from(app, node_idx);
                         return;
                     }
                     _ => {}
@@ -1672,27 +1640,7 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
             navigate_graph_node(app, GraphDirection::Right);
         }
         KeyCode::Enter => {
-            if let Some(node_idx) = app.graph_view.selected_node {
-                if let Some(node) = app.graph_view.nodes.get(node_idx) {
-                    let note_idx = node.note_index;
-                    for (idx, item) in app.sidebar_items.iter().enumerate() {
-                        if let SidebarItemKind::Note { note_index } = &item.kind {
-                            if *note_index == note_idx {
-                                app.selected_sidebar_index = idx;
-                                app.selected_note = note_idx;
-                                app.push_navigation_history(note_idx);
-                                app.content_cursor = 0;
-                                app.content_scroll_offset = 0;
-                                app.update_content_items();
-                                app.update_outline();
-                                app.dialog = DialogState::None;
-                                app.focus = Focus::Content;
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+            open_selected_graph_node(app);
         }
         KeyCode::Char('H') => {
             app.graph_view.viewport_x -= 10.0;
@@ -1716,27 +1664,93 @@ fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
             fit_graph_to_screen(app);
         }
         KeyCode::Char('0') => {
-            app.graph_view.zoom = 1.0;
-            center_on_selected_node(app);
+            let fit_zoom = graph_fit_zoom(app);
+            app.graph_view.zoom = 1.0f32.clamp(fit_zoom, crate::graph::GRAPH_MAX_ZOOM);
+            if app.graph_view.zoom <= fit_zoom * 1.0001 {
+                center_graph_bounds(app);
+            } else {
+                center_on_selected_node(app);
+            }
         }
         KeyCode::Char('g') => {
             if !app.graph_view.nodes.is_empty() {
-                app.graph_view.selected_node = Some(0);
-                center_on_selected_node(app);
+                select_graph_node(app, 0, true);
             }
         }
         KeyCode::Char('G') => {
             if !app.graph_view.nodes.is_empty() {
-                app.graph_view.selected_node = Some(app.graph_view.nodes.len() - 1);
-                center_on_selected_node(app);
+                select_graph_node(app, app.graph_view.nodes.len() - 1, true);
             }
         }
         KeyCode::Char('u') => {
             // Unselect current node
             app.graph_view.selected_node = None;
+            app.graph_view.selected_note_index = None;
+        }
+        KeyCode::Char('v') => app.toggle_graph_mode(),
+        KeyCode::Char('[') => app.change_graph_depth(-1),
+        KeyCode::Char(']') => app.change_graph_depth(1),
+        KeyCode::Char('d') => app.cycle_graph_link_scope(),
+        KeyCode::Char('/') => {
+            app.graph_view.filter_before_edit = app.graph_view.filter_query.clone();
+            app.graph_view.filter_draft = app.graph_view.filter_query.clone();
+            app.graph_view.filter_editing = true;
+        }
+        KeyCode::Char('o') => app.toggle_graph_orphans(),
+        KeyCode::Char('r') => app.reset_graph_view(),
+        KeyCode::Char('?') => app.graph_view.help_visible = !app.graph_view.help_visible,
+        KeyCode::Char(' ') => app.reroot_graph_on_selected(),
+        KeyCode::Char('n') => cycle_graph_match(app, 1),
+        KeyCode::Char('N') => cycle_graph_match(app, -1),
+        KeyCode::Tab => {
+            app.toggle_graph_mode();
         }
         _ => {}
     }
+}
+
+fn open_selected_graph_node(app: &mut App) {
+    let Some(node_idx) = app.graph_view.selected_node else { return; };
+    let Some(node) = app.graph_view.nodes.get(node_idx) else { return; };
+    let note_idx = node.note_index;
+    if app.navigate_to_note(note_idx) {
+        app.dialog = DialogState::None;
+        app.focus = Focus::Content;
+    }
+}
+
+fn select_graph_node(app: &mut App, idx: usize, center: bool) {
+    if let Some(node) = app.graph_view.nodes.get(idx) {
+        app.graph_view.selected_node = Some(idx);
+        app.graph_view.selected_note_index = Some(node.note_index);
+        if center {
+            center_on_selected_node(app);
+        }
+    }
+}
+
+fn cycle_graph_match(app: &mut App, delta: isize) {
+    let skip_context_root = app.graph_view.mode == crate::graph::GraphMode::Local
+        && !app.graph_view.filter_query.trim().is_empty();
+    let candidates: Vec<_> = app
+        .graph_view
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, node)| (!skip_context_root || node.depth != 0).then_some(idx))
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let next = app
+        .graph_view
+        .selected_node
+        .and_then(|selected| candidates.iter().position(|&idx| idx == selected))
+        .map(|position| {
+            (position as isize + delta).rem_euclid(candidates.len() as isize) as usize
+        })
+        .unwrap_or_else(|| usize::from(delta < 0) * (candidates.len() - 1));
+    select_graph_node(app, candidates[next], true);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1790,8 +1804,7 @@ fn navigate_graph_node(app: &mut App, direction: GraphDirection) {
     }
 
     if let Some(idx) = best_idx {
-        app.graph_view.selected_node = Some(idx);
-        center_on_selected_node(app);
+        select_graph_node(app, idx, true);
     }
 }
 
@@ -1806,7 +1819,23 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(idx) = find_node_at_position(app, mouse_x, mouse_y) {
-                app.graph_view.selected_node = Some(idx);
+                let double_click = app.graph_view.last_click
+                    .map(|(when, previous)| previous == idx && when.elapsed() < std::time::Duration::from_millis(400))
+                    .unwrap_or(false);
+                select_graph_node(app, idx, false);
+                app.graph_view.last_click = Some((std::time::Instant::now(), idx));
+                if double_click {
+                    open_selected_graph_node(app);
+                    return;
+                }
+                if app.graph_view.zoom < 0.055 {
+                    let overview_zoom = (0.12 / app.graph_view.zoom).clamp(2.0, 64.0);
+                    zoom_graph(app, overview_zoom);
+                    center_on_selected_node(app);
+                    app.graph_view.dragging_node = None;
+                    app.graph_view.is_panning = false;
+                    return;
+                }
                 app.graph_view.dragging_node = Some(idx);
                 app.graph_view.drag_start = Some((mouse_x, mouse_y));
                 app.graph_view.is_panning = false;
@@ -1832,7 +1861,8 @@ fn handle_graph_view_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     if node_idx < app.graph_view.nodes.len() {
                         app.graph_view.nodes[node_idx].x += dx / app.graph_view.zoom;
                         app.graph_view.nodes[node_idx].y += dy / app.graph_view.zoom;
-                        repel_nodes_from(app, node_idx);
+                        app.graph_view.nodes[node_idx].home_x = app.graph_view.nodes[node_idx].x;
+                        app.graph_view.nodes[node_idx].home_y = app.graph_view.nodes[node_idx].y;
                     }
                 } else if app.graph_view.is_panning {
                     // Panning the viewport
@@ -1861,22 +1891,32 @@ fn find_node_at_position(app: &App, mouse_x: u16, mouse_y: u16) -> Option<usize>
     let vy = app.graph_view.viewport_y;
     let zoom = app.graph_view.zoom;
 
-    let inner_x = 1u16;
-    let inner_y = 1u16;
+    let area = app.graph_view.graph_area;
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
 
+    let mut best: Option<(usize, usize)> = None;
     for (idx, node) in app.graph_view.nodes.iter().enumerate() {
-        let screen_x = ((node.x - vx) * zoom + inner_x as f32) as i32;
-        let screen_y = ((node.y - vy) * zoom + inner_y as f32) as i32;
+        let screen_x = ((node.x - vx) * zoom + area.x as f32).round() as i32;
+        let screen_y = ((node.y - vy) * zoom + area.y as f32).round() as i32;
 
+        let radius_x = if zoom < 0.20 { 1 } else { NODE_WIDTH };
+        let radius_y = if zoom < 0.20 { 1 } else { NODE_HEIGHT };
         if mouse_x as i32 >= screen_x - 1
-            && mouse_x as i32 <= screen_x + NODE_WIDTH
+            && mouse_x as i32 <= screen_x + radius_x
             && mouse_y as i32 >= screen_y - 1
-            && mouse_y as i32 <= screen_y + NODE_HEIGHT
+            && mouse_y as i32 <= screen_y + radius_y
         {
-            return Some(idx);
+            let priority = usize::from(app.graph_view.selected_node == Some(idx))
+                .saturating_mul(usize::MAX / 2)
+                .saturating_add(node.degree());
+            if best.map(|(_, current)| priority > current).unwrap_or(true) {
+                best = Some((idx, priority));
+            }
         }
     }
-    None
+    best.map(|(idx, _)| idx)
 }
 
 fn handle_empty_directory_dialog(app: &mut App, key: crossterm::event::KeyEvent) {

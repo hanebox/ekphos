@@ -35,7 +35,7 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 - `t`: Open today's journal
 - `/`: Search notes
 - `?`: Show help dialog
-- `Ctrl+g`: Open graph view
+- `Ctrl+g`: Open the active note's Local graph
 - `Ctrl+z`: Toggle zen mode
 - `Ctrl+m`: Toggle frontmatter
 
@@ -80,11 +80,13 @@ Each maintains its own open/closed state.
 
 ## Graph View
 
-Press `Ctrl+g` to open the interactive graph view and visualize connections between your notes.
+Press `Ctrl+g` to open a fast Local graph centered on the active note.
 
-- See how your notes link together
-- Click on nodes to navigate
-- Drag to pan, scroll to zoom
+- `[` / `]` changes connection depth, and `d` filters incoming/outgoing links
+- Press `Enter` to open the focused node
+- Press `Space` to explore the selected note without leaving the graph
+- Press `v` for the complete vault graph and `/` to filter by title, path, or `#tag`
+- Click nodes to select, double-click to open, drag to pan, and scroll to zoom
 
 ## Markdown Features
 
@@ -221,6 +223,6 @@ Here are some ways to use wikilinks:
 
 ## Graph View
 
-Press `Ctrl+g` to see how this note connects to [[Getting Started]] in the graph visualization!
+Press `Ctrl+g` to see this note's Local graph. Use `Space` to focus another node, `]` to reveal another connection depth, or `v` to see the complete vault.
 
 Happy linking!"#;
