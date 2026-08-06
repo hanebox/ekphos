@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub struct Config {
     #[serde(default = "default_notes_dir")]
     pub notes_dir: String,
+    #[serde(default = "default_journal_dir")]
+    pub journal_dir: String,
     #[serde(default = "default_welcome_shown")]
     pub welcome_shown: bool,
     #[serde(default = "default_theme_name")]
@@ -103,6 +105,9 @@ impl Default for EditorConfig {
 fn default_notes_dir() -> String {
     "~/Documents/ekphos".to_string()
 }
+fn default_journal_dir() -> String {
+    "Journal".to_string()
+}
 fn default_welcome_shown() -> bool {
     true
 }
@@ -156,6 +161,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             notes_dir: default_notes_dir(),
+            journal_dir: default_journal_dir(),
             welcome_shown: default_welcome_shown(),
             theme: default_theme_name(),
             show_empty_dir: default_show_empty_dir(),
@@ -1023,6 +1029,22 @@ fn parse_hex_color(hex: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_directory_defaults_when_missing_from_toml() {
+        let config: Config = toml::from_str("notes_dir = '/tmp/notes'").unwrap();
+
+        assert_eq!(config.journal_dir, "Journal");
+    }
+
+    #[test]
+    fn journal_directory_deserializes_and_serializes_custom_value() {
+        let config: Config = toml::from_str("journal_dir = 'Personal/Daily Notes'").unwrap();
+
+        assert_eq!(config.journal_dir, "Personal/Daily Notes");
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("journal_dir = \"Personal/Daily Notes\""));
+    }
 
     #[test]
     fn panel_widths_default_when_missing_from_toml() {

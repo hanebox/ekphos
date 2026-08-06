@@ -1240,32 +1240,17 @@ impl App {
         app
     }
 
-    /// Select a note by its file path
-    pub fn select_note_by_path(&mut self, target_path: &PathBuf) {
-        // Find the matching note first to avoid borrow conflicts
-        let found = self.sidebar_items.iter().enumerate().find_map(|(idx, item)| {
-            if let SidebarItemKind::Note { note_index } = &item.kind {
-                if let Some(note) = self.notes.get(*note_index) {
-                    if let Some(ref path) = note.file_path {
-                        if path == target_path {
-                            return Some((idx, *note_index));
-                        }
-                    }
-                }
-            }
-            None
-        });
+    /// Select a note by its file path, expanding collapsed ancestors as needed.
+    pub fn select_note_by_path(&mut self, target_path: &PathBuf) -> bool {
+        let Some(note_idx) = self
+            .notes
+            .iter()
+            .position(|note| note.file_path.as_ref() == Some(target_path))
+        else {
+            return false;
+        };
 
-        if let Some((sidebar_idx, note_idx)) = found {
-            // Clear search when switching notes
-            if self.selected_note != note_idx {
-                self.end_buffer_search();
-            }
-            self.selected_sidebar_index = sidebar_idx;
-            self.selected_note = note_idx;
-            self.update_content_items();
-            self.update_outline();
-        }
+        self.go_to_note_without_history(note_idx, Some(0), Some(0))
     }
 
     pub fn reload_on_focus(&mut self) {
@@ -1432,35 +1417,45 @@ impl App {
         self.theme_picker = ThemePicker::default();
     }
 
-    /// Journal mode (`t`): open today's daily note, creating it from a small
-    /// dated template if it doesn't exist yet. The file is `journal.<date>.md`
-    /// in the notes directory, using the user's *local* date. Either way the
-    /// note ends up selected and focused.
+    /// Journal mode (`t`): open today's daily note, creating it in the
+    /// configured journal directory and local-year subdirectory when needed.
+    /// A same-day root-level journal from an older version is opened in place.
     pub fn open_or_create_journal(&mut self) {
         if self.mode != Mode::Normal {
             return;
         }
         let notes_dir = self.config.notes_path();
-        if !notes_dir.exists() {
-            let _ = fs::create_dir_all(&notes_dir);
-        }
-        let filename = crate::journal::today_filename();
-        let file_path = notes_dir.join(&filename);
-
-        if file_path.exists() {
-            self.status_message = Some(format!("Opened {}", filename));
-        } else {
-            let content = crate::journal::new_entry_content();
-            if let Err(e) = fs::write(&file_path, &content) {
-                self.status_message = Some(format!("Journal failed: {}", e));
+        let date = crate::journal::today();
+        let entry = match crate::journal::open_or_create_entry(
+            &notes_dir,
+            &self.config.journal_dir,
+            date,
+        ) {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.status_message = Some(format!("Journal failed: {error}"));
                 return;
             }
-            self.status_message = Some(format!("Created {}", filename));
-        }
+        };
+
+        let display_path = entry
+            .path
+            .strip_prefix(&notes_dir)
+            .unwrap_or(&entry.path)
+            .display()
+            .to_string();
 
         self.load_notes_from_dir();
-        self.select_note_by_path(&file_path);
-        self.focus = Focus::Content;
+        if self.select_note_by_path(&entry.path) {
+            let action = match entry.action {
+                crate::journal::JournalEntryAction::Created => "Created",
+                crate::journal::JournalEntryAction::Opened => "Opened",
+            };
+            self.status_message = Some(format!("{action} {display_path}"));
+            self.focus = Focus::Content;
+        } else {
+            self.status_message = Some(format!("Journal failed to load: {display_path}"));
+        }
     }
 
     fn directory_has_notes(path: &PathBuf) -> bool {
