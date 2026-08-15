@@ -29,6 +29,9 @@ Use `Tab` or `Shift+Tab` to switch between panels.
 
 ## Quick Start
 
+These are the default app shortcuts. You can remap them in the `[keybindings]`
+section of `~/.config/ekphos/config.toml`.
+
 - `j/k`: Navigate up/down
 - `e`: Enter edit mode
 - `n`: Create new note

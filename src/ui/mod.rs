@@ -59,7 +59,7 @@ pub use dialogs::{
     render_create_folder_dialog, render_create_note_dialog, render_create_note_in_folder_dialog,
     render_create_wiki_note_dialog, render_delete_confirm_dialog, render_delete_folder_confirm_dialog,
     render_directory_not_found_dialog, render_empty_directory_dialog, render_help_dialog,
-    render_onboarding_dialog, render_rename_folder_dialog, render_rename_note_dialog,
+    render_keybinding_warning, render_onboarding_dialog, render_rename_folder_dialog, render_rename_note_dialog,
     render_unsaved_changes_dialog, render_welcome_dialog,
 };
 pub use editor::render_editor;
@@ -151,6 +151,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     if !matches!(app.search_picker, SearchPickerState::Closed) {
         file_picker::render_search_picker(f, app);
+    }
+
+    if app.keybinding_warning.is_some() {
+        render_keybinding_warning(f, app);
     }
 
     // Toast notifications float above everything else.

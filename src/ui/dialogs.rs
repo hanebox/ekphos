@@ -2,12 +2,13 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::app::App;
 use crate::config::Theme;
+use crate::keybindings::{AppCommand, KeybindingFallback};
 
 const TITLE_MAIN: &[&str] = &[
     "████████ ██   ██ ██████  ██   ██  ██████  ███████",
@@ -16,6 +17,70 @@ const TITLE_MAIN: &[&str] = &[
     "██       ██  ██  ██      ██   ██ ██    ██      ██",
     "████████ ██   ██ ██      ██   ██  ██████  ███████",
 ];
+
+pub fn render_keybinding_warning(f: &mut Frame, app: &App) {
+    let Some(warning) = &app.keybinding_warning else { return };
+    let area = f.area();
+    let width = 76.min(area.width.saturating_sub(4));
+    let height = 26.min(area.height.saturating_sub(4));
+    if width < 20 || height < 8 { return; }
+    let dialog_area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, dialog_area);
+    let block = Block::default()
+        .title(Span::styled(" Keybinding Warning ", Style::default().fg(app.theme.warning).add_modifier(Modifier::BOLD)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.warning))
+        .style(Style::default().bg(app.theme.background_secondary));
+    let inner = block.inner(dialog_area);
+    f.render_widget(block, dialog_area);
+
+    let fallback = match warning.fallback {
+        KeybindingFallback::Defaults => "Custom keybindings were not applied; built-in defaults are active.",
+        KeybindingFallback::Previous => "Custom keybindings were not applied; the previous valid bindings remain active.",
+    };
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(4),
+        ])
+        .split(inner);
+    let header = vec![
+        Line::from(Span::styled(fallback, Style::default().fg(app.theme.foreground))),
+        Line::from(""),
+        Line::from(Span::styled("Resolve every item below:", Style::default().fg(app.theme.error).add_modifier(Modifier::BOLD))),
+    ];
+    f.render_widget(Paragraph::new(header).wrap(Wrap { trim: false }), sections[0]);
+
+    let issues: Vec<Line> = warning.issues.iter().map(|issue| {
+        Line::from(vec![
+            Span::styled("• ", Style::default().fg(app.theme.error)),
+            Span::styled(issue, Style::default().fg(app.theme.foreground)),
+        ])
+    }).collect();
+    f.render_widget(
+        Paragraph::new(issues)
+            .wrap(Wrap { trim: false })
+            .scroll((warning.scroll.min(u16::MAX as usize) as u16, 0)),
+        sections[1],
+    );
+
+    let footer = vec![
+        Line::from(Span::styled("Use j/k, arrows, or Page Up/Down to scroll.", Style::default().fg(app.theme.muted))),
+        Line::from(vec![
+            Span::styled("Config: ", Style::default().fg(app.theme.muted)),
+            Span::styled(crate::config::Config::config_path().display().to_string(), Style::default().fg(app.theme.info)),
+        ]),
+        Line::from(Span::styled("Edit the config and reload. Press Enter or Esc to dismiss.", Style::default().fg(app.theme.muted))),
+    ];
+    f.render_widget(Paragraph::new(footer).alignment(Alignment::Left).wrap(Wrap { trim: false }), sections[2]);
+}
 
 fn render_flat_title(theme: &Theme, dialog_width: u16) -> Vec<Line<'static>> {
     let main_color = theme.dialog.title;
@@ -737,7 +802,7 @@ pub fn render_empty_directory_dialog(f: &mut Frame, app: &App) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Press 'n' to create your first note!",
+            format!("Press {} to create your first note!", app.keymap.binding_label(AppCommand::CreateNote)),
             Style::default().fg(theme.success),
         )),
         Line::from(""),
@@ -797,148 +862,157 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
     let desc_style = Style::default().fg(dialog_theme.text);
     let header_style = Style::default().fg(dialog_theme.title).add_modifier(Modifier::BOLD);
     let subheader_style = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
+    let keys = |command| format!(" {:<16}", app.keymap.binding_label(command));
+    let paired_keys = |first, second| format!(
+        " {:<16}",
+        format!("{} / {}", app.keymap.binding_label(first), app.keymap.binding_label(second)),
+    );
 
     let left_content = vec![
         Line::from(""),
         Line::from(Span::styled(" Global", header_style)),
         Line::from(vec![
-            Span::styled(" j/k       ", key_style),
+            Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style),
             Span::styled("Navigate up/down", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Tab       ", key_style),
+            Span::styled(keys(AppCommand::FocusNext), key_style),
             Span::styled("Switch focus", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Shift+Tab ", key_style),
+            Span::styled(keys(AppCommand::FocusPrevious), key_style),
             Span::styled("Switch focus (reverse)", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Enter/o   ", key_style),
+            Span::styled(paired_keys(AppCommand::Activate, AppCommand::OpenSelected), key_style),
             Span::styled("Open / Jump to heading", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" ?         ", key_style),
+            Span::styled(keys(AppCommand::ShowHelp), key_style),
             Span::styled("Show this help", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" q         ", key_style),
+            Span::styled(keys(AppCommand::Quit), key_style),
             Span::styled("Quit", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+b    ", key_style),
+            Span::styled(keys(AppCommand::ToggleSidebar), key_style),
             Span::styled("Toggle sidebar", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+o    ", key_style),
+            Span::styled(keys(AppCommand::ToggleOutline), key_style),
             Span::styled("Toggle outline", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" <         ", key_style),
+            Span::styled(keys(AppCommand::ShrinkPanel), key_style),
             Span::styled("Shrink focused side panel", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" >         ", key_style),
+            Span::styled(keys(AppCommand::GrowPanel), key_style),
             Span::styled("Grow focused side panel", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+f    ", key_style),
+            Span::styled(keys(AppCommand::FindInBuffer), key_style),
             Span::styled("Find in buffer", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+k    ", key_style),
+            Span::styled(keys(AppCommand::OpenQuickSearch), key_style),
             Span::styled("Fuzzy search notes", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+t    ", key_style),
+            Span::styled(keys(AppCommand::OpenThemeSelector), key_style),
             Span::styled("Select theme", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" t         ", key_style),
+            Span::styled(keys(AppCommand::OpenGraph), key_style),
+            Span::styled("Open graph view", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled(keys(AppCommand::OpenJournal), key_style),
             Span::styled("Open today's journal", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+z    ", key_style),
+            Span::styled(keys(AppCommand::ToggleZen), key_style),
             Span::styled("Toggle zen mode", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+m    ", key_style),
+            Span::styled(keys(AppCommand::ToggleFrontmatter), key_style),
             Span::styled("Toggle frontmatter", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" R         ", key_style),
+            Span::styled(keys(AppCommand::ReloadFiles), key_style),
             Span::styled("Reload files from disk", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Ctrl+Sh+R ", key_style),
+            Span::styled(keys(AppCommand::ReloadConfig), key_style),
             Span::styled("Reload config/theme", desc_style),
         ]),
         Line::from(""),
         Line::from(Span::styled(" Sidebar", header_style)),
         Line::from(vec![
-            Span::styled(" n         ", key_style),
+            Span::styled(keys(AppCommand::CreateNote), key_style),
             Span::styled("Create new note", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" N         ", key_style),
+            Span::styled(keys(AppCommand::CreateFolder), key_style),
             Span::styled("Create new folder", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Enter     ", key_style),
+            Span::styled(keys(AppCommand::Activate), key_style),
             Span::styled("Toggle folder / Open", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" r         ", key_style),
+            Span::styled(keys(AppCommand::RenameItem), key_style),
             Span::styled("Rename", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" d         ", key_style),
+            Span::styled(keys(AppCommand::DeleteItem), key_style),
             Span::styled("Delete", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" e         ", key_style),
+            Span::styled(keys(AppCommand::EditNote), key_style),
             Span::styled("Edit note", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" /         ", key_style),
+            Span::styled(keys(AppCommand::SidebarSearch), key_style),
             Span::styled("Search notes", desc_style),
         ]),
         Line::from(""),
         Line::from(Span::styled(" Content View", header_style)),
         Line::from(vec![
-            Span::styled(" j/k       ", key_style),
+            Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style),
             Span::styled("Navigate lines", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Shift+J/K ", key_style),
+            Span::styled(keys(AppCommand::ToggleFloatingCursor), key_style),
             Span::styled("Toggle floating cursor", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" gg        ", key_style),
+            Span::styled(keys(AppCommand::GoFirst), key_style),
             Span::styled("Go to beginning", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" G         ", key_style),
+            Span::styled(keys(AppCommand::GoLast), key_style),
             Span::styled("Go to end", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" Space     ", key_style),
+            Span::styled(keys(AppCommand::ContentAction), key_style),
             Span::styled("Toggle task/Open link", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" ]/[       ", key_style),
+            Span::styled(paired_keys(AppCommand::NextTarget, AppCommand::PreviousTarget), key_style),
             Span::styled("Next/Previous link", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" za        ", key_style),
+            Span::styled(keys(AppCommand::ToggleFold), key_style),
             Span::styled("Toggle heading fold", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" zM        ", key_style),
+            Span::styled(keys(AppCommand::FoldAll), key_style),
             Span::styled("Fold all headings", desc_style),
         ]),
         Line::from(vec![
-            Span::styled(" zR        ", key_style),
+            Span::styled(keys(AppCommand::UnfoldAll), key_style),
             Span::styled("Unfold all headings", desc_style),
         ]),
         Line::from(""),

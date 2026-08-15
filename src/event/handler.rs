@@ -12,6 +12,7 @@ use crate::app::{
 use crate::clipboard::{self, ClipboardContent};
 use crate::config::Config;
 use crate::editor::{CursorMove, CursorShape, Position};
+use crate::keybindings::{AppCommand, KeyResolution};
 use crate::ui;
 use crate::vim::{FindState, PendingFind, PendingMacro, PendingMark, TextObject, TextObjectScope, VimMode as VimModeNew};
 use crate::vim::command::{parse_command, Command};
@@ -209,6 +210,7 @@ fn process_events(
 }
 
 fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    app.keymap.reset_pending();
     let mouse_x = mouse.column;
     let mouse_y = mouse.row;
 
@@ -493,6 +495,7 @@ fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
 }
 
 fn handle_paste_event(app: &mut App, text: String) {
+    app.keymap.reset_pending();
     // Only handle paste in Edit mode
     if app.mode != Mode::Edit {
         return;
@@ -788,64 +791,84 @@ fn execute_context_menu_action(app: &mut App, action: ContextMenuItem) {
 
 /// Returns true if the app should quit
 fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Result<bool> {
+    if app.keybinding_warning.is_some() {
+        handle_keybinding_warning(app, key);
+        return Ok(false);
+    }
+
     // Handle dialogs first
     match app.dialog {
         DialogState::Onboarding => {
+            app.keymap.reset_pending();
             handle_onboarding_dialog(app, key);
             return Ok(false);
         }
         DialogState::CreateNote => {
+            app.keymap.reset_pending();
             handle_create_note_dialog(app, key);
             return Ok(false);
         }
         DialogState::CreateFolder => {
+            app.keymap.reset_pending();
             handle_create_folder_dialog(app, key);
             return Ok(false);
         }
         DialogState::CreateNoteInFolder => {
+            app.keymap.reset_pending();
             handle_create_note_in_folder_dialog(app, key);
             return Ok(false);
         }
         DialogState::DeleteConfirm => {
+            app.keymap.reset_pending();
             handle_delete_confirm_dialog(app, key);
             return Ok(false);
         }
         DialogState::DeleteFolderConfirm => {
+            app.keymap.reset_pending();
             handle_delete_folder_confirm_dialog(app, key);
             return Ok(false);
         }
         DialogState::RenameNote => {
+            app.keymap.reset_pending();
             handle_rename_note_dialog(app, key);
             return Ok(false);
         }
         DialogState::RenameFolder => {
+            app.keymap.reset_pending();
             handle_rename_folder_dialog(app, key);
             return Ok(false);
         }
         DialogState::Help => {
+            app.keymap.reset_pending();
             handle_help_dialog(app, key);
             return Ok(false);
         }
         DialogState::EmptyDirectory => {
+            app.keymap.reset_pending();
             handle_empty_directory_dialog(app, key);
             return Ok(false);
         }
         DialogState::DirectoryNotFound => {
+            app.keymap.reset_pending();
             return Ok(handle_directory_not_found_dialog(app, key));
         }
         DialogState::UnsavedChanges => {
+            app.keymap.reset_pending();
             handle_unsaved_changes_dialog(app, key);
             return Ok(false);
         }
         DialogState::CreateWikiNote => {
+            app.keymap.reset_pending();
             handle_create_wiki_note_dialog(app, key);
             return Ok(false);
         }
         DialogState::GraphView => {
+            app.keymap.reset_pending();
             handle_graph_view_dialog(app, key);
             return Ok(false);
         }
         DialogState::ThemeSelector => {
+            app.keymap.reset_pending();
             handle_theme_selector_dialog(app, key);
             return Ok(false);
         }
@@ -854,23 +877,27 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
 
     // Handle welcome dialog
     if app.show_welcome {
+        app.keymap.reset_pending();
         handle_welcome_dialog(app, key);
         return Ok(false);
     }
 
     // Handle search picker input (high priority)
     if !matches!(app.search_picker, SearchPickerState::Closed) {
+        app.keymap.reset_pending();
         handle_search_picker_input(app, key);
         return Ok(false);
     }
 
     // Handle sidebar search input
     if app.search_active {
+        app.keymap.reset_pending();
         handle_search_input(app, key);
         return Ok(false);
     }
 
     if app.buffer_search.active {
+        app.keymap.reset_pending();
         handle_buffer_search_input(app, key);
         return Ok(false);
     }
@@ -883,11 +910,35 @@ fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -> io::Resul
             }
         }
         Mode::Edit => {
+            app.keymap.reset_pending();
             handle_edit_mode(app, key);
         }
     }
 
     Ok(false)
+}
+
+fn handle_keybinding_warning(app: &mut App, key: crossterm::event::KeyEvent) {
+    app.keymap.reset_pending();
+    if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+        app.keybinding_warning = None;
+        return;
+    }
+    let Some(warning) = app.keybinding_warning.as_mut() else { return };
+    let max_scroll = warning.issues.len().saturating_mul(8).saturating_sub(1);
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            warning.scroll = warning.scroll.saturating_add(1)
+                .min(max_scroll);
+        }
+        KeyCode::Up | KeyCode::Char('k') => warning.scroll = warning.scroll.saturating_sub(1),
+        KeyCode::PageDown => {
+            warning.scroll = warning.scroll.saturating_add(5)
+                .min(max_scroll);
+        }
+        KeyCode::PageUp => warning.scroll = warning.scroll.saturating_sub(5),
+        _ => {}
+    }
 }
 
 fn handle_onboarding_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
@@ -2167,26 +2218,49 @@ fn update_editor_search_highlights(app: &mut App) {
 
 /// Returns true if the app should quit
 fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
-    let was_pending_g = app.pending_g;
-    let was_pending_z = app.pending_z;
-    app.pending_g = false;
-    app.pending_z = false;
     app.status_message = None;  // Clear old status message on new keystroke
 
-    if let Some(delta) = panel_resize_delta(&key) {
-        app.resize_focused_panel(delta);
-        return false;
+    let available: Vec<_> = AppCommand::ALL.into_iter()
+        .filter(|command| app_command_available(app, *command))
+        .collect();
+    let resolution = app.keymap.resolve(key, |command| available.contains(&command));
+    match resolution {
+        KeyResolution::Command(command) => execute_app_command(app, command),
+        KeyResolution::NoMatch | KeyResolution::Pending => false,
     }
+}
 
-    match key.code {
-        KeyCode::Char('q') => return true,
-        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if !app.zen_mode => app.toggle_focus(false),
-        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left if !app.zen_mode => app.toggle_focus(true),
-        KeyCode::Char('e') => {
+fn app_command_available(app: &App, command: AppCommand) -> bool {
+    match command {
+        AppCommand::FocusNext | AppCommand::FocusPrevious => !app.zen_mode,
+        AppCommand::OpenJournal | AppCommand::CreateNote | AppCommand::CreateFolder
+        | AppCommand::DeleteItem | AppCommand::RenameItem => !app.zen_mode,
+        AppCommand::CutItem => !app.zen_mode && app.focus == Focus::Sidebar,
+        AppCommand::PasteItem => !app.zen_mode && app.focus == Focus::Sidebar
+            && app.cut_buffer.is_some(),
+        AppCommand::HistoryBack | AppCommand::HistoryForward => app.focus != Focus::Sidebar,
+        AppCommand::OpenSelected => matches!(app.focus, Focus::Content | Focus::Outline),
+        AppCommand::ContentAction | AppCommand::NextTarget | AppCommand::PreviousTarget
+        | AppCommand::ToggleFloatingCursor | AppCommand::HalfPageDown
+        | AppCommand::HalfPageUp | AppCommand::ToggleFrontmatter | AppCommand::ToggleFold
+        | AppCommand::FoldAll | AppCommand::UnfoldAll => app.focus == Focus::Content,
+        AppCommand::CancelCut => app.focus == Focus::Sidebar && app.cut_buffer.is_some(),
+        AppCommand::SidebarSearch | AppCommand::CycleSort => app.focus == Focus::Sidebar,
+        _ => true,
+    }
+}
+
+/// Executes a resolved main-view command. Returns true when the app should quit.
+fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
+    match command {
+        AppCommand::Quit => return true,
+        AppCommand::FocusNext => app.toggle_focus(false),
+        AppCommand::FocusPrevious => app.toggle_focus(true),
+        AppCommand::EditNote => {
             app.push_navigation_history(app.selected_note);
             app.enter_edit_mode();
         }
-        KeyCode::Char('n') if !app.zen_mode => {
+        AppCommand::CreateNote => {
             app.input_buffer.clear();
             app.dialog_error = None;
             let context_folder = app.get_current_context_folder();
@@ -2197,7 +2271,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateNote;
         }
-        KeyCode::Char('N') if !app.zen_mode => {
+        AppCommand::CreateFolder => {
             app.input_buffer.clear();
             app.dialog_error = None;
             let context_folder = app.get_current_context_folder();
@@ -2208,7 +2282,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             app.dialog = DialogState::CreateFolder;
         }
-        KeyCode::Char('d') if !app.zen_mode && key.modifiers.is_empty() => {
+        AppCommand::DeleteItem => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { .. } => {
@@ -2220,19 +2294,13 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Char('x') if !app.zen_mode && key.modifiers.is_empty() => {
-            if app.focus == Focus::Sidebar {
-                app.cut_selected_item();
+        AppCommand::CutItem => app.cut_selected_item(),
+        AppCommand::PasteItem => {
+            if let Err(e) = app.paste_cut_item() {
+                app.status_message = Some(format!("Move failed: {}", e));
             }
         }
-        KeyCode::Char('p') if !app.zen_mode && key.modifiers.is_empty() => {
-            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
-                if let Err(e) = app.paste_cut_item() {
-                    app.status_message = Some(format!("Move failed: {}", e));
-                }
-            }
-        }
-        KeyCode::Char('r') if !app.zen_mode => {
+        AppCommand::RenameItem => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
                     SidebarItemKind::Note { note_index } => {
@@ -2250,28 +2318,18 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Char('R') if key.modifiers == KeyModifiers::SHIFT | KeyModifiers::CONTROL => {
+        AppCommand::ReloadConfig => {
             app.reload_config();
             app.needs_full_clear = true;
         }
-        KeyCode::Char('R') => {
-            if was_pending_z && app.focus == Focus::Content {
-                app.unfold_all_headings();
-            } else {
-                app.reload_on_focus();
-                app.needs_full_clear = true;
-            }
+        AppCommand::ReloadFiles => {
+            app.reload_on_focus();
+            app.needs_full_clear = true;
         }
-        KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
-            app.open_search_picker();
-        }
-        KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL => {
-            app.open_theme_selector();
-        }
-        KeyCode::Char('t') if key.modifiers.is_empty() && !app.zen_mode => {
-            app.open_or_create_journal();
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
+        AppCommand::OpenQuickSearch => app.open_search_picker(),
+        AppCommand::OpenThemeSelector => app.open_theme_selector(),
+        AppCommand::OpenJournal => app.open_or_create_journal(),
+        AppCommand::MoveDown => {
             match app.focus {
                 Focus::Sidebar => app.next_sidebar_item(),
                 Focus::Outline => app.next_outline(),
@@ -2285,7 +2343,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        AppCommand::MoveUp => {
             match app.focus {
                 Focus::Sidebar => app.previous_sidebar_item(),
                 Focus::Outline => app.previous_outline(),
@@ -2299,7 +2357,7 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Enter => {
+        AppCommand::Activate => {
             match app.focus {
                 Focus::Content => {
                     if !open_selected_content_target(app) {
@@ -2310,16 +2368,10 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 Focus::Sidebar => app.handle_sidebar_enter(),
             }
         }
-        KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
-            app.toggle_outline_collapsed();
-        }
-        KeyCode::Char('-') if key.modifiers.is_empty() && app.focus != Focus::Sidebar => {
-            app.navigate_back();
-        }
-        KeyCode::Char('=') if key.modifiers.is_empty() && app.focus != Focus::Sidebar => {
-            app.navigate_forward();
-        }
-        KeyCode::Char('o') => {
+        AppCommand::ToggleOutline => app.toggle_outline_collapsed(),
+        AppCommand::HistoryBack => { app.navigate_back(); }
+        AppCommand::HistoryForward => { app.navigate_forward(); }
+        AppCommand::OpenSelected => {
             if app.focus == Focus::Content {
                 if !open_selected_content_target(app) {
                     app.open_current_image();
@@ -2329,111 +2381,57 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 app.jump_to_outline();
             }
         }
-        KeyCode::Char('?') => {
-            app.dialog = DialogState::Help;
-        }
-        KeyCode::Char('/') => {
-            if app.focus == Focus::Sidebar {
-                app.activate_sidebar_search();
-            }
-        }
-        KeyCode::Char('s') => {
-            if app.focus == Focus::Sidebar {
-                app.cycle_sort_mode();
-            }
-        }
-        KeyCode::Char(' ') => {
-            if app.focus == Focus::Content {
-                // task items: toggle if checkbox selected, otherwise follow link
-                if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
-                    if app.is_task_checkbox_selected() {
-                        app.toggle_current_task();
-                    } else if !open_selected_content_target(app) {
-                        // No links in task, just toggle
-                        app.toggle_current_task();
-                    }
-                } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
-                    app.toggle_current_details();
-                } else if app.is_heading_at(app.content_cursor) {
-                    app.toggle_current_heading_fold();
-                } else {
-                    open_selected_content_target(app);
+        AppCommand::ShowHelp => app.dialog = DialogState::Help,
+        AppCommand::SidebarSearch => app.activate_sidebar_search(),
+        AppCommand::CycleSort => app.cycle_sort_mode(),
+        AppCommand::ContentAction => {
+            if let Some(crate::app::ContentItem::TaskItem { .. }) = app.content_items.get(app.content_cursor) {
+                if app.is_task_checkbox_selected() {
+                    app.toggle_current_task();
+                } else if !open_selected_content_target(app) {
+                    app.toggle_current_task();
                 }
+            } else if let Some(crate::app::ContentItem::Details { .. }) = app.content_items.get(app.content_cursor) {
+                app.toggle_current_details();
+            } else if app.is_heading_at(app.content_cursor) {
+                app.toggle_current_heading_fold();
+            } else {
+                open_selected_content_target(app);
             }
         }
-        KeyCode::Char(']') => {
-            if app.focus == Focus::Content {
-                app.next_link();
-            }
+        AppCommand::NextTarget => app.next_link(),
+        AppCommand::PreviousTarget => app.previous_link(),
+        AppCommand::ToggleFloatingCursor => app.toggle_floating_cursor(),
+        AppCommand::ToggleSidebar => app.toggle_sidebar_collapsed(),
+        AppCommand::HalfPageDown => {
+            app.half_page_down_content();
+            app.sync_outline_to_content();
         }
-        KeyCode::Char('[') => {
-            if app.focus == Focus::Content {
-                app.previous_link();
-            }
+        AppCommand::HalfPageUp => {
+            app.half_page_up_content();
+            app.sync_outline_to_content();
         }
-        KeyCode::Char('J') | KeyCode::Char('K') => {
-            if app.focus == Focus::Content {
-                app.toggle_floating_cursor();
-            }
-        }
-        KeyCode::Char('b') if key.modifiers == KeyModifiers::CONTROL => {
-            app.toggle_sidebar_collapsed();
-        }
-        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
-            if app.focus == Focus::Content {
-                app.half_page_down_content();
-                app.sync_outline_to_content();
-            }
-        }
-        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-            if app.focus == Focus::Content {
-                app.half_page_up_content();
-                app.sync_outline_to_content();
-            }
-        }
-        KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
-            app.start_buffer_search();
-        }
-        KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL => {
+        AppCommand::FindInBuffer => app.start_buffer_search(),
+        AppCommand::OpenGraph => {
             app.build_graph();
             app.dialog = DialogState::GraphView;
         }
-        KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
-            app.toggle_zen_mode();
-        }
-        KeyCode::Char('m') if key.modifiers == KeyModifiers::CONTROL => {
-            if app.focus == Focus::Content {
-                app.toggle_frontmatter_hidden();
-            }
-        }
-        KeyCode::Char('z') => {
-            app.pending_z = true;
-        }
-        KeyCode::Char('M') => {
-            if was_pending_z && app.focus == Focus::Content {
-                app.fold_all_headings();
-            }
-        }
-        KeyCode::Char('a') => {
-            if was_pending_z && app.focus == Focus::Content {
-                app.toggle_current_heading_fold();
-            }
-        }
-        KeyCode::Char('g') => {
-            if was_pending_g {
-                match app.focus {
-                    Focus::Sidebar => app.goto_first_sidebar_item(),
-                    Focus::Outline => app.goto_first_outline(),
-                    Focus::Content => {
-                        app.goto_first_content_line();
-                        app.sync_outline_to_content();
-                    }
+        AppCommand::ToggleZen => app.toggle_zen_mode(),
+        AppCommand::ToggleFrontmatter => app.toggle_frontmatter_hidden(),
+        AppCommand::ToggleFold => app.toggle_current_heading_fold(),
+        AppCommand::FoldAll => app.fold_all_headings(),
+        AppCommand::UnfoldAll => app.unfold_all_headings(),
+        AppCommand::GoFirst => {
+            match app.focus {
+                Focus::Sidebar => app.goto_first_sidebar_item(),
+                Focus::Outline => app.goto_first_outline(),
+                Focus::Content => {
+                    app.goto_first_content_line();
+                    app.sync_outline_to_content();
                 }
-            } else {
-                app.pending_g = true;
             }
         }
-        KeyCode::Char('G') => {
+        AppCommand::GoLast => {
             match app.focus {
                 Focus::Sidebar => app.goto_last_sidebar_item(),
                 Focus::Outline => app.goto_last_outline(),
@@ -2443,30 +2441,11 @@ fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Esc => {
-            if app.focus == Focus::Sidebar && app.cut_buffer.is_some() {
-                app.clear_cut_buffer();
-            }
-        }
-        _ => {}
+        AppCommand::CancelCut => app.clear_cut_buffer(),
+        AppCommand::ShrinkPanel => app.resize_focused_panel(-Config::PANEL_RESIZE_STEP_PERCENT),
+        AppCommand::GrowPanel => app.resize_focused_panel(Config::PANEL_RESIZE_STEP_PERCENT),
     }
     false
-}
-
-fn panel_resize_delta(key: &crossterm::event::KeyEvent) -> Option<i64> {
-    match key.code {
-        KeyCode::Char('<')
-            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-        {
-            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
-        }
-        KeyCode::Char('>')
-            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-        {
-            Some(Config::PANEL_RESIZE_STEP_PERCENT)
-        }
-        _ => None,
-    }
 }
 
 fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
@@ -4316,62 +4295,5 @@ fn execute_vim_command(app: &mut App, command: Command) {
 
             app.update_editor_highlights();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::panel_resize_delta;
-    use crate::config::Config;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    #[test]
-    fn recognizes_panel_resize_shortcuts() {
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('<'), KeyModifiers::NONE)),
-            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
-        );
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(
-                KeyCode::Char('<'),
-                KeyModifiers::SHIFT,
-            )),
-            Some(-Config::PANEL_RESIZE_STEP_PERCENT)
-        );
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE)),
-            Some(Config::PANEL_RESIZE_STEP_PERCENT)
-        );
-    }
-
-    #[test]
-    fn leaves_unmodified_history_keys_out_of_panel_resizing() {
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE)),
-            None
-        );
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE)),
-            None
-        );
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('-'), KeyModifiers::CONTROL)),
-            None
-        );
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(KeyCode::Char('+'), KeyModifiers::CONTROL)),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_panel_resize_shortcuts_with_extra_modifiers() {
-        assert_eq!(
-            panel_resize_delta(&KeyEvent::new(
-                KeyCode::Char('<'),
-                KeyModifiers::ALT,
-            )),
-            None
-        );
     }
 }

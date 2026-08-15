@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::keybindings::KeybindingsConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_notes_dir")]
@@ -45,6 +47,8 @@ pub struct Config {
     pub floating_cursor: bool,
     #[serde(default)]
     pub editor: EditorConfig,
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
@@ -179,6 +183,7 @@ impl Default for Config {
             transparent_bg: default_transparent_bg(),
             floating_cursor: default_floating_cursor(),
             editor: EditorConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -1029,6 +1034,27 @@ fn parse_hex_color(hex: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keybindings::{AppCommand, Keymap};
+
+    #[test]
+    fn keybindings_default_when_missing_from_toml() {
+        let config: Config = toml::from_str("notes_dir = '/tmp/notes'").unwrap();
+        let keymap = Keymap::from_config(&config.keybindings).unwrap();
+
+        assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Ctrl+g");
+    }
+
+    #[test]
+    fn partial_keybinding_table_keeps_other_command_defaults() {
+        let config: Config = toml::from_str(
+            "notes_dir = '/tmp/notes'\n[keybindings]\nopen_graph = ['alt+g']\n",
+        )
+        .unwrap();
+        let keymap = Keymap::from_config(&config.keybindings).unwrap();
+
+        assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Alt+g");
+        assert_eq!(keymap.binding_label(AppCommand::Quit), "q");
+    }
 
     #[test]
     fn journal_directory_defaults_when_missing_from_toml() {

@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, SearchPickerMode, SearchPickerState};
+use crate::keybindings::AppCommand;
 
 const POPUP_MAX_WIDTH: u16 = 80;
 const POPUP_MAX_WIDTH_WITH_PREVIEW: u16 = 110;
@@ -89,7 +90,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
 
         // Render the main popup border first
         let popup_block = Block::default()
-            .title(" Search (Ctrl+K) ")
+            .title(format!(" Search ({}) ", app.keymap.binding_label(AppCommand::OpenQuickSearch)))
             .title_bottom(Line::from(if results_len == 0 {
                 if *search_in_progress {
                     " ... ".to_string()

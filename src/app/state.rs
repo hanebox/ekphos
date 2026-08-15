@@ -22,6 +22,7 @@ use crate::graph::{
     self, GraphEdge, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode,
     GraphSourceNote,
 };
+use crate::keybindings::{KeybindingFallback, KeybindingWarning, Keymap};
 use crate::search::{self, SearchIndex};
 use crate::vim::VimState;
 
@@ -782,8 +783,8 @@ pub struct App {
     pub wiki_autocomplete: WikiAutocompleteState,
     pub pending_wiki_target: Option<String>,
     pub needs_full_clear: bool,
-    pub pending_g: bool,
-    pub pending_z: bool,  // For z-prefixed commands like zM, zR
+    pub keymap: Keymap,
+    pub keybinding_warning: Option<KeybindingWarning>,
     pub status_message: Option<String>,  // Status message shown next to path
     pub toast: Option<Toast>,  // Transient error/info notification overlay
     pub buffer_search: BufferSearchState,
@@ -856,6 +857,13 @@ impl App {
         let config_exists = Config::exists();
 
         let config = Config::load_or_create();
+        let (keymap, keybinding_warning) = match Keymap::from_config(&config.keybindings) {
+            Ok(keymap) => (keymap, None),
+            Err(error) => (
+                Keymap::default(),
+                Some(KeybindingWarning::new(error, KeybindingFallback::Defaults)),
+            ),
+        };
 
         // For first launch: config was just created, so notes_dir won't exist yet
         let is_first_launch = !config_exists;
@@ -993,8 +1001,8 @@ impl App {
             wiki_autocomplete: WikiAutocompleteState::None,
             pending_wiki_target: None,
             needs_full_clear: false,
-            pending_g: false,
-            pending_z: false,
+            keymap,
+            keybinding_warning,
             status_message: None,
             toast: None,
             buffer_search: BufferSearchState::new(),
@@ -1063,6 +1071,13 @@ impl App {
         let _config_exists = Config::exists();
         let mut config = Config::load_or_create();
         config.notes_dir = notes_dir.to_string_lossy().to_string();
+        let (keymap, keybinding_warning) = match Keymap::from_config(&config.keybindings) {
+            Ok(keymap) => (keymap, None),
+            Err(error) => (
+                Keymap::default(),
+                Some(KeybindingWarning::new(error, KeybindingFallback::Defaults)),
+            ),
+        };
 
         let theme = Theme::from_name(&config.theme);
 
@@ -1190,8 +1205,8 @@ impl App {
             wiki_autocomplete: WikiAutocompleteState::None,
             pending_wiki_target: None,
             needs_full_clear: false,
-            pending_g: false,
-            pending_z: false,
+            keymap,
+            keybinding_warning,
             status_message: None,
             toast: None,
             buffer_search: BufferSearchState::new(),
@@ -1294,7 +1309,22 @@ impl App {
             return;
         }
 
-        self.config = Config::load();
+        let config = Config::load();
+        match Keymap::from_config(&config.keybindings) {
+            Ok(mut keymap) => {
+                keymap.reset_pending();
+                self.keymap = keymap;
+                self.keybinding_warning = None;
+            }
+            Err(error) => {
+                self.keymap.reset_pending();
+                self.keybinding_warning = Some(KeybindingWarning::new(
+                    error,
+                    KeybindingFallback::Previous,
+                ));
+            }
+        }
+        self.config = config;
 
         self.theme = Theme::from_name(&self.config.theme);
 

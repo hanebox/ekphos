@@ -7,6 +7,7 @@ mod graph;
 mod highlight;
 mod highlight_worker;
 mod journal;
+mod keybindings;
 mod search;
 mod ui;
 mod vim;
