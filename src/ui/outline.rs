@@ -37,10 +37,7 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
                 3 => Style::default().fg(outline_theme.heading3),
                 _ => Style::default().fg(outline_theme.heading4),
             };
-            ListItem::new(Line::from(Span::styled(
-                format!("{}{}{}", indent, prefix, expand_tabs(&item.title)),
-                style,
-            )))
+            ListItem::new(Line::from(Span::styled(format!("{}{}{}", indent, prefix, expand_tabs(&item.title)), style)))
         })
         .collect();
 
@@ -50,21 +47,11 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(theme.border)
     };
 
-    let mut outline = List::new(items)
-        .block(
-            Block::default()
-                .title(" Outline ")
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
+    let mut outline = List::new(items).block(Block::default().title(" Outline ").borders(Borders::ALL).border_style(border_style));
 
     if app.mode != Mode::Edit {
         outline = outline
-            .highlight_style(
-                Style::default()
-                    .bg(theme.selection)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(Style::default().bg(theme.selection).add_modifier(Modifier::BOLD))
             .highlight_symbol("▶ ");
     }
 
@@ -87,10 +74,10 @@ fn render_collapsed_outline(f: &mut Frame, app: &mut App, area: Rect) {
             let is_selected = !in_edit_mode && app.outline_state.selected() == Some(idx);
 
             let symbol = match item.level {
-                1 => "◆",  // H1
-                2 => "■",  // H2
-                3 => "▸",  // H3
-                _ => "›",  // H4+
+                1 => "◆", // H1
+                2 => "■", // H2
+                3 => "▸", // H3
+                _ => "›", // H4+
             };
 
             let style = match item.level {
@@ -100,11 +87,7 @@ fn render_collapsed_outline(f: &mut Frame, app: &mut App, area: Rect) {
                 _ => Style::default().fg(outline_theme.heading4),
             };
 
-            let display = if is_selected {
-                format!("▶{}", symbol)
-            } else {
-                format!(" {}", symbol)
-            };
+            let display = if is_selected { format!("▶{}", symbol) } else { format!(" {}", symbol) };
 
             ListItem::new(Line::from(Span::styled(display, style)))
         })
@@ -116,19 +99,10 @@ fn render_collapsed_outline(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(theme.border)
     };
 
-    let mut outline = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
+    let mut outline = List::new(items).block(Block::default().borders(Borders::ALL).border_style(border_style));
 
     if !in_edit_mode {
-        outline = outline.highlight_style(
-            Style::default()
-                .bg(theme.selection)
-                .add_modifier(Modifier::BOLD),
-        );
+        outline = outline.highlight_style(Style::default().bg(theme.selection).add_modifier(Modifier::BOLD));
     }
     app.outline_area = area;
 

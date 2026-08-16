@@ -39,11 +39,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
         let popup_width = base_width.min((area.width as f32 * 0.9) as u16).min(area.width.saturating_sub(4));
 
         // For content mode with preview, we split into left (list) and right (preview)
-        let list_width = if has_preview {
-            (popup_width / 2).min(60)
-        } else {
-            popup_width
-        };
+        let list_width = if has_preview { (popup_width / 2).min(60) } else { popup_width };
 
         // Height calculation depends on mode
         let (results_len, content_height) = match mode {
@@ -91,15 +87,18 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
         // Render the main popup border first
         let popup_block = Block::default()
             .title(format!(" Search ({}) ", app.keymap.binding_label(AppCommand::OpenQuickSearch)))
-            .title_bottom(Line::from(if results_len == 0 {
-                if *search_in_progress {
-                    " ... ".to_string()
+            .title_bottom(
+                Line::from(if results_len == 0 {
+                    if *search_in_progress {
+                        " ... ".to_string()
+                    } else {
+                        " No matches ".to_string()
+                    }
                 } else {
-                    " No matches ".to_string()
-                }
-            } else {
-                format!(" {}/{} ", selected_index + 1, results_len)
-            }).right_aligned())
+                    format!(" {}/{} ", selected_index + 1, results_len)
+                })
+                .right_aligned(),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.info))
             .style(Style::default().bg(theme.background_secondary));
@@ -152,10 +151,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
         };
 
         let input_line = if query.is_empty() {
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(placeholder, Style::default().fg(theme.muted)),
-            ])
+            Line::from(vec![Span::raw(" "), Span::styled(placeholder, Style::default().fg(theme.muted))])
         } else {
             Line::from(vec![
                 Span::raw(" "),
@@ -186,12 +182,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
 
         if has_preview {
             // Split into list (left) and preview (right)
-            let list_area = Rect::new(
-                results_area.x,
-                results_area.y,
-                list_width.saturating_sub(1),
-                results_area.height,
-            );
+            let list_area = Rect::new(results_area.x, results_area.y, list_width.saturating_sub(1), results_area.height);
             let preview_area = Rect::new(
                 results_area.x + list_width,
                 results_area.y,
@@ -200,12 +191,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
             );
 
             // Render vertical separator
-            let sep_area = Rect::new(
-                results_area.x + list_width.saturating_sub(1),
-                results_area.y,
-                1,
-                results_area.height,
-            );
+            let sep_area = Rect::new(results_area.x + list_width.saturating_sub(1), results_area.y, 1, results_area.height);
             let sep_lines: Vec<Line> = (0..sep_area.height)
                 .map(|_| Line::from(Span::styled("│", Style::default().fg(theme.muted))))
                 .collect();
@@ -224,12 +210,18 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
                 } else {
                     "No matching content"
                 };
-                list_lines.push(Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(empty_message, Style::default().fg(theme.muted)),
-                ]));
+                list_lines.push(Line::from(vec![Span::raw(" "), Span::styled(empty_message, Style::default().fg(theme.muted))]));
             } else {
-                render_content_results_compact(&mut list_lines, content_results, *selected_index, *scroll_offset, max_name_width, list_area.width, theme, query);
+                render_content_results_compact(
+                    &mut list_lines,
+                    content_results,
+                    *selected_index,
+                    *scroll_offset,
+                    max_name_width,
+                    list_area.width,
+                    theme,
+                    query,
+                );
             }
 
             let list = Paragraph::new(list_lines).style(Style::default().bg(theme.background_secondary));
@@ -257,25 +249,42 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
                             ),
                         ]));
                     } else {
-                        render_file_results(&mut result_lines, file_results, *selected_index, *scroll_offset, max_name_width, results_area.width, theme);
+                        render_file_results(
+                            &mut result_lines,
+                            file_results,
+                            *selected_index,
+                            *scroll_offset,
+                            max_name_width,
+                            results_area.width,
+                            theme,
+                        );
                     }
                 }
                 SearchPickerMode::Content => {
                     if *search_in_progress {
-                        result_lines.push(Line::from(vec![
-                            Span::raw(" "),
-                            Span::styled("Searching...", Style::default().fg(theme.muted)),
-                        ]));
+                        result_lines.push(Line::from(vec![Span::raw(" "), Span::styled("Searching...", Style::default().fg(theme.muted))]));
                     } else if content_results.is_empty() {
                         result_lines.push(Line::from(vec![
                             Span::raw(" "),
                             Span::styled(
-                                if query.is_empty() { "Type to search content..." } else { "No matching content" },
+                                if query.is_empty() {
+                                    "Type to search content..."
+                                } else {
+                                    "No matching content"
+                                },
                                 Style::default().fg(theme.muted),
                             ),
                         ]));
                     } else {
-                        render_content_results(&mut result_lines, content_results, *selected_index, *scroll_offset, max_name_width, results_area.width, theme);
+                        render_content_results(
+                            &mut result_lines,
+                            content_results,
+                            *selected_index,
+                            *scroll_offset,
+                            max_name_width,
+                            results_area.width,
+                            theme,
+                        );
                     }
                 }
             }
@@ -311,10 +320,7 @@ fn render_file_results(
         };
 
         let style = if is_selected {
-            Style::default()
-                .fg(theme.background)
-                .bg(theme.primary)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.background).bg(theme.primary).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.foreground)
         };
@@ -330,10 +336,7 @@ fn render_file_results(
                 Span::styled(padding_right, style),
             ]));
         } else {
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(display_name, style),
-            ]));
+            lines.push(Line::from(vec![Span::raw(" "), Span::styled(display_name, style)]));
         }
 
         // Folder hint line
@@ -391,10 +394,7 @@ fn render_content_results(
         };
 
         let title_style = if is_selected {
-            Style::default()
-                .fg(theme.background)
-                .bg(theme.primary)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.background).bg(theme.primary).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.foreground)
         };
@@ -443,14 +443,9 @@ fn render_content_results(
         };
 
         let match_style = if is_selected {
-            Style::default()
-                .fg(theme.warning)
-                .bg(theme.primary)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.warning).bg(theme.primary).add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
         };
 
         let normal_style = if is_selected {
@@ -551,28 +546,18 @@ fn render_content_results_compact(
         };
 
         let normal_style = if is_selected {
-            Style::default()
-                .fg(theme.background)
-                .bg(theme.primary)
+            Style::default().fg(theme.background).bg(theme.primary)
         } else {
             Style::default().fg(theme.foreground)
         };
 
         let highlight_style = if is_selected {
-            Style::default()
-                .fg(theme.warning)
-                .bg(theme.primary)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.warning).bg(theme.primary).add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
         };
 
-        let mut spans = vec![
-            Span::styled(" ", normal_style),
-            Span::styled(line_prefix, prefix_style),
-        ];
+        let mut spans = vec![Span::styled(" ", normal_style), Span::styled(line_prefix, prefix_style)];
 
         // Highlight query matches in the line
         if !query_lower.is_empty() {
@@ -684,13 +669,9 @@ fn render_preview(
                 Span::styled(" ", Style::default()),
                 Span::styled(display_header, Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
             ]),
-            Line::from(Span::styled(
-                " ".repeat(area.width as usize),
-                Style::default().fg(theme.muted),
-            )),
+            Line::from(Span::styled(" ".repeat(area.width as usize), Style::default().fg(theme.muted))),
         ];
-        let header = Paragraph::new(header_lines)
-            .style(Style::default().bg(theme.background_secondary));
+        let header = Paragraph::new(header_lines).style(Style::default().bg(theme.background_secondary));
         f.render_widget(header, header_area);
 
         // Render scrollable content
@@ -730,9 +711,7 @@ fn render_preview(
                             "     │ ".to_string()
                         };
 
-                        let mut spans = vec![
-                            Span::styled(prefix, line_num_style),
-                        ];
+                        let mut spans = vec![Span::styled(prefix, line_num_style)];
 
                         if !query_lower.is_empty() {
                             let seg_lower = segment.to_lowercase();
@@ -782,10 +761,7 @@ fn render_preview(
         }
 
         if content_lines.is_empty() {
-            content_lines.push(Line::from(Span::styled(
-                " No preview available",
-                Style::default().fg(theme.muted),
-            )));
+            content_lines.push(Line::from(Span::styled(" No preview available", Style::default().fg(theme.muted))));
         }
 
         // Calculate scroll to ensure match line is visible
@@ -821,20 +797,13 @@ fn render_preview(
 
         let header_lines = vec![
             Line::from(Span::styled(" Preview", Style::default().fg(theme.muted))),
-            Line::from(Span::styled(
-                " ".repeat(area.width as usize),
-                Style::default().fg(theme.muted),
-            )),
+            Line::from(Span::styled(" ".repeat(area.width as usize), Style::default().fg(theme.muted))),
         ];
-        let header = Paragraph::new(header_lines)
-            .style(Style::default().bg(theme.background_secondary));
+        let header = Paragraph::new(header_lines).style(Style::default().bg(theme.background_secondary));
         f.render_widget(header, header_area);
 
-        let empty_lines = vec![
-            Line::from(Span::styled(empty_message, Style::default().fg(theme.muted))),
-        ];
-        let empty = Paragraph::new(empty_lines)
-            .style(Style::default().bg(theme.background_secondary));
+        let empty_lines = vec![Line::from(Span::styled(empty_message, Style::default().fg(theme.muted)))];
+        let empty = Paragraph::new(empty_lines).style(Style::default().bg(theme.background_secondary));
         f.render_widget(empty, content_area);
     }
 }

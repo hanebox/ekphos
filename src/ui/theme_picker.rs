@@ -38,17 +38,10 @@ pub fn render_theme_picker(f: &mut Frame, app: &mut App) {
     let picker = &app.theme_picker;
     let area = f.area();
 
-    let longest = picker
-        .themes
-        .iter()
-        .map(|t| t.name.chars().count())
-        .max()
-        .unwrap_or(0) as u16;
+    let longest = picker.themes.iter().map(|t| t.name.chars().count()).max().unwrap_or(0) as u16;
     // marker(2) + name + gap(1) + tag + inner padding(2)
     let content_width = longest + 2 + 1 + TAG_WIDTH as u16 + 2;
-    let popup_width = content_width
-        .clamp(MIN_WIDTH, MAX_WIDTH)
-        .min(area.width.saturating_sub(4));
+    let popup_width = content_width.clamp(MIN_WIDTH, MAX_WIDTH).min(area.width.saturating_sub(4));
     // borders(2) + top pad(1) + list + bottom pad(1)
     let popup_height = (visible as u16 + 4).min(area.height.saturating_sub(4));
 
@@ -61,17 +54,9 @@ pub fn render_theme_picker(f: &mut Frame, app: &mut App) {
     let block = Block::default()
         .title(Line::from(Span::styled(
             " Themes ",
-            Style::default()
-                .fg(theme.dialog.title)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.dialog.title).add_modifier(Modifier::BOLD),
         )))
-        .title_bottom(
-            Line::from(Span::styled(
-                " ↑↓ preview · ⏎ apply · esc cancel ",
-                Style::default().fg(theme.muted),
-            ))
-            .right_aligned(),
-        )
+        .title_bottom(Line::from(Span::styled(" ↑↓ preview · ⏎ apply · esc cancel ", Style::default().fg(theme.muted))).right_aligned())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.dialog.border))
         .style(Style::default().bg(theme.dialog.background));
@@ -91,22 +76,12 @@ pub fn render_theme_picker(f: &mut Frame, app: &mut App) {
         let gap = inner_w.saturating_sub(used).max(1);
 
         let name_style = if is_sel {
-            Style::default()
-                .fg(theme.dialog.title)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.dialog.title).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.dialog.text)
         };
-        let tag_style = Style::default().fg(if entry.bundled {
-            theme.info
-        } else {
-            theme.muted
-        });
-        let line_style = if is_sel {
-            Style::default().bg(theme.selection)
-        } else {
-            Style::default()
-        };
+        let tag_style = Style::default().fg(if entry.bundled { theme.info } else { theme.muted });
+        let line_style = if is_sel { Style::default().bg(theme.selection) } else { Style::default() };
 
         let line = Line::from(vec![
             Span::styled(marker, Style::default().fg(theme.dialog.title)),

@@ -1,16 +1,43 @@
 [package]
 name = "ekphos"
-version = "0.25.10"
-edition = "2021"
-authors = ["Ekphos Contributors"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 description = "A lightweight, fast, terminal-based markdown research tool inspired by Obsidian"
-license = "MIT"
-repository = "https://github.com/hanebox/ekphos"
+license.workspace = true
+repository.workspace = true
 keywords = ["markdown", "tui", "terminal", "notes", "obsidian"]
 categories = ["command-line-utilities", "text-editors"]
 readme = "README.md"
 
-[dependencies]
+[workspace]
+members = [
+    ".",
+    "crates/ekphos-core",
+    "crates/ekphos-editor",
+    "crates/ekphos-graph",
+    "crates/ekphos-search",
+    "crates/ekphos-vault",
+    "crates/ekphos-vim",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.25.10"
+edition = "2021"
+rust-version = "1.86"
+authors = ["Ekphos Contributors"]
+license = "MIT"
+repository = "https://github.com/hanebox/ekphos"
+
+[workspace.dependencies]
+ekphos-core = { version = "=0.25.10", path = "crates/ekphos-core" }
+ekphos-editor = { version = "=0.25.10", path = "crates/ekphos-editor" }
+ekphos-graph = { version = "=0.25.10", path = "crates/ekphos-graph" }
+ekphos-search = { version = "=0.25.10", path = "crates/ekphos-search" }
+ekphos-vault = { version = "=0.25.10", path = "crates/ekphos-vault" }
+ekphos-vim = { version = "=0.25.10", path = "crates/ekphos-vim" }
 ratatui = "0.30"
 crossterm = "0.29"
 image = "0.25"
@@ -26,12 +53,35 @@ htmd = "0.5"
 serde_yaml = "0.9"
 bincode = "1.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clipboard-rs = { version = "0.3", features = ["wayland"] }
+libc = "0.2"
+
+[dependencies]
+ekphos-core.workspace = true
+ekphos-editor.workspace = true
+ekphos-graph.workspace = true
+ekphos-search.workspace = true
+ekphos-vault.workspace = true
+ekphos-vim.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+image.workspace = true
+ratatui-image.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+shellexpand.workspace = true
+ureq.workspace = true
+syntect.workspace = true
+unicode-width.workspace = true
+htmd.workspace = true
+chrono.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-clipboard-rs = { version = "0.3", features = ["wayland"] }
+clipboard-rs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [profile.release]
 opt-level = 3

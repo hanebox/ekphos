@@ -65,7 +65,7 @@ pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
                 for row in scroll_top..cursor_row {
                     visual_row += app.editor.line_wrapped_height(row);
                     if visual_row >= inner_height {
-                        break; 
+                        break;
                     }
                 }
                 visual_row += wrap_row_offset;
@@ -111,15 +111,13 @@ pub fn render_editor(f: &mut Frame, app: &mut App, area: Rect) {
             let y = editor_area.y + y_offset + (cursor_row - scroll_top) as u16;
 
             if has_left_overflow {
-                let indicator = Paragraph::new("«│")
-                    .style(Style::default().fg(theme.warning));
+                let indicator = Paragraph::new("«│").style(Style::default().fg(theme.warning));
                 let x = if app.zen_mode { editor_area.x } else { editor_area.x + 1 };
                 f.render_widget(indicator, Rect::new(x, y, 2, 1));
             }
 
             if has_right_overflow {
-                let indicator = Paragraph::new("│»")
-                    .style(Style::default().fg(theme.warning));
+                let indicator = Paragraph::new("│»").style(Style::default().fg(theme.warning));
                 let x = if app.zen_mode {
                     editor_area.x + editor_area.width - 2
                 } else {
@@ -168,9 +166,7 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
             (None, VimMode::Normal) => theme.primary,
             (None, VimMode::Insert) => theme.success,
             (None, VimMode::Replace) => theme.warning,
-            (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => {
-                theme.secondary
-            }
+            (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => theme.secondary,
         }
     };
 
@@ -181,9 +177,7 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
     } else {
         match (&app.pending_delete, app.vim_mode) {
             (Some(_), _) => "d: Confirm, Esc: Cancel",
-            (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => {
-                "y: Yank, d: Delete, Esc: Cancel"
-            }
+            (None, VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) => "y: Yank, d: Delete, Esc: Cancel",
             (None, _) if app.pending_operator == Some('d') => "d: Line, w: Word→, b: Word←",
             _ => "Ctrl+S: Save, Esc: Exit",
         }
@@ -192,10 +186,7 @@ fn render_zen_status_line(f: &mut Frame, app: &App, area: Rect) {
     let status_line = Line::from(vec![
         Span::styled(
             format!(" {} ", mode_str),
-            Style::default()
-                .fg(theme.background)
-                .bg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.background).bg(color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(pending_str, Style::default().fg(color)),
         Span::styled(" │ ", Style::default().fg(theme.border)),

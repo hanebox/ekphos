@@ -66,10 +66,7 @@ pub fn render_toast(f: &mut Frame, app: &App) {
     let widget = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(Span::styled(
-                    label,
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ))
+                .title(Span::styled(label, Style::default().fg(accent).add_modifier(Modifier::BOLD)))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(accent))
                 .style(Style::default().bg(theme.background_secondary)),

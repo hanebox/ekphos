@@ -9,7 +9,7 @@ use std::panic;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
-use crate::editor::{HighlightRange, HighlightType, WikiLinkRange};
+use ekphos_editor::{HighlightRange, HighlightType, WikiLinkRange};
 
 #[derive(Debug, Clone)]
 pub struct HighlightColors {
@@ -28,14 +28,7 @@ pub struct HighlightColors {
 impl Default for HighlightColors {
     fn default() -> Self {
         Self {
-            heading_colors: [
-                Color::Blue,
-                Color::Green,
-                Color::Yellow,
-                Color::Magenta,
-                Color::Cyan,
-                Color::Gray,
-            ],
+            heading_colors: [Color::Blue, Color::Green, Color::Yellow, Color::Magenta, Color::Cyan, Color::Gray],
             code_color: Color::Green,
             link_color: Color::Cyan,
             blockquote_color: Color::Cyan,
@@ -92,11 +85,7 @@ impl HighlightWorker {
 
     #[inline]
     pub fn request(&self, content: String, version: u64, colors: HighlightColors) {
-        let request = HighlightRequest {
-            content,
-            version,
-            colors,
-        };
+        let request = HighlightRequest { content, version, colors };
         let _ = self.request_sender.send(request);
     }
 
@@ -130,8 +119,7 @@ fn worker_thread_loop(receiver: Receiver<HighlightRequest>, sender: Sender<Highl
         }
 
         let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            let (highlights, frontmatter_end) =
-                compute_all_highlights(&latest_request.content, &latest_request.colors);
+            let (highlights, frontmatter_end) = compute_all_highlights(&latest_request.content, &latest_request.colors);
             let wiki_links = compute_all_wiki_links(&latest_request.content, frontmatter_end);
 
             HighlightResult {
@@ -161,14 +149,11 @@ fn worker_thread_loop(receiver: Receiver<HighlightRequest>, sender: Sender<Highl
     }
 }
 
-fn compute_all_highlights(
-    content: &str,
-    colors: &HighlightColors,
-) -> (Vec<HighlightRange>, Option<usize>) {
+fn compute_all_highlights(content: &str, colors: &HighlightColors) -> (Vec<HighlightRange>, Option<usize>) {
     let line_count = content.lines().count();
     let mut highlights = Vec::with_capacity(line_count * 2);
     let lines: Vec<&str> = content.lines().collect();
-    let frontmatter_end = detect_frontmatter_end(&lines);
+    let frontmatter_end = ekphos_core::markdown::frontmatter_end(content);
 
     let mut in_code_block = false;
 
@@ -225,32 +210,7 @@ fn bytecount_chars(s: &str) -> usize {
     s.chars().count()
 }
 
-#[inline]
-fn detect_frontmatter_end(lines: &[&str]) -> Option<usize> {
-    if lines.is_empty() {
-        return None;
-    }
-
-    let first_line = lines[0].trim();
-    if first_line != "---" {
-        return None;
-    }
-
-    for (row, line) in lines.iter().enumerate().skip(1) {
-        if line.trim() == "---" {
-            return Some(row);
-        }
-    }
-
-    None
-}
-
-fn highlight_markdown_line(
-    row: usize,
-    line: &str,
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-) {
+fn highlight_markdown_line(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
     if line.is_empty() {
         return;
     }
@@ -297,7 +257,7 @@ fn highlight_markdown_line(
     highlight_details_tags_fast(row, line, colors, highlights);
     highlight_list_marker_fast(row, line, trimmed, colors, highlights);
     highlight_inline_code_fast(row, &chars, colors, highlights);
-    highlight_links_fast(row, &chars, colors, highlights);
+    highlight_links_fast(row, line, colors, highlights);
     let highlight_start = highlights.len();
     highlight_bold_fast(row, &chars, colors, highlights, highlight_start);
     highlight_italic_fast(row, &chars, colors, highlights, highlight_start);
@@ -305,22 +265,7 @@ fn highlight_markdown_line(
 
 #[inline]
 fn detect_header_fast(line: &str, chars: &[char]) -> Option<usize> {
-    let trimmed = line.trim_start();
-    if trimmed.is_empty() || trimmed.as_bytes()[0] != b'#' {
-        return None;
-    }
-
-    let hash_count = chars.iter().skip_while(|c| c.is_whitespace()).take_while(|&&c| c == '#').count();
-    if hash_count == 0 || hash_count > 6 {
-        return None;
-    }
-
-    let trimmed_chars: Vec<char> = trimmed.chars().collect();
-    if trimmed_chars.len() == hash_count || trimmed_chars.get(hash_count) == Some(&' ') {
-        return Some(chars.len());
-    }
-
-    None
+    ekphos_core::markdown::heading(line.trim_start()).map(|_| chars.len())
 }
 
 #[inline]
@@ -350,21 +295,11 @@ fn is_horizontal_rule(line: &str) -> bool {
     count >= 3
 }
 
-fn highlight_details_tags_fast(
-    row: usize,
-    line: &str,
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-) {
+fn highlight_details_tags_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
     let line_lower = line.to_ascii_lowercase();
     let bytes = line_lower.as_bytes();
 
-    const TAGS: &[&[u8]] = &[
-        b"<details>",
-        b"</details>",
-        b"<summary>",
-        b"</summary>",
-    ];
+    const TAGS: &[&[u8]] = &[b"<details>", b"</details>", b"<summary>", b"</summary>"];
     const TAG_LENS: &[usize] = &[9, 10, 9, 10];
 
     for (tag, &tag_len) in TAGS.iter().zip(TAG_LENS.iter()) {
@@ -392,13 +327,7 @@ fn highlight_details_tags_fast(
 }
 
 #[inline]
-fn highlight_list_marker_fast(
-    row: usize,
-    line: &str,
-    trimmed: &str,
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-) {
+fn highlight_list_marker_fast(row: usize, line: &str, trimmed: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
     if trimmed.is_empty() {
         return;
     }
@@ -407,10 +336,7 @@ fn highlight_list_marker_fast(
     let indent_char_count = line[..indent_chars].chars().count();
     let first_byte = trimmed.as_bytes()[0];
 
-    if (first_byte == b'-' || first_byte == b'*' || first_byte == b'+')
-        && trimmed.len() > 1
-        && trimmed.as_bytes()[1] == b' '
-    {
+    if (first_byte == b'-' || first_byte == b'*' || first_byte == b'+') && trimmed.len() > 1 && trimmed.as_bytes()[1] == b' ' {
         highlights.push(HighlightRange::new(
             row,
             indent_char_count,
@@ -421,10 +347,7 @@ fn highlight_list_marker_fast(
 
         if trimmed.len() >= 5 {
             let after = &trimmed[2..];
-            if after.starts_with("[ ] ")
-                || after.starts_with("[x] ")
-                || after.starts_with("[X] ")
-            {
+            if after.starts_with("[ ] ") || after.starts_with("[x] ") || after.starts_with("[X] ") {
                 highlights.push(HighlightRange::new(
                     row,
                     indent_char_count + 2,
@@ -454,12 +377,7 @@ fn highlight_list_marker_fast(
 }
 
 #[inline]
-fn highlight_inline_code_fast(
-    row: usize,
-    chars: &[char],
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-) {
+fn highlight_inline_code_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
     let len = chars.len();
     let mut i = 0;
 
@@ -473,16 +391,7 @@ fn highlight_inline_code_fast(
             let mut j = i + 1;
             while j < len {
                 if chars[j] == '`' {
-                    highlights.push(
-                        HighlightRange::new(
-                            row,
-                            i,
-                            j + 1,
-                            Style::default().fg(colors.code_color),
-                            HighlightType::InlineCode,
-                        )
-                        .with_priority(2),
-                    );
+                    highlights.push(HighlightRange::new(row, i, j + 1, Style::default().fg(colors.code_color), HighlightType::InlineCode).with_priority(2));
                     i = j + 1;
                     break;
                 }
@@ -498,76 +407,40 @@ fn highlight_inline_code_fast(
 }
 
 #[inline]
-fn highlight_links_fast(
-    row: usize,
-    chars: &[char],
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-) {
-    let len = chars.len();
-    let mut i = 0;
-
+fn highlight_links_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
     let check_from = highlights.len();
-
-    while i < len {
-        if chars[i] == '[' {
-            if is_position_highlighted_fast(highlights, row, i, check_from) {
-                i += 1;
-                continue;
-            }
-
-            let mut j = i + 1;
-            while j < len && chars[j] != ']' {
-                j += 1;
-            }
-
-            if j < len && j + 1 < len && chars[j + 1] == '(' {
-                let mut k = j + 2;
-                while k < len && chars[k] != ')' {
-                    k += 1;
-                }
-
-                if k < len {
-                    highlights.push(
-                        HighlightRange::new(
-                            row,
-                            i,
-                            k + 1,
-                            Style::default()
-                                .fg(colors.link_color)
-                                .add_modifier(Modifier::UNDERLINED),
-                            HighlightType::Link,
-                        )
-                        .with_priority(1),
-                    );
-                    i = k + 1;
-                    continue;
-                }
-            }
+    let mut cursor = 0;
+    while let Some(relative_start) = line[cursor..].find('[') {
+        let start = cursor + relative_start;
+        let Some(link) = ekphos_core::markdown::markdown_link_at(line, start) else {
+            cursor = start + 1;
+            continue;
+        };
+        let columns = link.range.start..link.range.end;
+        let start_col = line[..columns.start].chars().count();
+        let end_col = start_col + line[columns.clone()].chars().count();
+        if !is_position_highlighted_fast(highlights, row, start_col, check_from) {
+            highlights.push(
+                HighlightRange::new(
+                    row,
+                    start_col,
+                    end_col,
+                    Style::default().fg(colors.link_color).add_modifier(Modifier::UNDERLINED),
+                    HighlightType::Link,
+                )
+                .with_priority(1),
+            );
         }
-        i += 1;
+        cursor = link.range.end;
     }
 }
 
 #[inline]
-fn is_position_highlighted_fast(
-    highlights: &[HighlightRange],
-    row: usize,
-    col: usize,
-    start_idx: usize,
-) -> bool {
-    highlights[..start_idx]
-        .iter()
-        .any(|h| h.row == row && col >= h.start_col && col < h.end_col)
+fn is_position_highlighted_fast(highlights: &[HighlightRange], row: usize, col: usize, start_idx: usize) -> bool {
+    highlights[..start_idx].iter().any(|h| h.row == row && col >= h.start_col && col < h.end_col)
 }
 
-fn highlight_bold_fast(
-    row: usize,
-    chars: &[char],
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-    check_from: usize,
-) {
+fn highlight_bold_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
     let len = chars.len();
     if len < 4 {
         return;
@@ -601,13 +474,7 @@ fn highlight_bold_fast(
     }
 }
 
-fn highlight_italic_fast(
-    row: usize,
-    chars: &[char],
-    colors: &HighlightColors,
-    highlights: &mut Vec<HighlightRange>,
-    check_from: usize,
-) {
+fn highlight_italic_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
     let len = chars.len();
     if len < 2 {
         return;
@@ -655,79 +522,18 @@ fn highlight_italic_fast(
 }
 
 fn compute_all_wiki_links(content: &str, frontmatter_end: Option<usize>) -> Vec<WikiLinkRange> {
-    let line_count = content.lines().count();
-    let mut wiki_links = Vec::with_capacity(line_count / 4); 
-    let mut in_code_block = false;
-
-    for (row, line) in content.lines().enumerate() {
-        if let Some(fm_end) = frontmatter_end {
-            if row <= fm_end {
-                continue;
+    ekphos_core::markdown::document_wiki_links_with_tilde_fences(content, frontmatter_end, false)
+        .into_iter()
+        .map(|located| {
+            let columns = located.link.char_range(located.source);
+            WikiLinkRange {
+                row: located.row,
+                start_col: columns.start,
+                end_col: columns.end,
+                is_valid: false,
             }
-        }
-
-        let trimmed = line.trim_start();
-        if trimmed.len() >= 3 && trimmed.starts_with("```") {
-            in_code_block = !in_code_block;
-            continue;
-        }
-        if in_code_block {
-            continue;
-        }
-        if !line.contains("[[") {
-            continue;
-        }
-
-        let mut search_start = 0;
-
-        while search_start < line.len() {
-            let remaining = &line[search_start..];
-
-            if let Some(backtick_pos) = remaining.find('`') {
-                if let Some(wiki_pos) = remaining.find("[[") {
-                    if backtick_pos < wiki_pos {
-                        let abs_backtick = search_start + backtick_pos;
-                        if let Some(close_backtick) = line[abs_backtick + 1..].find('`') {
-                            search_start = abs_backtick + 1 + close_backtick + 1;
-                            continue;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if let Some(start_pos) = remaining.find("[[") {
-                let abs_start = search_start + start_pos;
-                let after_brackets = &line[abs_start + 2..];
-
-                if let Some(end_pos) = after_brackets.find("]]") {
-                    let raw_content = &after_brackets[..end_pos];
-
-                    if !raw_content.is_empty()
-                        && !raw_content.as_bytes().contains(&b'[')
-                        && !raw_content.as_bytes().contains(&b']')
-                    {
-                        let start_col = line[..abs_start].chars().count();
-                        let end_col = start_col + 2 + raw_content.chars().count() + 2;
-
-                        wiki_links.push(WikiLinkRange {
-                            row,
-                            start_col,
-                            end_col,
-                            is_valid: false,
-                        });
-                    }
-
-                    search_start = abs_start + 2 + end_pos + 2;
-                    continue;
-                }
-            }
-            break;
-        }
-    }
-
-    wiki_links
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -737,10 +543,10 @@ mod tests {
     #[test]
     fn test_detect_frontmatter() {
         let lines = vec!["---", "title: test", "---", "# Content"];
-        assert_eq!(detect_frontmatter_end(&lines), Some(2));
+        assert_eq!(ekphos_core::markdown::frontmatter_end_in_lines(lines), Some(2));
 
         let lines_no_fm = vec!["# No frontmatter", "Content"];
-        assert_eq!(detect_frontmatter_end(&lines_no_fm), None);
+        assert_eq!(ekphos_core::markdown::frontmatter_end_in_lines(lines_no_fm), None);
     }
 
     #[test]
@@ -829,18 +635,24 @@ mod tests {
 
         // #hashtag without space should NOT be a header
         let (highlights, _) = compute_all_highlights("#hashtag", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
-            "Hashtag without space should not be a header");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
+            "Hashtag without space should not be a header"
+        );
 
         // ####### (7 hashes) should NOT be a header
         let (highlights, _) = compute_all_highlights("####### too many", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
-            "7+ hashes should not be a header");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
+            "7+ hashes should not be a header"
+        );
 
         // # in middle of line should NOT be a header
         let (highlights, _) = compute_all_highlights("text # not header", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
-            "Hash in middle of line should not be a header");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Header),
+            "Hash in middle of line should not be a header"
+        );
     }
 
     #[test]
@@ -849,18 +661,24 @@ mod tests {
 
         // Single * should NOT be bold
         let (highlights, _) = compute_all_highlights("single * star", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
-            "Single * should not trigger bold");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
+            "Single * should not trigger bold"
+        );
 
         // Unclosed ** should NOT be bold
         let (highlights, _) = compute_all_highlights("**unclosed bold", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
-            "Unclosed ** should not be bold");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
+            "Unclosed ** should not be bold"
+        );
 
         // snake_case should NOT be bold (mid-word underscores)
         let (highlights, _) = compute_all_highlights("snake_case_variable", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
-            "snake_case should not trigger bold");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
+            "snake_case should not trigger bold"
+        );
     }
 
     #[test]
@@ -869,13 +687,17 @@ mod tests {
 
         // Unclosed * should NOT be italic
         let (highlights, _) = compute_all_highlights("*unclosed italic", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Italic),
-            "Unclosed * should not be italic");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Italic),
+            "Unclosed * should not be italic"
+        );
 
         // file_name.txt should NOT trigger italic
         let (highlights, _) = compute_all_highlights("file_name.txt", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Italic),
-            "Underscores in filenames should not trigger italic");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Italic),
+            "Underscores in filenames should not trigger italic"
+        );
     }
 
     #[test]
@@ -884,18 +706,24 @@ mod tests {
 
         // [text] without (url) should NOT be a link
         let (highlights, _) = compute_all_highlights("[just brackets]", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
-            "[text] without url should not be a link");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
+            "[text] without url should not be a link"
+        );
 
         // (url) without [text] should NOT be a link
         let (highlights, _) = compute_all_highlights("(just parens)", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
-            "(url) without text should not be a link");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
+            "(url) without text should not be a link"
+        );
 
         // [text] (url) with space should NOT be a link
         let (highlights, _) = compute_all_highlights("[text] (url)", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
-            "[text] (url) with space should not be a link");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
+            "[text] (url) with space should not be a link"
+        );
     }
 
     #[test]
@@ -904,8 +732,10 @@ mod tests {
 
         // Single backtick without closing should NOT be inline code
         let (highlights, _) = compute_all_highlights("text `unclosed", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::InlineCode),
-            "Unclosed backtick should not be inline code");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::InlineCode),
+            "Unclosed backtick should not be inline code"
+        );
     }
 
     #[test]
@@ -934,18 +764,24 @@ mod tests {
 
         // Dash without space should NOT be a list marker
         let (highlights, _) = compute_all_highlights("-nospace", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
-            "Dash without space should not be list marker");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
+            "Dash without space should not be list marker"
+        );
 
         // Number without dot+space should NOT be a list marker
         let (highlights, _) = compute_all_highlights("123", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
-            "Number alone should not be list marker");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
+            "Number alone should not be list marker"
+        );
 
         // Number with dot but no space should NOT be a list marker
         let (highlights, _) = compute_all_highlights("1.nospace", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
-            "Number.text should not be list marker");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::ListMarker),
+            "Number.text should not be list marker"
+        );
     }
 
     #[test]
@@ -954,35 +790,49 @@ mod tests {
 
         // Basic horizontal rules
         let (highlights, _) = compute_all_highlights("---", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "--- should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "--- should be a horizontal rule"
+        );
 
         let (highlights, _) = compute_all_highlights("***", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "*** should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "*** should be a horizontal rule"
+        );
 
         let (highlights, _) = compute_all_highlights("___", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "___ should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "___ should be a horizontal rule"
+        );
 
         // With spaces
         let (highlights, _) = compute_all_highlights("- - -", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "- - - should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "- - - should be a horizontal rule"
+        );
 
         let (highlights, _) = compute_all_highlights("* * *", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "* * * should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "* * * should be a horizontal rule"
+        );
 
         // More than 3
         let (highlights, _) = compute_all_highlights("-----", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "----- should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "----- should be a horizontal rule"
+        );
 
         // With leading/trailing whitespace
         let (highlights, _) = compute_all_highlights("  ---  ", &colors);
-        assert!(highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
-            "  ---   should be a horizontal rule");
+        assert!(
+            highlights.iter().any(|h| h.highlight_type == HighlightType::HorizontalRule),
+            "  ---   should be a horizontal rule"
+        );
     }
 
     #[test]
@@ -991,23 +841,31 @@ mod tests {
 
         // Only 2 dashes should NOT be a horizontal rule
         let (highlights, _) = compute_all_highlights("--", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
-            "-- should not be a horizontal rule");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
+            "-- should not be a horizontal rule"
+        );
 
         // Mixed characters should NOT be a horizontal rule
         let (highlights, _) = compute_all_highlights("--*", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
-            "--* should not be a horizontal rule");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
+            "--* should not be a horizontal rule"
+        );
 
         // Text after dashes should NOT be a horizontal rule
         let (highlights, _) = compute_all_highlights("--- text", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
-            "--- text should not be a horizontal rule");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
+            "--- text should not be a horizontal rule"
+        );
 
         // List marker should NOT be a horizontal rule
         let (highlights, _) = compute_all_highlights("- item", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
-            "- item should not be a horizontal rule");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::HorizontalRule),
+            "- item should not be a horizontal rule"
+        );
     }
 
     #[test]
@@ -1038,8 +896,12 @@ mod tests {
 
         // All highlights should be CodeBlock type
         for h in &highlights {
-            assert_eq!(h.highlight_type, HighlightType::CodeBlock,
-                "Content inside code block should only have CodeBlock highlight type, got {:?}", h.highlight_type);
+            assert_eq!(
+                h.highlight_type,
+                HighlightType::CodeBlock,
+                "Content inside code block should only have CodeBlock highlight type, got {:?}",
+                h.highlight_type
+            );
         }
     }
 
@@ -1049,13 +911,17 @@ mod tests {
 
         // Bold inside inline code should NOT be highlighted as bold
         let (highlights, _) = compute_all_highlights("`**not bold**`", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
-            "Bold markers inside inline code should not be highlighted");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Bold),
+            "Bold markers inside inline code should not be highlighted"
+        );
 
         // Link inside inline code should NOT be highlighted as link
         let (highlights, _) = compute_all_highlights("`[text](url)`", &colors);
-        assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
-            "Link inside inline code should not be highlighted");
+        assert!(
+            highlights.iter().all(|h| h.highlight_type != HighlightType::Link),
+            "Link inside inline code should not be highlighted"
+        );
     }
 
     #[test]
@@ -1068,13 +934,19 @@ mod tests {
 
         // First 4 lines (0-3) should be frontmatter
         for h in highlights.iter().filter(|h| h.row <= 3) {
-            assert_eq!(h.highlight_type, HighlightType::Frontmatter,
-                "Content in frontmatter should only be Frontmatter type at row {}", h.row);
+            assert_eq!(
+                h.highlight_type,
+                HighlightType::Frontmatter,
+                "Content in frontmatter should only be Frontmatter type at row {}",
+                h.row
+            );
         }
 
         // Line 4 should have a header
-        assert!(highlights.iter().any(|h| h.row == 4 && h.highlight_type == HighlightType::Header),
-            "Header after frontmatter should be highlighted");
+        assert!(
+            highlights.iter().any(|h| h.row == 4 && h.highlight_type == HighlightType::Header),
+            "Header after frontmatter should be highlighted"
+        );
     }
 
     #[test]

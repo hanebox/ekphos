@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, BlockInsertMode, Focus, Mode};
-use crate::vim::VimMode as VimModeNew;
+use ekphos_vim::VimMode as VimModeNew;
 
 pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     const ZEN_MAX_WIDTH: u16 = 95;
@@ -16,12 +16,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     // Calculate stats - count only actual words, not markdown syntax
     let word_count = if let Some(note) = app.current_note() {
-        note.content
-            .split_whitespace()
-            .filter(|word| {
-                word.chars().any(|c| c.is_alphanumeric())
-            })
-            .count()
+        note.content.split_whitespace().filter(|word| word.chars().any(|c| c.is_alphanumeric())).count()
     } else {
         0
     };
@@ -35,9 +30,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let note_path = if app.zen_mode {
         // In zen mode, just show the note title
-        app.current_note()
-            .map(|n| n.title.clone())
-            .unwrap_or_else(|| "—".to_string())
+        app.current_note().map(|n| n.title.clone()).unwrap_or_else(|| "—".to_string())
     } else {
         app.current_note()
             .and_then(|n| n.file_path.as_ref())
@@ -136,8 +129,8 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             // Pending text object scope (i/a)
             if let Some(scope) = &vim.pending_text_object_scope {
                 let ch = match scope {
-                    crate::vim::TextObjectScope::Inner => 'i',
-                    crate::vim::TextObjectScope::Around => 'a',
+                    ekphos_vim::TextObjectScope::Inner => 'i',
+                    ekphos_vim::TextObjectScope::Around => 'a',
                 };
                 pending_parts.push(format!("{}", ch));
             }
@@ -145,9 +138,9 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             // Pending mark
             if let Some(mark) = &vim.pending_mark {
                 let ch = match mark {
-                    crate::vim::PendingMark::Set => 'm',
-                    crate::vim::PendingMark::GotoExact => '`',
-                    crate::vim::PendingMark::GotoLine => '\'',
+                    ekphos_vim::PendingMark::Set => 'm',
+                    ekphos_vim::PendingMark::GotoExact => '`',
+                    ekphos_vim::PendingMark::GotoLine => '\'',
                 };
                 pending_parts.push(format!("{}", ch));
             }
@@ -155,8 +148,8 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             // Pending macro
             if let Some(mac) = &vim.pending_macro {
                 let ch = match mac {
-                    crate::vim::PendingMacro::Record => 'q',
-                    crate::vim::PendingMacro::Play => '@',
+                    ekphos_vim::PendingMacro::Record => 'q',
+                    ekphos_vim::PendingMacro::Play => '@',
                 };
                 pending_parts.push(format!("{}", ch));
             }
@@ -195,56 +188,30 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let statusbar = &theme.statusbar;
     let transparent_bg = app.config.transparent_bg;
 
-    let brand = Span::styled(
-        " ekphos ",
-        Style::default()
-            .fg(statusbar.brand)
-            .add_modifier(Modifier::BOLD),
-    );
+    let brand = Span::styled(" ekphos ", Style::default().fg(statusbar.brand).add_modifier(Modifier::BOLD));
 
-    let separator1 = Span::styled(
-        "›",
-        Style::default().fg(statusbar.separator),
-    );
+    let separator1 = Span::styled("›", Style::default().fg(statusbar.separator));
 
-    let mode = Span::styled(
-        format!(" {} ", mode_text),
-        Style::default().fg(statusbar.mode),
-    );
+    let mode = Span::styled(format!(" {} ", mode_text), Style::default().fg(statusbar.mode));
 
     // Pending info (operators, count, etc.)
     let pending = if !pending_info.is_empty() {
         vec![
-            Span::styled(
-                "›",
-                Style::default().fg(statusbar.separator),
-            ),
-            Span::styled(
-                format!(" {} ", pending_info),
-                Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("›", Style::default().fg(statusbar.separator)),
+            Span::styled(format!(" {} ", pending_info), Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
         ]
     } else {
         vec![]
     };
 
-    let separator2 = Span::styled(
-        "›",
-        Style::default().fg(statusbar.separator),
-    );
+    let separator2 = Span::styled("›", Style::default().fg(statusbar.separator));
 
     // Command input or file path (with optional status message for Normal mode)
     let (path_or_command, status_span) = if let Some((cmd, is_warning)) = command_input {
         let color = if is_warning { theme.warning } else { theme.primary };
-        (Span::styled(
-            format!(" {}", cmd),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ), None)
+        (Span::styled(format!(" {}", cmd), Style::default().fg(color).add_modifier(Modifier::BOLD)), None)
     } else {
-        let path = Span::styled(
-            format!(" {}", note_path),
-            Style::default().fg(statusbar.foreground),
-        );
+        let path = Span::styled(format!(" {}", note_path), Style::default().fg(statusbar.foreground));
         let status = normal_status.map(|msg| {
             vec![
                 Span::styled(" › ", Style::default().fg(statusbar.separator)),
@@ -257,12 +224,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     // Right side content
     // Recording indicator
     let recording_indicator = if app.mode == Mode::Edit && app.vim.macros.is_recording() {
-        vec![
-            Span::styled(
-                "● REC  ",
-                Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
-            ),
-        ]
+        vec![Span::styled("● REC  ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))]
     } else {
         vec![]
     };
@@ -276,41 +238,22 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         } else {
             "indexing  ".to_string()
         };
-        vec![
-            Span::styled(
-                progress_text,
-                Style::default().fg(theme.muted),
-            ),
-        ]
+        vec![Span::styled(progress_text, Style::default().fg(theme.muted))]
     } else {
         vec![]
     };
 
     let zen_indicator = if app.zen_mode {
-        vec![
-            Span::styled(
-                "zen  ",
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-            ),
-        ]
+        vec![Span::styled("zen  ", Style::default().fg(theme.info).add_modifier(Modifier::BOLD))]
     } else {
         vec![]
     };
 
-    let stats = Span::styled(
-        format!("{} words", word_count),
-        Style::default().fg(statusbar.mode),
-    );
+    let stats = Span::styled(format!("{} words", word_count), Style::default().fg(statusbar.mode));
 
-    let position = Span::styled(
-        format!("  {}%", percentage),
-        Style::default().fg(statusbar.mode),
-    );
+    let position = Span::styled(format!("  {}%", percentage), Style::default().fg(statusbar.mode));
 
-    let help = Span::styled(
-        "  ? help ",
-        Style::default().fg(statusbar.mode),
-    );
+    let help = Span::styled("  ? help ", Style::default().fg(statusbar.mode));
 
     // Build layout
     let mut left_content = vec![brand, separator1, mode];
@@ -361,8 +304,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let status_line = Line::from(spans);
-    let status_bar = Paragraph::new(status_line)
-        .style(bg_style);
+    let status_bar = Paragraph::new(status_line).style(bg_style);
 
     f.render_widget(status_bar, area);
 }

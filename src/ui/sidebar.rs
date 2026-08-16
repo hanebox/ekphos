@@ -55,7 +55,8 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
 
     let is_searching = app.search_active && !app.search_query.is_empty();
 
-    let items: Vec<ListItem> = app.sidebar_items
+    let items: Vec<ListItem> = app
+        .sidebar_items
         .iter()
         .enumerate()
         .map(|(idx, item)| {
@@ -63,15 +64,13 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let indent = "  ".repeat(item.depth);
 
             let is_cut = match (&app.cut_buffer, &item.kind) {
-                (Some(CutItem::Note { source_path, .. }), SidebarItemKind::Note { note_index }) => {
-                    app.notes.get(*note_index)
-                        .and_then(|note| note.file_path.as_ref())
-                        .map(|path| path == source_path)
-                        .unwrap_or(false)
-                }
-                (Some(CutItem::Folder { source_path, .. }), SidebarItemKind::Folder { path, .. }) => {
-                    path == source_path
-                }
+                (Some(CutItem::Note { source_path, .. }), SidebarItemKind::Note { note_index }) => app
+                    .notes
+                    .get(*note_index)
+                    .and_then(|note| note.file_path.as_ref())
+                    .map(|path| path == source_path)
+                    .unwrap_or(false),
+                (Some(CutItem::Folder { source_path, .. }), SidebarItemKind::Folder { path, .. }) => path == source_path,
                 _ => false,
             };
 
@@ -80,9 +79,7 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
                     let icon = if *expanded { "▼ " } else { "▶ " };
                     let folder_color = if *expanded { sidebar_theme.folder_expanded } else { sidebar_theme.folder };
                     let style = if is_selected {
-                        Style::default()
-                            .fg(folder_color)
-                            .add_modifier(Modifier::BOLD)
+                        Style::default().fg(folder_color).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(folder_color)
                     };
@@ -92,13 +89,9 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
                     let icon = "  ";
                     let is_match = is_searching && app.search_matched_notes.contains(note_index);
                     let style = if is_selected {
-                        Style::default()
-                            .fg(sidebar_theme.item_selected)
-                            .add_modifier(Modifier::BOLD)
+                        Style::default().fg(sidebar_theme.item_selected).add_modifier(Modifier::BOLD)
                     } else if is_match {
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD)
+                        Style::default().fg(theme.success).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(sidebar_theme.item)
                     };
@@ -126,7 +119,8 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         let total_count = app.notes.len();
         format!(" Found {}/{} ", match_count, total_count)
     } else {
-        let note_count = app.sidebar_items
+        let note_count = app
+            .sidebar_items
             .iter()
             .filter(|item| matches!(item.kind, SidebarItemKind::Note { .. }))
             .count();
@@ -134,17 +128,8 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let sidebar = List::new(items)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(theme.selection)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL).border_style(border_style))
+        .highlight_style(Style::default().bg(theme.selection).add_modifier(Modifier::BOLD))
         .highlight_symbol("");
 
     let mut list_state = ListState::default();
@@ -164,7 +149,8 @@ fn render_collapsed_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(theme.border)
     };
 
-    let note_count = app.sidebar_items
+    let note_count = app
+        .sidebar_items
         .iter()
         .filter(|item| matches!(item.kind, SidebarItemKind::Note { .. }))
         .count();
@@ -177,21 +163,10 @@ fn render_collapsed_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
     for _ in 0..padding_top {
         lines.push(Line::from(""));
     }
-    lines.push(Line::from(Span::styled(
-        " ≡",
-        Style::default().fg(theme.info),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(" {}", note_count),
-        Style::default().fg(theme.foreground),
-    )));
+    lines.push(Line::from(Span::styled(" ≡", Style::default().fg(theme.info))));
+    lines.push(Line::from(Span::styled(format!(" {}", note_count), Style::default().fg(theme.foreground))));
 
-    let collapsed = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
+    let collapsed = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(border_style));
 
     f.render_widget(collapsed, area);
 }

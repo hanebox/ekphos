@@ -2,7 +2,7 @@
 # A lightweight, terminal-based markdown research tool
 
 BINARY_NAME := ekphos
-VERSION := 0.20.10
+VERSION := 0.25.10
 BUILD_DIR := target
 RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug
@@ -52,23 +52,23 @@ run-release:
 
 # Run tests
 test:
-	cargo test
+	cargo test --workspace --all-targets
 
 # Check code without building
 check:
-	cargo check
+	cargo check --workspace --all-targets
 
 # Format code
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 # Format check (CI)
 fmt-check:
-	cargo fmt -- --check
+	cargo fmt --all -- --check
 
 # Lint with clippy
 lint:
-	cargo clippy -- -D warnings
+	scripts/clippy-ratchet.sh
 
 # Clean build artifacts
 clean:

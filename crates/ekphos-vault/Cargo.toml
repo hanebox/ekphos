@@ -1,0 +1,15 @@
+[package]
+name = "ekphos-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Filesystem vault, frontmatter, and journal services for Ekphos"
+
+[dependencies]
+ekphos-core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true

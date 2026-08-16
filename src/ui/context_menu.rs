@@ -40,10 +40,7 @@ pub fn render_context_menu(f: &mut Frame, app: &App) {
             .map(|(idx, item)| {
                 let label = item.label();
                 let style = if idx == selected_index {
-                    Style::default()
-                        .fg(app.theme.background)
-                        .bg(app.theme.primary)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(app.theme.background).bg(app.theme.primary).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(app.theme.foreground)
                 };

@@ -19,7 +19,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, ContextMenuState, DialogState, SearchPickerState, Mode, WikiAutocompleteState};
+use crate::app::{App, ContextMenuState, DialogState, Mode, SearchPickerState, WikiAutocompleteState};
 use crate::config::Config;
 
 fn main_layout_constraints(
@@ -31,9 +31,7 @@ fn main_layout_constraints(
 ) -> [Constraint; 3] {
     let sidebar_constraint = if zen_mode {
         Constraint::Length(0)
-    } else if sidebar_collapsed
-        || sidebar_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT
-    {
+    } else if sidebar_collapsed || sidebar_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT {
         Constraint::Length(5)
     } else {
         Constraint::Percentage(sidebar_width_percent)
@@ -41,9 +39,7 @@ fn main_layout_constraints(
 
     let outline_constraint = if zen_mode {
         Constraint::Length(0)
-    } else if outline_collapsed
-        || outline_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT
-    {
+    } else if outline_collapsed || outline_width_percent < Config::MINIMIZED_PANEL_WIDTH_PERCENT {
         Constraint::Length(5)
     } else {
         Constraint::Percentage(outline_width_percent)
@@ -56,11 +52,9 @@ pub(crate) use content::content_item_click_col;
 pub use content::render_content;
 pub(crate) use content::{cell_visible_width, detect_bare_url_len};
 pub use dialogs::{
-    render_create_folder_dialog, render_create_note_dialog, render_create_note_in_folder_dialog,
-    render_create_wiki_note_dialog, render_delete_confirm_dialog, render_delete_folder_confirm_dialog,
-    render_directory_not_found_dialog, render_empty_directory_dialog, render_help_dialog,
-    render_keybinding_warning, render_onboarding_dialog, render_rename_folder_dialog, render_rename_note_dialog,
-    render_unsaved_changes_dialog, render_welcome_dialog,
+    render_create_folder_dialog, render_create_note_dialog, render_create_note_in_folder_dialog, render_create_wiki_note_dialog, render_delete_confirm_dialog,
+    render_delete_folder_confirm_dialog, render_directory_not_found_dialog, render_empty_directory_dialog, render_help_dialog, render_keybinding_warning,
+    render_onboarding_dialog, render_rename_folder_dialog, render_rename_note_dialog, render_unsaved_changes_dialog, render_welcome_dialog,
 };
 pub use editor::render_editor;
 pub use outline::render_outline;
@@ -164,7 +158,108 @@ pub fn render(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{AppDependencies, DialogState};
     use ratatui::layout::Rect;
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    static NEXT_GOLDEN_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    struct GoldenApp {
+        app: App,
+        root: PathBuf,
+    }
+
+    impl GoldenApp {
+        fn new() -> Self {
+            let id = NEXT_GOLDEN_ROOT.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("ekphos-golden-{}-{id}", std::process::id()));
+            let vault = root.join("vault");
+            fs::create_dir_all(&vault).unwrap();
+            fs::write(
+                vault.join("fixture.md"),
+                "---\ntags: [golden]\n---\n# Golden fixture\n\nA [[fixture]] link.\n\n- [ ] stable task\n",
+            )
+            .unwrap();
+            let config = Config {
+                welcome_shown: false,
+                check_updates: false,
+                ..Config::default()
+            };
+            let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
+            let mut app = App::new_injected(config, vault, None, dependencies);
+            app.show_welcome = false;
+            app.dialog = DialogState::None;
+            let started = Instant::now();
+            while (app.indexing_in_progress || app.graph_indexing) && started.elapsed() < Duration::from_secs(5) {
+                app.poll_index_build();
+                app.poll_graph_workers();
+                std::thread::yield_now();
+            }
+            app.config.notes_dir = "/fixture/vault".to_string();
+            app.input_buffer = "/fixture/vault".to_string();
+            if let Some(note) = app.notes.first_mut() {
+                note.file_path = Some(PathBuf::from("/fixture/vault/fixture.md"));
+            }
+            Self { app, root }
+        }
+
+        fn hash(&mut self, width: u16, height: u16) -> u64 {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &mut self.app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut hash = 0xcbf29ce484222325u64;
+            for y in 0..height {
+                for x in 0..width {
+                    for byte in buffer[(x, y)].symbol().as_bytes() {
+                        hash ^= u64::from(*byte);
+                        hash = hash.wrapping_mul(0x100000001b3);
+                    }
+                }
+                hash ^= u64::from(b'\n');
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash
+        }
+    }
+
+    impl Drop for GoldenApp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn golden_main_view_100x30() {
+        let mut fixture = GoldenApp::new();
+        assert_eq!(fixture.hash(100, 30), 2_737_915_595_076_798_973);
+    }
+
+    #[test]
+    fn golden_edit_view_80x24() {
+        let mut fixture = GoldenApp::new();
+        fixture.app.enter_edit_mode();
+        assert_eq!(fixture.hash(80, 24), 16_481_934_834_706_604_804);
+    }
+
+    #[test]
+    fn golden_onboarding_dialog_100x30() {
+        let mut fixture = GoldenApp::new();
+        fixture.app.dialog = DialogState::Onboarding;
+        assert_eq!(fixture.hash(100, 30), 15_714_349_546_688_206_610);
+    }
+
+    #[test]
+    fn golden_create_note_dialog_72x22() {
+        let mut fixture = GoldenApp::new();
+        fixture.app.dialog = DialogState::CreateNote;
+        fixture.app.input_buffer = "deterministic-note".to_string();
+        assert_eq!(fixture.hash(72, 22), 16_799_502_509_508_382_863);
+    }
 
     #[test]
     fn default_panel_layout_keeps_twenty_percent_sides_and_center_minimum() {
@@ -178,11 +273,7 @@ mod tests {
                 config.effective_sidebar_width_percent(),
                 config.effective_outline_width_percent(),
             ),
-            [
-                Constraint::Percentage(20),
-                Constraint::Min(20),
-                Constraint::Percentage(20),
-            ]
+            [Constraint::Percentage(20), Constraint::Min(20), Constraint::Percentage(20),]
         );
     }
 
@@ -200,11 +291,7 @@ mod tests {
                 config.effective_sidebar_width_percent(),
                 config.effective_outline_width_percent(),
             ),
-            [
-                Constraint::Percentage(30),
-                Constraint::Min(20),
-                Constraint::Percentage(95),
-            ]
+            [Constraint::Percentage(30), Constraint::Min(20), Constraint::Percentage(95),]
         );
     }
 
@@ -212,11 +299,7 @@ mod tests {
     fn collapsed_panels_override_configured_widths() {
         assert_eq!(
             main_layout_constraints(false, true, true, 35, 45),
-            [
-                Constraint::Length(5),
-                Constraint::Min(20),
-                Constraint::Length(5),
-            ]
+            [Constraint::Length(5), Constraint::Min(20), Constraint::Length(5),]
         );
     }
 
@@ -224,19 +307,11 @@ mod tests {
     fn widths_below_ten_percent_use_minimized_constraints() {
         assert_eq!(
             main_layout_constraints(false, false, false, 9, 5),
-            [
-                Constraint::Length(5),
-                Constraint::Min(20),
-                Constraint::Length(5),
-            ]
+            [Constraint::Length(5), Constraint::Min(20), Constraint::Length(5),]
         );
         assert_eq!(
             main_layout_constraints(false, false, false, 10, 10),
-            [
-                Constraint::Percentage(10),
-                Constraint::Min(20),
-                Constraint::Percentage(10),
-            ]
+            [Constraint::Percentage(10), Constraint::Min(20), Constraint::Percentage(10),]
         );
     }
 
@@ -244,11 +319,7 @@ mod tests {
     fn zen_mode_overrides_configured_and_collapsed_widths() {
         assert_eq!(
             main_layout_constraints(true, true, false, 35, 45),
-            [
-                Constraint::Length(0),
-                Constraint::Min(20),
-                Constraint::Length(0),
-            ]
+            [Constraint::Length(0), Constraint::Min(20), Constraint::Length(0),]
         );
     }
 

@@ -1,0 +1,15 @@
+[package]
+name = "ekphos-graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Graph indexing and layout for Ekphos"
+
+[dependencies]
+ekphos-core.workspace = true
+serde.workspace = true
+bincode.workspace = true
+unicode-width.workspace = true

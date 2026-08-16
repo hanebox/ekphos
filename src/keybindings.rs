@@ -214,11 +214,7 @@ impl Default for KeybindingsConfig {
             .map(|command| {
                 (
                     command.id().to_string(),
-                    command
-                        .default_bindings()
-                        .iter()
-                        .map(|binding| (*binding).to_string())
-                        .collect(),
+                    command.default_bindings().iter().map(|binding| (*binding).to_string()).collect(),
                 )
             })
             .collect();
@@ -238,8 +234,7 @@ impl KeyChord {
     }
 
     fn normalized(mut code: KeyCode, mut modifiers: KeyModifiers) -> Self {
-        modifiers &=
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER;
+        modifiers &= KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::SUPER;
 
         if code == KeyCode::BackTab {
             code = KeyCode::Tab;
@@ -439,8 +434,7 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        Self::from_config(&KeybindingsConfig::default())
-            .expect("built-in keybindings must be valid")
+        Self::from_config(&KeybindingsConfig::default()).expect("built-in keybindings must be valid")
     }
 }
 
@@ -448,16 +442,7 @@ impl Keymap {
     pub fn from_config(config: &KeybindingsConfig) -> Result<Self, KeybindingValidationError> {
         let mut raw: BTreeMap<AppCommand, Vec<String>> = AppCommand::ALL
             .into_iter()
-            .map(|command| {
-                (
-                    command,
-                    command
-                        .default_bindings()
-                        .iter()
-                        .map(|binding| (*binding).to_string())
-                        .collect(),
-                )
-            })
+            .map(|command| (command, command.default_bindings().iter().map(|binding| (*binding).to_string()).collect()))
             .collect();
         let mut issues = Vec::new();
 
@@ -476,10 +461,7 @@ impl Keymap {
                 match KeySequence::parse(&spec) {
                     Ok(sequence) if !parsed.contains(&sequence) => parsed.push(sequence),
                     Ok(_) => {}
-                    Err(error) => issues.push(format!(
-                        "Invalid binding '{spec}' for '{}': {error}.",
-                        command.id()
-                    )),
+                    Err(error) => issues.push(format!("Invalid binding '{spec}' for '{}': {error}.", command.id())),
                 }
             }
             bindings.insert(command, parsed);
@@ -487,13 +469,7 @@ impl Keymap {
 
         let entries: Vec<_> = AppCommand::ALL
             .into_iter()
-            .flat_map(|command| {
-                bindings
-                    .get(&command)
-                    .into_iter()
-                    .flatten()
-                    .map(move |sequence| (command, sequence))
-            })
+            .flat_map(|command| bindings.get(&command).into_iter().flatten().map(move |sequence| (command, sequence)))
             .collect();
         for left_index in 0..entries.len() {
             let (left_command, left) = entries[left_index];
@@ -524,10 +500,7 @@ impl Keymap {
         }
 
         if issues.is_empty() {
-            Ok(Self {
-                bindings,
-                pending: Vec::new(),
-            })
+            Ok(Self { bindings, pending: Vec::new() })
         } else {
             issues.sort();
             issues.dedup();
@@ -535,11 +508,7 @@ impl Keymap {
         }
     }
 
-    pub fn resolve(
-        &mut self,
-        event: KeyEvent,
-        mut available: impl FnMut(AppCommand) -> bool,
-    ) -> KeyResolution {
+    pub fn resolve(&mut self, event: KeyEvent, mut available: impl FnMut(AppCommand) -> bool) -> KeyResolution {
         let chord = KeyChord::from_event(event);
         self.pending.push(chord);
 
@@ -589,19 +558,11 @@ impl Keymap {
     }
 
     pub fn binding_label(&self, command: AppCommand) -> String {
-        let bindings = self
-            .bindings
-            .get(&command)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+        let bindings = self.bindings.get(&command).map(Vec::as_slice).unwrap_or(&[]);
         if bindings.is_empty() {
             "Unbound".to_string()
         } else {
-            bindings
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" / ")
+            bindings.iter().map(ToString::to_string).collect::<Vec<_>>().join(" / ")
         }
     }
 }
@@ -614,23 +575,14 @@ mod tests {
         KeybindingsConfig(
             entries
                 .iter()
-                .map(|(command, bindings)| {
-                    (
-                        (*command).to_string(),
-                        bindings
-                            .iter()
-                            .map(|binding| (*binding).to_string())
-                            .collect(),
-                    )
-                })
+                .map(|(command, bindings)| ((*command).to_string(), bindings.iter().map(|binding| (*binding).to_string()).collect()))
                 .collect(),
         )
     }
 
     #[test]
     fn partial_config_replaces_one_command_and_keeps_defaults() {
-        let keymap =
-            Keymap::from_config(&config(&[("open_graph", &["alt+g"])])).expect("valid keymap");
+        let keymap = Keymap::from_config(&config(&[("open_graph", &["alt+g"])])).expect("valid keymap");
 
         assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Alt+g");
         assert_eq!(keymap.binding_label(AppCommand::Quit), "q");
@@ -638,42 +590,30 @@ mod tests {
 
     #[test]
     fn secondary_bindings_and_unbinding_are_supported() {
-        let keymap = Keymap::from_config(&config(&[
-            ("open_graph", &["alt+g", "ctrl+g"]),
-            ("show_help", &[]),
-        ]))
-        .expect("valid keymap");
+        let keymap = Keymap::from_config(&config(&[("open_graph", &["alt+g", "ctrl+g"]), ("show_help", &[])])).expect("valid keymap");
 
-        assert_eq!(
-            keymap.binding_label(AppCommand::OpenGraph),
-            "Alt+g / Ctrl+g"
-        );
+        assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Alt+g / Ctrl+g");
         assert_eq!(keymap.binding_label(AppCommand::ShowHelp), "Unbound");
     }
 
     #[test]
     fn equivalent_case_and_modifier_spellings_clash() {
-        let error = Keymap::from_config(&config(&[
-            ("open_graph", &["Ctrl+G"]),
-            ("show_help", &["control+shift+g"]),
-        ]))
-        .expect_err("bindings should clash");
+        let error = Keymap::from_config(&config(&[("open_graph", &["Ctrl+G"]), ("show_help", &["control+shift+g"])])).expect_err("bindings should clash");
 
-        assert!(error.issues.iter().any(|issue| {
-            issue.contains("Ctrl+Shift+g")
-                && issue.contains("open_graph")
-                && issue.contains("show_help")
-        }));
+        assert!(error
+            .issues
+            .iter()
+            .any(|issue| { issue.contains("Ctrl+Shift+g") && issue.contains("open_graph") && issue.contains("show_help") }));
     }
 
     #[test]
     fn prefix_clashes_name_both_commands() {
-        let error = Keymap::from_config(&config(&[("open_graph", &["g"])]))
-            .expect_err("g should clash with default g g");
+        let error = Keymap::from_config(&config(&[("open_graph", &["g"])])).expect_err("g should clash with default g g");
 
-        assert!(error.issues.iter().any(|issue| {
-            issue.contains("prefix") && issue.contains("open_graph") && issue.contains("go_first")
-        }));
+        assert!(error
+            .issues
+            .iter()
+            .any(|issue| { issue.contains("prefix") && issue.contains("open_graph") && issue.contains("go_first") }));
     }
 
     #[test]
@@ -682,31 +622,19 @@ mod tests {
         let available = |_| true;
 
         assert_eq!(
-            keymap.resolve(
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-                available
-            ),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), available),
             KeyResolution::Pending
         );
         assert_eq!(
-            keymap.resolve(
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-                available
-            ),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), available),
             KeyResolution::Command(AppCommand::GoFirst)
         );
         assert_eq!(
-            keymap.resolve(
-                KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
-                available
-            ),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), available),
             KeyResolution::Pending
         );
         assert_eq!(
-            keymap.resolve(
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
-                available,
-            ),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL), available,),
             KeyResolution::Command(AppCommand::OpenGraph)
         );
     }
@@ -716,13 +644,10 @@ mod tests {
         let mut keymap = Keymap::default();
 
         assert_eq!(
-            keymap.resolve(
-                KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
-                |command| !matches!(
-                    command,
-                    AppCommand::ToggleFold | AppCommand::FoldAll | AppCommand::UnfoldAll
-                ),
-            ),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), |command| !matches!(
+                command,
+                AppCommand::ToggleFold | AppCommand::FoldAll | AppCommand::UnfoldAll
+            ),),
             KeyResolution::NoMatch
         );
     }

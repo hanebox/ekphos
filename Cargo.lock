@@ -695,23 +695,82 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 name = "ekphos"
 version = "0.25.10"
 dependencies = [
- "bincode",
  "chrono",
  "clipboard-rs",
  "crossterm",
  "dirs 5.0.1",
+ "ekphos-core",
+ "ekphos-editor",
+ "ekphos-graph",
+ "ekphos-search",
+ "ekphos-vault",
+ "ekphos-vim",
  "htmd",
  "image",
  "libc",
  "ratatui",
  "ratatui-image",
  "serde",
- "serde_yaml",
  "shellexpand",
  "syntect",
  "toml",
  "unicode-width",
  "ureq",
+]
+
+[[package]]
+name = "ekphos-core"
+version = "0.25.10"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "ekphos-editor"
+version = "0.25.10"
+dependencies = [
+ "crossterm",
+ "ekphos-core",
+ "ratatui",
+ "serde",
+ "unicode-width",
+]
+
+[[package]]
+name = "ekphos-graph"
+version = "0.25.10"
+dependencies = [
+ "bincode",
+ "ekphos-core",
+ "serde",
+ "unicode-width",
+]
+
+[[package]]
+name = "ekphos-search"
+version = "0.25.10"
+dependencies = [
+ "bincode",
+ "dirs 5.0.1",
+ "serde",
+]
+
+[[package]]
+name = "ekphos-vault"
+version = "0.25.10"
+dependencies = [
+ "chrono",
+ "ekphos-core",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "ekphos-vim"
+version = "0.25.10"
+dependencies = [
+ "crossterm",
+ "ekphos-editor",
 ]
 
 [[package]]

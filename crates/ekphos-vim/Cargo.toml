@@ -1,0 +1,13 @@
+[package]
+name = "ekphos-vim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vim command and motion state for Ekphos"
+
+[dependencies]
+ekphos-editor.workspace = true
+crossterm.workspace = true

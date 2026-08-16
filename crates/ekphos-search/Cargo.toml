@@ -1,0 +1,14 @@
+[package]
+name = "ekphos-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Search indexing and query engine for Ekphos"
+
+[dependencies]
+serde.workspace = true
+bincode.workspace = true
+dirs.workspace = true

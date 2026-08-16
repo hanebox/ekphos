@@ -91,15 +91,8 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
         let max_name_width = (popup_width as usize).saturating_sub(8);
 
         let lines: Vec<Line> = if is_alias_mode {
-            let hint_text = if query.is_empty() {
-                "Type display text..."
-            } else {
-                query.as_str()
-            };
-            vec![Line::from(vec![
-                Span::raw(" "),
-                Span::styled(hint_text, Style::default().fg(theme.muted)),
-            ])]
+            let hint_text = if query.is_empty() { "Type display text..." } else { query.as_str() };
+            vec![Line::from(vec![Span::raw(" "), Span::styled(hint_text, Style::default().fg(theme.muted))])]
         } else {
             let mut lines = Vec::new();
             for (idx, suggestion) in suggestions.iter().enumerate().skip(scroll_offset).take(visible_count) {
@@ -109,30 +102,19 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
 
                 // Truncate display name if too long (use chars for Unicode safety)
                 let display_name = if suggestion.display_name.chars().count() > max_name_width {
-                    let truncated: String = suggestion
-                        .display_name
-                        .chars()
-                        .take(max_name_width.saturating_sub(1))
-                        .collect();
+                    let truncated: String = suggestion.display_name.chars().take(max_name_width.saturating_sub(1)).collect();
                     format!("{}…", truncated)
                 } else {
-                suggestion.display_name.clone()
+                    suggestion.display_name.clone()
                 };
 
                 let style = if is_selected {
-                    Style::default()
-                        .fg(theme.background)
-                        .bg(theme.primary)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(theme.background).bg(theme.primary).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.foreground)
                 };
 
-                let prefix_style = if is_selected {
-                    style
-                } else {
-                    Style::default().fg(theme.warning)
-                };
+                let prefix_style = if is_selected { style } else { Style::default().fg(theme.warning) };
 
                 // Main line with title
                 if is_selected {
@@ -155,9 +137,7 @@ pub fn render_wiki_autocomplete(f: &mut Frame, app: &App) {
 
                 if let Some(ref folder) = suggestion.folder_hint {
                     let hint_style = if is_selected {
-                        Style::default()
-                            .fg(theme.muted)
-                            .bg(theme.primary)
+                        Style::default().fg(theme.muted).bg(theme.primary)
                     } else {
                         Style::default().fg(theme.muted)
                     };

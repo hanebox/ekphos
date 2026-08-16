@@ -2,34 +2,49 @@
 
 #[cfg(not(target_os = "android"))]
 use clipboard_rs::{Clipboard as ClipboardTrait, ClipboardContext, ContentFormat};
+use htmd::{
+    element_handler::Handlers,
+    options::{BulletListMarker, Options},
+    Element, HtmlToMarkdown,
+};
 #[cfg(not(target_os = "android"))]
-use std::sync::{Mutex, OnceLock};
-use htmd::{Element, HtmlToMarkdown, element_handler::Handlers, options::{BulletListMarker, Options}};
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
-pub type ClipboardResult<T> = Result<T, ClipboardError>;
-
-#[derive(Debug)]
-#[allow(dead_code)] // ContextCreation/ReadError are unused on platforms without a system clipboard
-pub enum ClipboardError {
-    ContextCreation(String),
-    ReadError(String),
-    ConversionError(String),
-}
-
-impl std::fmt::Display for ClipboardError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ContextCreation(e) => write!(f, "Failed to create clipboard context: {}", e),
-            Self::ReadError(e) => write!(f, "Failed to read clipboard: {}", e),
-            Self::ConversionError(e) => write!(f, "Failed to convert HTML: {}", e),
-        }
-    }
-}
+pub use ekphos_editor::{Clipboard, ClipboardError, ClipboardResult, MemoryClipboard};
 
 pub enum ClipboardContent {
     Markdown(String),
     PlainText(String),
     Empty,
+}
+
+#[derive(Debug, Default)]
+pub struct SystemClipboard;
+
+impl Clipboard for SystemClipboard {
+    fn set_text(&self, text: &str) -> ClipboardResult<()> {
+        set_system_text_result(text)
+    }
+
+    fn get_text(&self) -> ClipboardResult<Option<String>> {
+        get_system_text_result()
+    }
+
+    fn get_html(&self) -> ClipboardResult<Option<String>> {
+        get_system_html_result()
+    }
+}
+
+pub fn default_clipboard() -> Arc<dyn Clipboard> {
+    #[cfg(test)]
+    {
+        Arc::new(MemoryClipboard::default())
+    }
+    #[cfg(not(test))]
+    {
+        Arc::new(SystemClipboard)
+    }
 }
 
 /// The one, lazily-created, process-wide clipboard context.
@@ -47,8 +62,7 @@ pub enum ClipboardContent {
 #[cfg(not(target_os = "android"))]
 fn clipboard_context() -> Option<&'static Mutex<ClipboardContext>> {
     static CTX: OnceLock<Option<Mutex<ClipboardContext>>> = OnceLock::new();
-    CTX.get_or_init(|| ClipboardContext::new().ok().map(Mutex::new))
-        .as_ref()
+    CTX.get_or_init(|| ClipboardContext::new().ok().map(Mutex::new)).as_ref()
 }
 
 /// Run `f` against the shared clipboard context, or return `None` if no
@@ -66,24 +80,17 @@ fn with_clipboard<T>(f: impl FnOnce(&ClipboardContext) -> T) -> Option<T> {
 /// swallowed silently — never logged to stdout/stderr, which would corrupt the
 /// TUI.
 #[cfg(not(target_os = "android"))]
-pub fn set_system_text(text: &str) {
-    let _ = with_clipboard(|ctx| ctx.set_text(text.to_string()));
+fn set_system_text_result(text: &str) -> ClipboardResult<()> {
+    with_clipboard(|ctx| ctx.set_text(text.to_string()).map_err(|error| ClipboardError::ReadError(error.to_string())))
+        .unwrap_or_else(|| Err(ClipboardError::ContextCreation("clipboard unavailable".to_string())))
 }
 
 #[cfg(target_os = "android")]
-pub fn set_system_text(_text: &str) {}
+fn set_system_text_result(_text: &str) -> ClipboardResult<()> {
+    Ok(())
+}
 
 /// Read plain text from the system clipboard, or `None` if unavailable.
-#[cfg(not(target_os = "android"))]
-pub fn get_system_text() -> Option<String> {
-    with_clipboard(|ctx| ctx.get_text().ok()).flatten()
-}
-
-#[cfg(target_os = "android")]
-pub fn get_system_text() -> Option<String> {
-    None
-}
-
 #[allow(dead_code)]
 #[cfg(not(target_os = "android"))]
 pub fn has_html() -> bool {
@@ -97,35 +104,29 @@ pub fn has_html() -> bool {
 }
 
 #[cfg(not(target_os = "android"))]
-pub fn get_html() -> ClipboardResult<Option<String>> {
+fn get_system_html_result() -> ClipboardResult<Option<String>> {
     with_clipboard(|ctx| {
         if !ctx.has(ContentFormat::Html) {
             return Ok(None);
         }
-        ctx.get_html()
-            .map(Some)
-            .map_err(|e| ClipboardError::ReadError(e.to_string()))
+        ctx.get_html().map(Some).map_err(|e| ClipboardError::ReadError(e.to_string()))
     })
     .unwrap_or_else(|| Err(ClipboardError::ContextCreation("clipboard unavailable".to_string())))
 }
 
 #[cfg(target_os = "android")]
-pub fn get_html() -> ClipboardResult<Option<String>> {
+fn get_system_html_result() -> ClipboardResult<Option<String>> {
     Ok(None)
 }
 
 #[cfg(not(target_os = "android"))]
-pub fn get_text() -> ClipboardResult<Option<String>> {
-    with_clipboard(|ctx| {
-        ctx.get_text()
-            .map(Some)
-            .map_err(|e| ClipboardError::ReadError(e.to_string()))
-    })
-    .unwrap_or_else(|| Err(ClipboardError::ContextCreation("clipboard unavailable".to_string())))
+fn get_system_text_result() -> ClipboardResult<Option<String>> {
+    with_clipboard(|ctx| ctx.get_text().map(Some).map_err(|e| ClipboardError::ReadError(e.to_string())))
+        .unwrap_or_else(|| Err(ClipboardError::ContextCreation("clipboard unavailable".to_string())))
 }
 
 #[cfg(target_os = "android")]
-pub fn get_text() -> ClipboardResult<Option<String>> {
+fn get_system_text_result() -> ClipboardResult<Option<String>> {
     Ok(None)
 }
 
@@ -173,9 +174,7 @@ fn create_converter() -> HtmlToMarkdown {
 /// Convert HTML to Markdown using htmd with custom link handling
 pub fn html_to_markdown(html: &str) -> ClipboardResult<String> {
     let converter = create_converter();
-    converter
-        .convert(html)
-        .map_err(|e| ClipboardError::ConversionError(e.to_string()))
+    converter.convert(html).map_err(|e| ClipboardError::ConversionError(e.to_string()))
 }
 
 /// Get clipboard content, converting HTML to Markdown if available
@@ -185,22 +184,22 @@ pub fn html_to_markdown(html: &str) -> ClipboardResult<String> {
 /// 2. Fall back to plain text
 /// 3. Return Empty if nothing available
 pub fn get_content_as_markdown() -> ClipboardResult<ClipboardContent> {
-    if let Ok(Some(html)) = get_html() {
+    get_content_as_markdown_from(&SystemClipboard)
+}
+
+pub fn get_content_as_markdown_from(clipboard: &dyn Clipboard) -> ClipboardResult<ClipboardContent> {
+    if let Ok(Some(html)) = clipboard.get_html() {
         if !html.trim().is_empty() {
-            match html_to_markdown(&html) {
-                Ok(md) => {
-                    let trimmed = md.trim().to_string();
-                    if !trimmed.is_empty() {
-                        return Ok(ClipboardContent::Markdown(trimmed));
-                    }
-                }
-                Err(_) => {
+            if let Ok(md) = html_to_markdown(&html) {
+                let trimmed = md.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Ok(ClipboardContent::Markdown(trimmed));
                 }
             }
         }
     }
 
-    match get_text() {
+    match clipboard.get_text() {
         Ok(Some(text)) if !text.is_empty() => Ok(ClipboardContent::PlainText(text)),
         Ok(_) => Ok(ClipboardContent::Empty),
         Err(e) => Err(e),
@@ -209,7 +208,12 @@ pub fn get_content_as_markdown() -> ClipboardResult<ClipboardContent> {
 
 #[allow(dead_code)]
 pub fn get_content_plain() -> ClipboardResult<ClipboardContent> {
-    match get_text() {
+    get_content_plain_from(&SystemClipboard)
+}
+
+#[allow(dead_code)]
+pub fn get_content_plain_from(clipboard: &dyn Clipboard) -> ClipboardResult<ClipboardContent> {
+    match clipboard.get_text() {
         Ok(Some(text)) if !text.is_empty() => Ok(ClipboardContent::PlainText(text)),
         Ok(_) => Ok(ClipboardContent::Empty),
         Err(e) => Err(e),

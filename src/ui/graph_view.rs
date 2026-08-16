@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::config::Theme;
-use crate::graph::{fit_zoom_for_bounds, GraphMode, GraphNode, GraphRelation};
+use ekphos_graph::{fit_zoom_for_bounds, GraphMode, GraphNode, GraphRelation};
 
 const NODE_WIDTH: u16 = 3;
 const NODE_HEIGHT: u16 = 2;
@@ -59,12 +59,7 @@ pub fn render_graph_view(frame: &mut Frame, app: &mut App) {
     let has_top_status = inner.height >= 7;
     let top_rows = u16::from(has_top_status);
     let bottom_rows = if inner.height >= 6 { 2 } else { 1 };
-    let graph_area = Rect::new(
-        inner.x,
-        inner.y + top_rows,
-        inner.width,
-        inner.height.saturating_sub(top_rows + bottom_rows),
-    );
+    let graph_area = Rect::new(inner.x, inner.y + top_rows, inner.width, inner.height.saturating_sub(top_rows + bottom_rows));
     app.graph_view.graph_area = graph_area;
     app.graph_view.view_width = graph_area.width as f32;
     app.graph_view.view_height = graph_area.height as f32;
@@ -104,37 +99,17 @@ pub fn render_graph_view(frame: &mut Frame, app: &mut App) {
 fn graph_title(app: &App) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let mut spans = vec![
-        Span::styled(
-            " GRAPH ",
-            Style::default()
-                .fg(theme.dialog.title)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            app.graph_view.mode.label(),
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(" GRAPH ", Style::default().fg(theme.dialog.title).add_modifier(Modifier::BOLD)),
+        Span::styled(app.graph_view.mode.label(), Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)),
     ];
     if app.graph_view.mode == GraphMode::Local {
         spans.extend([
-            Span::styled(
-                format!("  depth {}", app.graph_view.depth),
-                Style::default().fg(theme.dialog.text),
-            ),
-            Span::styled(
-                format!("  {}", app.graph_view.link_scope.label()),
-                Style::default().fg(theme.info),
-            ),
+            Span::styled(format!("  depth {}", app.graph_view.depth), Style::default().fg(theme.dialog.text)),
+            Span::styled(format!("  {}", app.graph_view.link_scope.label()), Style::default().fg(theme.info)),
         ]);
     }
     spans.push(Span::styled(
-        format!(
-            "  {} notes · {} links ",
-            app.graph_view.nodes.len(),
-            app.graph_view.edges.len()
-        ),
+        format!("  {} notes · {} links ", app.graph_view.nodes.len(), app.graph_view.edges.len()),
         Style::default().fg(theme.muted),
     ));
     spans
@@ -144,49 +119,23 @@ fn render_top_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let line = if app.graph_view.filter_editing {
         Line::from(vec![
-            Span::styled(
-                " Filter › ",
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                app.graph_view.filter_draft.clone(),
-                Style::default().fg(theme.search.input),
-            ),
+            Span::styled(" Filter › ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+            Span::styled(app.graph_view.filter_draft.clone(), Style::default().fg(theme.search.input)),
             Span::styled("▏", Style::default().fg(theme.primary)),
-            Span::styled(
-                "  Enter apply · Esc cancel",
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled("  Enter apply · Esc cancel", Style::default().fg(theme.muted)),
         ])
-    } else if let Some(selected) = app
-        .graph_view
-        .selected_node
-        .and_then(|idx| app.graph_view.nodes.get(idx))
-    {
+    } else if let Some(selected) = app.graph_view.selected_node.and_then(|idx| app.graph_view.nodes.get(idx)) {
         Line::from(vec![
             Span::styled(
                 format!(" {} ", selected.full_title),
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("{}  ", selected.path),
-                Style::default().fg(theme.muted),
-            ),
-            Span::styled(
-                format!("←{}  →{}", selected.in_degree, selected.out_degree),
-                Style::default().fg(theme.info),
-            ),
+            Span::styled(format!("{}  ", selected.path), Style::default().fg(theme.muted)),
+            Span::styled(format!("←{}  →{}", selected.in_degree, selected.out_degree), Style::default().fg(theme.info)),
         ])
     } else {
         Line::from(Span::styled(
-            format!(
-                " {} total notes · {} total links",
-                app.graph_view.total_nodes, app.graph_view.total_edges
-            ),
+            format!(" {} total notes · {} total links", app.graph_view.total_nodes, app.graph_view.total_edges),
             Style::default().fg(theme.muted),
         ))
     };
@@ -197,36 +146,20 @@ fn render_bottom_status(frame: &mut Frame, app: &App, inner: Rect, rows: u16) {
     let theme = &app.theme;
     let status_y = inner.y + inner.height.saturating_sub(rows);
     let mut status = Vec::new();
-    status.push(Span::styled(
-        format!(" {:.2}×  ", app.graph_view.zoom),
-        Style::default().fg(theme.muted),
-    ));
+    status.push(Span::styled(format!(" {:.2}×  ", app.graph_view.zoom), Style::default().fg(theme.muted)));
     if app.graph_view.layout_pending {
-        status.push(Span::styled(
-            " ◌ refining global layout  ",
-            Style::default().fg(theme.info),
-        ));
+        status.push(Span::styled(" ◌ refining global layout  ", Style::default().fg(theme.info)));
     }
     if !app.graph_view.filter_query.is_empty() {
-        status.push(Span::styled(
-            format!(" /{}  ", app.graph_view.filter_query),
-            Style::default().fg(theme.warning),
-        ));
+        status.push(Span::styled(format!(" /{}  ", app.graph_view.filter_query), Style::default().fg(theme.warning)));
     }
     if app.graph_view.mode == GraphMode::Global {
         status.push(Span::styled(
-            if app.graph_view.show_orphans {
-                " orphans on"
-            } else {
-                " orphans off"
-            },
+            if app.graph_view.show_orphans { " orphans on" } else { " orphans off" },
             Style::default().fg(theme.muted),
         ));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(status)),
-        Rect::new(inner.x, status_y, inner.width, 1),
-    );
+    frame.render_widget(Paragraph::new(Line::from(status)), Rect::new(inner.x, status_y, inner.width, 1));
 
     if rows >= 2 {
         let help = Line::from(vec![
@@ -247,20 +180,12 @@ fn render_bottom_status(frame: &mut Frame, app: &App, inner: Rect, rows: u16) {
             key("Esc", theme),
             hint(" close", theme),
         ]);
-        frame.render_widget(
-            Paragraph::new(help),
-            Rect::new(inner.x, status_y + 1, inner.width, 1),
-        );
+        frame.render_widget(Paragraph::new(help), Rect::new(inner.x, status_y + 1, inner.width, 1));
     }
 }
 
 fn key(text: &'static str, theme: &Theme) -> Span<'static> {
-    Span::styled(
-        text,
-        Style::default()
-            .fg(theme.warning)
-            .add_modifier(Modifier::BOLD),
-    )
+    Span::styled(text, Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))
 }
 
 fn hint(text: &'static str, theme: &Theme) -> Span<'static> {
@@ -294,9 +219,7 @@ fn visible_node_count(app: &App, area: Rect) -> usize {
 }
 
 fn detail_level(app: &App, area: Rect, visible_nodes: usize) -> DetailLevel {
-    let screen_cells = (area.width as usize)
-        .saturating_mul(area.height as usize)
-        .max(1);
+    let screen_cells = (area.width as usize).saturating_mul(area.height as usize).max(1);
     let density = visible_nodes as f32 / screen_cells as f32;
     if app.graph_view.zoom >= 0.20 && density < 0.35 {
         DetailLevel::Detail
@@ -314,9 +237,7 @@ fn label_budget(level: DetailLevel, visible_nodes: usize, area: Rect) -> usize {
     if level != DetailLevel::Detail || visible_nodes == 0 {
         return 0;
     }
-    let screen_cells = (area.width as usize)
-        .saturating_mul(area.height as usize)
-        .max(1);
+    let screen_cells = (area.width as usize).saturating_mul(area.height as usize).max(1);
     let comfortable_node_limit = (screen_cells / 24).max(8);
     if visible_nodes > comfortable_node_limit {
         return 0;
@@ -347,32 +268,15 @@ fn screen_position(app: &App, area: Rect, node: &GraphNode) -> (i32, i32) {
     )
 }
 
-fn render_edges(
-    buffer: &mut Buffer,
-    app: &App,
-    area: Rect,
-    level: DetailLevel,
-    selected: Option<usize>,
-) {
-    let screen_cells = (area.width as usize)
-        .saturating_mul(area.height as usize)
-        .max(1);
+fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, selected: Option<usize>) {
+    let screen_cells = (area.width as usize).saturating_mul(area.height as usize).max(1);
     let (edge_budget, selected_budget) = match level {
         DetailLevel::Overview => ((screen_cells / 10).max(32), (screen_cells / 3).max(64)),
         DetailLevel::Compact => ((screen_cells / 2).max(64), screen_cells.max(96)),
-        DetailLevel::Detail => (
-            screen_cells.saturating_mul(2).max(128),
-            screen_cells.saturating_mul(2).max(128),
-        ),
+        DetailLevel::Detail => (screen_cells.saturating_mul(2).max(128), screen_cells.saturating_mul(2).max(128)),
     };
     let selected_count = selected
-        .map(|idx| {
-            app.graph_view
-                .edges
-                .iter()
-                .filter(|edge| edge.from == idx || edge.to == idx)
-                .count()
-        })
+        .map(|idx| app.graph_view.edges.iter().filter(|edge| edge.from == idx || edge.to == idx).count())
         .unwrap_or(0);
     let normal_count = app.graph_view.edges.len().saturating_sub(selected_count);
     let mut seen_normal = HashSet::with_capacity(edge_budget);
@@ -381,32 +285,19 @@ fn render_edges(
     // Ordinary links form the base layer; the focused trace is painted last so
     // crossings cannot erase it. Even a 10k-link hub remains budget-bounded.
     for selected_pass in [false, true] {
-        let pass_count = if selected_pass {
-            selected_count
-        } else {
-            normal_count
-        };
-        let budget = if selected_pass {
-            selected_budget
-        } else {
-            edge_budget
-        };
+        let pass_count = if selected_pass { selected_count } else { normal_count };
+        let budget = if selected_pass { selected_budget } else { edge_budget };
         let stride = pass_count.div_ceil(budget.max(1)).max(1);
         let mut pass_index = 0usize;
         let mut drawn = 0usize;
         for edge in &app.graph_view.edges {
-            let is_selected = selected
-                .map(|idx| edge.from == idx || edge.to == idx)
-                .unwrap_or(false);
-            if is_selected != selected_pass
-                || edge.from >= app.graph_view.nodes.len()
-                || edge.to >= app.graph_view.nodes.len()
-            {
+            let is_selected = selected.map(|idx| edge.from == idx || edge.to == idx).unwrap_or(false);
+            if is_selected != selected_pass || edge.from >= app.graph_view.nodes.len() || edge.to >= app.graph_view.nodes.len() {
                 continue;
             }
             let sample_index = pass_index;
             pass_index += 1;
-            if !sample_index.is_multiple_of(stride) || drawn >= budget {
+            if sample_index % stride != 0 || drawn >= budget {
                 continue;
             }
             let from = screen_position(app, area, &app.graph_view.nodes[edge.from]);
@@ -415,19 +306,11 @@ fn render_edges(
                 continue;
             }
             let key = if from <= to { (from, to) } else { (to, from) };
-            let first_at_screen_position = if is_selected {
-                seen_selected.insert(key)
-            } else {
-                seen_normal.insert(key)
-            };
+            let first_at_screen_position = if is_selected { seen_selected.insert(key) } else { seen_normal.insert(key) };
             if !first_at_screen_position {
                 continue;
             }
-            let color = if is_selected {
-                app.theme.primary
-            } else {
-                app.theme.border
-            };
+            let color = if is_selected { app.theme.primary } else { app.theme.border };
             draw_clipped_line(buffer, from, to, area, color, is_selected);
             drawn += 1;
             if level == DetailLevel::Detail && (is_selected || app.graph_view.nodes.len() < 300) {
@@ -451,9 +334,7 @@ fn render_overview_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: 
                     bin.selected |= selected;
                     bin.root |= root;
                     bin.connected |= is_connected;
-                    if overview_priority(app, idx, connected)
-                        > overview_priority(app, bin.representative, connected)
-                    {
+                    if overview_priority(app, idx, connected) > overview_priority(app, bin.representative, connected) {
                         bin.representative = idx;
                     }
                 })
@@ -495,9 +376,7 @@ fn overview_priority(app: &App, idx: usize, connected: &HashSet<usize>) -> usize
     let node = &app.graph_view.nodes[idx];
     usize::from(app.graph_view.selected_node == Some(idx))
         .saturating_mul(usize::MAX / 2)
-        .saturating_add(
-            usize::from(node.relation == GraphRelation::Root).saturating_mul(usize::MAX / 4),
-        )
+        .saturating_add(usize::from(node.relation == GraphRelation::Root).saturating_mul(usize::MAX / 4))
         .saturating_add(usize::from(connected.contains(&idx)).saturating_mul(usize::MAX / 8))
         .saturating_add(node.degree())
 }
@@ -516,9 +395,7 @@ fn render_compact_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: &
                     bin.selected |= selected;
                     bin.root |= root;
                     bin.connected |= is_connected;
-                    if overview_priority(app, idx, connected)
-                        > overview_priority(app, bin.representative, connected)
-                    {
+                    if overview_priority(app, idx, connected) > overview_priority(app, bin.representative, connected) {
                         bin.representative = idx;
                     }
                 })
@@ -553,13 +430,7 @@ fn render_compact_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: &
     }
 }
 
-fn render_detail_nodes(
-    buffer: &mut Buffer,
-    app: &App,
-    area: Rect,
-    connected: &HashSet<usize>,
-    label_budget: usize,
-) {
+fn render_detail_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: &HashSet<usize>, label_budget: usize) {
     let mut occupied = HashSet::new();
     let mut visible = Vec::new();
     // Two linear passes keep the focused node on top without sorting the full
@@ -571,11 +442,7 @@ fn render_detail_nodes(
                 continue;
             }
             let (x, y) = screen_position(app, area, node);
-            if x < area.x as i32 - 3
-                || x >= area.right() as i32
-                || y < area.y as i32 - 2
-                || y >= area.bottom() as i32
-            {
+            if x < area.x as i32 - 3 || x >= area.right() as i32 || y < area.y as i32 - 2 || y >= area.bottom() as i32 {
                 continue;
             }
             let dimmed = app.graph_view.selected_node.is_some() && !connected.contains(&idx);
@@ -584,15 +451,7 @@ fn render_detail_nodes(
             } else {
                 relation_color(node, &app.theme, dimmed)
             };
-            draw_box_node(
-                buffer,
-                x,
-                y,
-                color,
-                selected,
-                node.relation == GraphRelation::Root,
-                area,
-            );
+            draw_box_node(buffer, x, y, color, selected, node.relation == GraphRelation::Root, area);
             for px in x..x + NODE_WIDTH as i32 {
                 for py in y..y + NODE_HEIGHT as i32 {
                     if contains(area, px, py) {
@@ -647,15 +506,7 @@ fn relation_color(node: &GraphNode, theme: &Theme, dimmed: bool) -> Color {
     }
 }
 
-fn draw_box_node(
-    buffer: &mut Buffer,
-    x: i32,
-    y: i32,
-    color: Color,
-    selected: bool,
-    root: bool,
-    area: Rect,
-) {
+fn draw_box_node(buffer: &mut Buffer, x: i32, y: i32, color: Color, selected: bool, root: bool, area: Rect) {
     let middle = if selected {
         '●'
     } else if root {
@@ -670,15 +521,7 @@ fn draw_box_node(
     }
 }
 
-fn place_label(
-    buffer: &mut Buffer,
-    node: &GraphNode,
-    anchor_x: i32,
-    anchor_y: i32,
-    color: Color,
-    area: Rect,
-    occupied: &mut HashSet<(u16, u16)>,
-) -> bool {
+fn place_label(buffer: &mut Buffer, node: &GraphNode, anchor_x: i32, anchor_y: i32, color: Color, area: Rect, occupied: &mut HashSet<(u16, u16)>) -> bool {
     let width = node.title.width() as i32;
     let candidates = [
         (anchor_x - width / 2, anchor_y + 2),
@@ -708,14 +551,7 @@ fn place_label(
     true
 }
 
-fn draw_arrow(
-    buffer: &mut Buffer,
-    from: (i32, i32),
-    to: (i32, i32),
-    area: Rect,
-    color: Color,
-    bidirectional: bool,
-) {
+fn draw_arrow(buffer: &mut Buffer, from: (i32, i32), to: (i32, i32), area: Rect, color: Color, bidirectional: bool) {
     let dx = to.0 - from.0;
     let dy = to.1 - from.1;
     let arrow = if bidirectional {
@@ -739,14 +575,7 @@ fn draw_arrow(
     put(buffer, position.0, position.1, arrow, color, area);
 }
 
-fn draw_clipped_line(
-    buffer: &mut Buffer,
-    from: (i32, i32),
-    to: (i32, i32),
-    area: Rect,
-    color: Color,
-    overwrite: bool,
-) {
+fn draw_clipped_line(buffer: &mut Buffer, from: (i32, i32), to: (i32, i32), area: Rect, color: Color, overwrite: bool) {
     let Some(((mut x0, mut y0), (x1, y1))) = clip_line(from, to, area) else {
         return;
     };
@@ -808,14 +637,8 @@ fn clip_line(from: (i32, i32), to: (i32, i32), area: Rect) -> Option<((i32, i32)
         }
     }
     Some((
-        (
-            (x0 + enter * dx).round() as i32,
-            (y0 + enter * dy).round() as i32,
-        ),
-        (
-            (x0 + exit * dx).round() as i32,
-            (y0 + exit * dy).round() as i32,
-        ),
+        ((x0 + enter * dx).round() as i32, (y0 + enter * dy).round() as i32),
+        ((x0 + exit * dx).round() as i32, (y0 + exit * dy).round() as i32),
     ))
 }
 
@@ -837,20 +660,8 @@ fn graph_bounds(nodes: &[GraphNode]) -> (f32, f32, f32, f32) {
         return (0.0, 0.0, 0.0, 0.0);
     }
     nodes.iter().fold(
-        (
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        ),
-        |(min_x, min_y, max_x, max_y), node| {
-            (
-                min_x.min(node.x),
-                min_y.min(node.y),
-                max_x.max(node.x + 3.0),
-                max_y.max(node.y + 3.0),
-            )
-        },
+        (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+        |(min_x, min_y, max_x, max_y), node| (min_x.min(node.x), min_y.min(node.y), max_x.max(node.x + 3.0), max_y.max(node.y + 3.0)),
     )
 }
 
@@ -858,12 +669,7 @@ fn fit_graph_to_area(app: &mut App, area: Rect) {
     let (min_x, min_y, max_x, max_y) = graph_bounds(&app.graph_view.nodes);
     let graph_width = (max_x - min_x).max(3.0);
     let graph_height = (max_y - min_y).max(2.0);
-    app.graph_view.zoom = fit_zoom_for_bounds(
-        graph_width,
-        graph_height,
-        area.width as f32,
-        area.height as f32,
-    );
+    app.graph_view.zoom = fit_zoom_for_bounds(graph_width, graph_height, area.width as f32, area.height as f32);
     let center_x = (min_x + max_x) / 2.0;
     let center_y = (min_y + max_y) / 2.0;
     app.graph_view.viewport_x = center_x - area.width as f32 / app.graph_view.zoom / 2.0;
@@ -871,11 +677,7 @@ fn fit_graph_to_area(app: &mut App, area: Rect) {
 }
 
 fn center_selected(app: &mut App, area: Rect) {
-    let Some(node) = app
-        .graph_view
-        .selected_node
-        .and_then(|idx| app.graph_view.nodes.get(idx))
-    else {
+    let Some(node) = app.graph_view.selected_node.and_then(|idx| app.graph_view.nodes.get(idx)) else {
         return;
     };
     app.graph_view.viewport_x = node.x - area.width as f32 / app.graph_view.zoom / 2.0;
@@ -885,9 +687,7 @@ fn center_selected(app: &mut App, area: Rect) {
 fn render_centered_message(frame: &mut Frame, area: Rect, message: &str, color: Color) {
     let y = area.y + area.height / 2;
     frame.render_widget(
-        Paragraph::new(message)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(color)),
+        Paragraph::new(message).alignment(Alignment::Center).style(Style::default().fg(color)),
         Rect::new(area.x, y, area.width, 1),
     );
 }
@@ -927,17 +727,14 @@ mod tests {
     #[test]
     fn clips_far_edges_to_viewport() {
         let area = Rect::new(10, 5, 20, 10);
-        assert_eq!(
-            clip_line((-10_000, 8), (10_000, 8), area),
-            Some(((10, 8), (29, 8)))
-        );
+        assert_eq!(clip_line((-10_000, 8), (10_000, 8), area), Some(((10, 8), (29, 8))));
         assert_eq!(clip_line((-10, -10), (-1, -1), area), None);
     }
 
     #[test]
     fn bounds_are_finite_for_single_node() {
         let mut node = GraphNode {
-            note_index: 0,
+            note_id: ekphos_core::NoteId::new(0),
             title: "A".into(),
             full_title: "A".into(),
             path: "A".into(),
@@ -950,10 +747,7 @@ mod tests {
             in_degree: 0,
             out_degree: 0,
         };
-        assert_eq!(
-            graph_bounds(std::slice::from_mut(&mut node)),
-            (2.0, 3.0, 5.0, 6.0)
-        );
+        assert_eq!(graph_bounds(std::slice::from_mut(&mut node)), (2.0, 3.0, 5.0, 6.0));
     }
 
     #[test]

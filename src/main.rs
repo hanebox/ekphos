@@ -1,17 +1,3 @@
-mod app;
-mod clipboard;
-mod config;
-mod editor;
-mod event;
-mod graph;
-mod highlight;
-mod highlight_worker;
-mod journal;
-mod keybindings;
-mod search;
-mod ui;
-mod vim;
-
 use std::env;
 use std::fs;
 use std::io;
@@ -19,17 +5,14 @@ use std::path::PathBuf;
 
 use crossterm::{
     cursor::SetCursorStyle,
-    event::{
-        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture,
-    },
+    event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::App;
-use event::run_app;
+use ekphos::app::App;
+use ekphos::{config, event::run_app};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -54,10 +37,7 @@ fn check_for_updates() -> bool {
     let already_skipped = skipped.as_ref() == Some(&latest);
 
     println!();
-    println!(
-        "  A new version of ekphos is available: v{} (current: v{})",
-        latest, VERSION
-    );
+    println!("  A new version of ekphos is available: v{} (current: v{})", latest, VERSION);
     println!();
     println!("  To update:");
     println!("    Cargo:    cargo install ekphos");
@@ -192,16 +172,10 @@ fn reset_config_and_themes() {
     let _config = config::Config::load_or_create();
 
     println!("  Created: {}", config_path.display());
-    println!(
-        "  Created: {}",
-        themes_dir.join("ekphos-dawn.toml").display()
-    );
+    println!("  Created: {}", themes_dir.join("ekphos-dawn.toml").display());
 
     println!();
-    println!(
-        "Reset complete! Configuration restored to v{} defaults.",
-        VERSION
-    );
+    println!("Reset complete! Configuration restored to v{} defaults.", VERSION);
 }
 
 fn clean_cache() {
@@ -303,11 +277,7 @@ fn terminal_writer() -> Box<dyn io::Write> {
 fn resolve_path(path_str: &str) -> Option<PathBuf> {
     let expanded = shellexpand::tilde(path_str).to_string();
     let path = PathBuf::from(&expanded);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        env::current_dir().ok()?.join(path)
-    };
+    let absolute = if path.is_absolute() { path } else { env::current_dir().ok()?.join(path) };
 
     absolute.canonicalize().ok().or(Some(absolute))
 }

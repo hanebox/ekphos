@@ -1,0 +1,16 @@
+[package]
+name = "ekphos-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Text editor engine and widget for Ekphos"
+
+[dependencies]
+ekphos-core.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+unicode-width.workspace = true

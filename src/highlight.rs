@@ -108,6 +108,21 @@ impl Highlighter {
         result
     }
 
+    pub fn retained_cache_bytes(&self) -> usize {
+        self.cache
+            .borrow()
+            .iter()
+            .map(|(key, lines)| {
+                key.lang.capacity()
+                    + lines.capacity() * std::mem::size_of::<Vec<Span<'static>>>()
+                    + lines
+                        .iter()
+                        .map(|spans| spans.capacity() * std::mem::size_of::<Span<'static>>() + spans.iter().map(|span| span.content.len()).sum::<usize>())
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
     #[allow(dead_code)]
     pub fn clear_cache(&self) {
         self.cache.borrow_mut().clear();
@@ -176,14 +191,17 @@ mod tests {
     #[test]
     fn test_highlight_block_c_with_cjk_comments() {
         let h = Highlighter::default();
-        let content = "#include \"user/user.h\"\nint main(int argc, char *argv[]) {\n    // 错误检查\n    if (argc != 2) {\n        printf(\"hello\");\n    }\n}";
+        let content =
+            "#include \"user/user.h\"\nint main(int argc, char *argv[]) {\n    // 错误检查\n    if (argc != 2) {\n        printf(\"hello\");\n    }\n}";
         let result = h.highlight_block(content, "c");
         assert_eq!(result.len(), 7);
         let line_after_cjk = &result[3];
         eprintln!("Line 3 spans: {:?}", line_after_cjk.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>());
-        assert!(line_after_cjk.len() > 1,
+        assert!(
+            line_after_cjk.len() > 1,
             "Line after CJK comment should have multiple highlighted spans, got {} span(s): {:?}",
             line_after_cjk.len(),
-            line_after_cjk.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>());
+            line_after_cjk.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>()
+        );
     }
 }

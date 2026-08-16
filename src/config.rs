@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::keybindings::KeybindingsConfig;
+pub use ekphos_editor::LineNumberMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -49,16 +50,6 @@ pub struct Config {
     pub editor: EditorConfig,
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LineNumberMode {
-    None,
-    #[default]
-    Absolute,
-    Relative,
-    Hybrid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,7 +224,11 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let config_path = Self::config_path();
+        Self::load_from_dir(&Self::config_dir())
+    }
+
+    pub fn load_from_dir(config_dir: &std::path::Path) -> Self {
+        let config_path = Self::config_path_in(config_dir);
         if config_path.exists() {
             match fs::read_to_string(&config_path) {
                 Ok(content) => match toml::from_str(&content) {
@@ -276,20 +271,26 @@ impl Config {
     pub fn config_path() -> PathBuf {
         Self::config_dir().join("config.toml")
     }
+    pub fn config_path_in(config_dir: &std::path::Path) -> PathBuf {
+        config_dir.join("config.toml")
+    }
     pub fn config_dir() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".config")
-            .join("ekphos")
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".config").join("ekphos")
     }
     pub fn themes_dir() -> PathBuf {
         Self::config_dir().join("themes")
     }
+    pub fn themes_dir_in(config_dir: &std::path::Path) -> PathBuf {
+        config_dir.join("themes")
+    }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let config_dir = Self::config_dir();
-        fs::create_dir_all(&config_dir)?;
-        let config_path = Self::config_path();
+        self.save_to_dir(&Self::config_dir())
+    }
+
+    pub fn save_to_dir(&self, config_dir: &std::path::Path) -> std::io::Result<()> {
+        fs::create_dir_all(config_dir)?;
+        let config_path = Self::config_path_in(config_dir);
         let toml_string = toml::to_string_pretty(self).unwrap_or_else(|_| String::new());
         fs::write(&config_path, toml_string)?;
         Ok(())
@@ -722,7 +723,10 @@ impl ThemeFile {
     }
 
     pub fn load_by_name(name: &str) -> Option<Self> {
-        let user_themes_dir = Config::themes_dir();
+        Self::load_by_name_in(name, &Config::themes_dir())
+    }
+
+    pub fn load_by_name_in(name: &str, user_themes_dir: &std::path::Path) -> Option<Self> {
         if user_themes_dir.exists() {
             let theme_path = user_themes_dir.join(format!("{}.toml", name));
             if theme_path.exists() {
@@ -752,6 +756,10 @@ impl ThemeFile {
     /// bundled theme (e.g. the `ekphos-dawn.toml` written on first launch) is
     /// only listed once, as an official theme.
     pub fn list_available() -> Vec<ThemeEntry> {
+        Self::list_available_in(&Config::themes_dir())
+    }
+
+    pub fn list_available_in(user_themes_dir: &std::path::Path) -> Vec<ThemeEntry> {
         let mut entries: Vec<ThemeEntry> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -764,7 +772,7 @@ impl ThemeFile {
             }
         }
 
-        if let Ok(read_dir) = fs::read_dir(Config::themes_dir()) {
+        if let Ok(read_dir) = fs::read_dir(user_themes_dir) {
             let mut user_names: Vec<String> = Vec::new();
             for entry in read_dir.flatten() {
                 let path = entry.path();
@@ -780,10 +788,7 @@ impl ThemeFile {
             user_names.sort();
             for name in user_names {
                 if seen.insert(name.clone()) {
-                    entries.push(ThemeEntry {
-                        name,
-                        bundled: false,
-                    });
+                    entries.push(ThemeEntry { name, bundled: false });
                 }
             }
         }
@@ -1006,6 +1011,13 @@ impl Theme {
         }
         Self::from_file(&ThemeFile::default())
     }
+
+    pub fn from_name_in(name: &str, themes_dir: &std::path::Path) -> Self {
+        if let Some(theme_file) = ThemeFile::load_by_name_in(name, themes_dir) {
+            return Self::from_file(&theme_file);
+        }
+        Self::from_file(&ThemeFile::default())
+    }
 }
 
 impl Default for Theme {
@@ -1015,10 +1027,7 @@ impl Default for Theme {
 }
 
 fn parse_hex_color(hex: &str) -> Color {
-    let hex = hex
-        .trim_start_matches('#')
-        .trim_start_matches('\'')
-        .trim_end_matches('\'');
+    let hex = hex.trim_start_matches('#').trim_start_matches('\'').trim_end_matches('\'');
     if hex.len() == 6 && hex.is_ascii() {
         if let (Ok(r), Ok(g), Ok(b)) = (
             u8::from_str_radix(&hex[0..2], 16),
@@ -1046,10 +1055,7 @@ mod tests {
 
     #[test]
     fn partial_keybinding_table_keeps_other_command_defaults() {
-        let config: Config = toml::from_str(
-            "notes_dir = '/tmp/notes'\n[keybindings]\nopen_graph = ['alt+g']\n",
-        )
-        .unwrap();
+        let config: Config = toml::from_str("notes_dir = '/tmp/notes'\n[keybindings]\nopen_graph = ['alt+g']\n").unwrap();
         let keymap = Keymap::from_config(&config.keybindings).unwrap();
 
         assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Alt+g");
@@ -1082,8 +1088,7 @@ mod tests {
 
     #[test]
     fn panel_widths_deserialize_custom_toml_values() {
-        let config: Config =
-            toml::from_str("sidebar_width_percent = 35\noutline_width_percent = 45\n").unwrap();
+        let config: Config = toml::from_str("sidebar_width_percent = 35\noutline_width_percent = 45\n").unwrap();
 
         assert_eq!(config.sidebar_width_percent, 35);
         assert_eq!(config.outline_width_percent, 45);
@@ -1113,10 +1118,7 @@ mod tests {
 
     #[test]
     fn image_height_deserializes_and_serializes_custom_value() {
-        let config: Config = toml::from_str(
-            "image_height = 12\ninline_image_height = 6",
-        )
-        .unwrap();
+        let config: Config = toml::from_str("image_height = 12\ninline_image_height = 6").unwrap();
 
         assert_eq!(config.image_height, 12);
         assert_eq!(config.effective_image_height(), 12);
@@ -1130,10 +1132,7 @@ mod tests {
     #[test]
     fn image_height_has_border_safe_effective_minimum() {
         for configured_height in 0..=2 {
-            let config: Config = toml::from_str(&format!(
-                "image_height = {configured_height}"
-            ))
-            .unwrap();
+            let config: Config = toml::from_str(&format!("image_height = {configured_height}")).unwrap();
 
             assert_eq!(config.image_height, configured_height);
             assert_eq!(config.effective_image_height(), 3);
@@ -1143,10 +1142,7 @@ mod tests {
         assert_eq!(config.effective_image_height(), 3);
 
         for configured_height in 0..=2 {
-            let config: Config = toml::from_str(&format!(
-                "inline_image_height = {configured_height}"
-            ))
-            .unwrap();
+            let config: Config = toml::from_str(&format!("inline_image_height = {configured_height}")).unwrap();
 
             assert_eq!(config.inline_image_height, configured_height);
             assert_eq!(config.effective_inline_image_height(), 3);
@@ -1174,38 +1170,17 @@ mod tests {
 
     #[test]
     fn panel_width_resize_uses_five_point_steps() {
-        assert_eq!(
-            Config::resized_panel_width_percent(20, -Config::PANEL_RESIZE_STEP_PERCENT),
-            15
-        );
-        assert_eq!(
-            Config::resized_panel_width_percent(20, Config::PANEL_RESIZE_STEP_PERCENT),
-            25
-        );
+        assert_eq!(Config::resized_panel_width_percent(20, -Config::PANEL_RESIZE_STEP_PERCENT), 15);
+        assert_eq!(Config::resized_panel_width_percent(20, Config::PANEL_RESIZE_STEP_PERCENT), 25);
     }
 
     #[test]
     fn panel_width_resize_stops_at_bounds() {
-        assert_eq!(
-            Config::resized_panel_width_percent(5, -Config::PANEL_RESIZE_STEP_PERCENT),
-            5
-        );
-        assert_eq!(
-            Config::resized_panel_width_percent(5, Config::PANEL_RESIZE_STEP_PERCENT),
-            10
-        );
-        assert_eq!(
-            Config::resized_panel_width_percent(95, Config::PANEL_RESIZE_STEP_PERCENT),
-            95
-        );
-        assert_eq!(
-            Config::resized_panel_width_percent(-100, Config::PANEL_RESIZE_STEP_PERCENT),
-            10
-        );
-        assert_eq!(
-            Config::resized_panel_width_percent(100, -Config::PANEL_RESIZE_STEP_PERCENT),
-            90
-        );
+        assert_eq!(Config::resized_panel_width_percent(5, -Config::PANEL_RESIZE_STEP_PERCENT), 5);
+        assert_eq!(Config::resized_panel_width_percent(5, Config::PANEL_RESIZE_STEP_PERCENT), 10);
+        assert_eq!(Config::resized_panel_width_percent(95, Config::PANEL_RESIZE_STEP_PERCENT), 95);
+        assert_eq!(Config::resized_panel_width_percent(-100, Config::PANEL_RESIZE_STEP_PERCENT), 10);
+        assert_eq!(Config::resized_panel_width_percent(100, -Config::PANEL_RESIZE_STEP_PERCENT), 90);
     }
 
     #[test]

@@ -18,10 +18,7 @@ pub fn render_search_dialog(f: &mut Frame, app: &App, content_area: Rect) {
 
     let theme = &app.theme;
 
-    let dialog_x = content_area
-        .x
-        .saturating_add(content_area.width)
-        .saturating_sub(DIALOG_WIDTH + 1);
+    let dialog_x = content_area.x.saturating_add(content_area.width).saturating_sub(DIALOG_WIDTH + 1);
     let dialog_y = content_area.y + 1;
 
     let dialog_width = DIALOG_WIDTH.min(content_area.width.saturating_sub(2));
@@ -32,11 +29,7 @@ pub fn render_search_dialog(f: &mut Frame, app: &App, content_area: Rect) {
     let cursor = "_";
 
     let match_count = app.buffer_search.matches.len();
-    let current_idx = if match_count > 0 {
-        app.buffer_search.current_match_index + 1
-    } else {
-        0
-    };
+    let current_idx = if match_count > 0 { app.buffer_search.current_match_index + 1 } else { 0 };
 
     let count_text = if match_count > 0 {
         format!("{}/{}", current_idx, match_count)
@@ -81,10 +74,7 @@ pub fn render_search_dialog(f: &mut Frame, app: &App, content_area: Rect) {
     let dialog = Paragraph::new(vec![input_line]).block(
         Block::default()
             .title(" Find ")
-            .title_bottom(Line::from(Span::styled(
-                &hint_text,
-                Style::default().fg(theme.search.match_count),
-            )).right_aligned())
+            .title_bottom(Line::from(Span::styled(&hint_text, Style::default().fg(theme.search.match_count))).right_aligned())
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
             .style(Style::default().bg(theme.search.background)),
