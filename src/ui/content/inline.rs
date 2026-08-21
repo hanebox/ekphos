@@ -3,6 +3,9 @@ use super::*;
 /// Calculate how many characters are removed by inline formatting before a given position
 /// This accounts for **bold**, *italic*, ~~strikethrough~~, `code`, [[wiki links]], and [markdown](links)
 pub(super) fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
+    if !text.as_bytes().iter().any(|byte| matches!(byte, b'*' | b'_' | b'~' | b'`' | b'[' | b'!')) {
+        return 0;
+    }
     let mut shrinkage = 0usize;
     let mut pos = 0;
     let chars: Vec<char> = text.chars().collect();

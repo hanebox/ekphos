@@ -743,7 +743,6 @@ dependencies = [
  "bincode",
  "ekphos-core",
  "serde",
- "unicode-width",
 ]
 
 [[package]]

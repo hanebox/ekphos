@@ -329,10 +329,11 @@ where
 
 pub(super) fn render_table_row(
     f: &mut Frame,
-    cells: &[String],
+    document: &DocumentSnapshot,
+    cells: &[DocumentRange],
     is_separator: bool,
     is_header: bool,
-    natural_widths: &[usize],
+    natural_widths: &[u16],
     alignments: &[crate::app::Alignment],
     context: RenderContext<'_>,
 ) {
@@ -351,7 +352,8 @@ pub(super) fn render_table_row(
     let n = natural_widths.len();
     let overhead = 3 + 3 * n;
     let budget = (area.width as usize).saturating_sub(overhead);
-    let widths = cap_column_widths(natural_widths, budget);
+    let natural_widths: Vec<usize> = natural_widths.iter().map(|width| *width as usize).collect();
+    let widths = cap_column_widths(&natural_widths, budget);
 
     if is_separator {
         // Separator is always a single line.
@@ -392,7 +394,7 @@ pub(super) fn render_table_row(
         .enumerate()
         .map(|(i, c)| {
             let w = widths.get(i).copied().unwrap_or(0);
-            let expanded = expand_tabs(c);
+            let expanded = expand_tabs(document.slice(*c));
             let mut all_visual_lines: Vec<Vec<Span<'static>>> = Vec::new();
             for logical in split_cell_by_br(&expanded) {
                 let spans = parse_inline_formatting::<fn(&str) -> bool>(logical, theme, None, None);
@@ -469,23 +471,24 @@ pub(super) fn render_inline_image_with_cursor(
     f: &mut Frame,
     app: &mut App,
     item_index: usize,
-    path: &str,
+    path: DocumentRange,
     area: Rect,
     viewport: Rect,
     is_cursor: bool,
     is_hovered: bool,
 ) {
+    let path = app.document_slice(path).to_owned();
     let configured_height = app.config.effective_image_height();
     let configured_area = Rect {
         height: configured_height,
         ..area
     };
     let visible_area = configured_area.intersection(viewport);
-    let normalized_path = normalize_image_destination(path);
+    let normalized_path = normalize_image_destination(&path);
     let is_remote = normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
     let is_pending = is_remote && app.is_image_pending(&normalized_path);
 
-    let resolved_path = app.resolve_image_path(path);
+    let resolved_path = app.resolve_image_path(&path);
     let resolved_path_str = resolved_path
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
@@ -571,14 +574,16 @@ pub(super) fn render_inline_thumbnails(
     f: &mut Frame,
     app: &mut App,
     item_index: usize,
-    images: &[(String, usize)],
     area: Rect,
     viewport: Rect,
     text_height: u16,
     image_height: u16,
     is_cursor_line: bool,
 ) -> u16 {
-    if images.is_empty() {
+    let link_range = app.document_link_ranges.get(item_index).copied().unwrap_or_default();
+    let task_offset = usize::from(matches!(app.content_items.get(item_index), Some(ContentItem::TaskItem { .. })) && link_range.len > 0);
+    let image_count = app.inline_image_count_at(item_index);
+    if image_count == 0 {
         return 0;
     }
     let secondary_color = app.theme.secondary;
@@ -589,7 +594,14 @@ pub(super) fn render_inline_thumbnails(
     let thumbnail_width = inline_thumbnail_width(area.width, image_height);
     let per_row = inline_thumbnails_per_row(area.width, image_height);
 
-    for (image_index, (path, selection_index)) in images.iter().enumerate() {
+    let mut image_index = 0usize;
+    for link_offset in 0..link_range.len as usize {
+        let link_index = link_range.start as usize + link_offset;
+        let Some(LinkInfo::Image { path, .. }) = app.document_links.get(link_index) else {
+            continue;
+        };
+        let path = path.clone();
+        let selection_index = link_offset + task_offset;
         let row = image_index / per_row;
         let column = image_index % per_row;
         let y_offset = text_height.saturating_add(u16::try_from(row).unwrap_or(u16::MAX).saturating_mul(image_height));
@@ -610,23 +622,22 @@ pub(super) fn render_inline_thumbnails(
         }
         app.inline_image_rects.push(InlineImageRect {
             item_index,
-            selection_index: *selection_index,
+            selection_index,
             rect: thumb_area,
-            path: path.clone(),
         });
 
-        let normalized_path = normalize_image_destination(path);
+        let normalized_path = normalize_image_destination(&path);
         let is_remote = normalized_path.starts_with("http://") || normalized_path.starts_with("https://");
-        let resolved_path = app.resolve_image_path(path);
+        let resolved_path = app.resolve_image_path(&path);
         let resolved_path_str = resolved_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
-        let state_key = inline_image_state_key(item_index, *selection_index, &resolved_path_str);
+        let state_key = inline_image_state_key(item_index, selection_index, &resolved_path_str);
 
         let is_pending = is_remote && app.is_image_pending(&normalized_path);
-        let is_selected = is_cursor_line && app.selected_link_index == *selection_index;
-        let is_hovered = app.mouse_hover_inline_image == Some((item_index, *selection_index));
+        let is_selected = is_cursor_line && app.selected_link_index == selection_index;
+        let is_hovered = app.mouse_hover_inline_image == Some((item_index, selection_index));
         let title = if is_pending {
             " Loading... "
         } else if is_selected || is_hovered {
@@ -679,18 +690,28 @@ pub(super) fn render_inline_thumbnails(
             let not_found = Paragraph::new("  ❌ Not found").style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
             f.render_widget(not_found, image_area);
         }
+        image_index += 1;
     }
 
-    inline_thumbnails_height(images.len(), area.width, image_height)
+    inline_thumbnails_height(image_count, area.width, image_height)
 }
 
-pub(super) fn render_details(f: &mut Frame, theme: &Theme, summary: &str, content_lines: &[String], is_open: bool, area: Rect, is_cursor: bool) {
+pub(super) fn render_details(
+    f: &mut Frame,
+    document: &DocumentSnapshot,
+    theme: &Theme,
+    summary: Option<DocumentRange>,
+    content_lines: &[u32],
+    is_open: bool,
+    area: Rect,
+    is_cursor: bool,
+) {
     let cursor_indicator = if is_cursor { "▶ " } else { "  " };
     let toggle_indicator = if is_open { "▼ " } else { "▶ " };
 
     let mut lines: Vec<Line> = Vec::new();
 
-    let expanded_summary = expand_tabs(summary);
+    let expanded_summary = expand_tabs(summary.map_or("Details", |range| document.slice(range)));
     let summary_spans = vec![
         Span::styled(cursor_indicator, Style::default().fg(theme.warning)),
         Span::styled(toggle_indicator, Style::default().fg(theme.info)),
@@ -700,7 +721,7 @@ pub(super) fn render_details(f: &mut Frame, theme: &Theme, summary: &str, conten
 
     if is_open {
         for content in content_lines {
-            let expanded_content = expand_tabs(content);
+            let expanded_content = expand_tabs(document.line(*content as usize).unwrap_or(""));
             let content_spans = vec![
                 Span::styled("  ", Style::default()),
                 Span::styled("│ ", Style::default().fg(theme.border)),
@@ -731,7 +752,7 @@ pub(super) fn render_frontmatter_delimiter(f: &mut Frame, theme: &Theme, area: R
 }
 
 /// Render tag badges as part of scrollable content (not fixed at top)
-pub(super) fn render_tag_badges_inline(f: &mut Frame, theme: &Theme, tags: &[String], date: Option<&str>, area: Rect, is_cursor: bool) {
+pub(super) fn render_tag_badges_inline(f: &mut Frame, theme: &Theme, tags: &[Box<str>], date: Option<&str>, area: Rect, is_cursor: bool) {
     if area.height == 0 {
         return;
     }

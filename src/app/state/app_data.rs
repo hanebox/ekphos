@@ -6,8 +6,12 @@ pub struct App {
     pub(crate) body_cache: ekphos_vault::BodyCache,
     pub(crate) active_note_id: Option<NoteId>,
     pub(crate) active_fingerprint: Option<ekphos_vault::FileFingerprint>,
-    pub(crate) active_body: Option<Arc<str>>,
+    pub(crate) active_document: Option<DocumentSnapshot>,
     pub(crate) document_generation: u64,
+    pub(crate) catalog_generation: u64,
+    pub(crate) document_parse_key: Option<(u64, u64, bool, bool)>,
+    #[doc(hidden)]
+    pub document_parse_count: u64,
     pub notes: Vec<Note>,
     pub selected_note: usize,
     #[allow(dead_code)]
@@ -34,9 +38,13 @@ pub struct App {
     pub block_insert_state: Option<BlockInsertState>,
     pub content_cursor: usize,
     pub content_scroll_offset: usize,
+    pub(crate) edit_preview_position: Option<(usize, usize)>,
     pub floating_cursor_mode: bool,
     pub content_items: Vec<ContentItem>,
-    pub content_item_source_lines: Vec<usize>,
+    pub document_tables: Vec<TableMetadata>,
+    pub(crate) document_links: Vec<LinkInfo>,
+    pub(crate) document_link_ranges: Vec<DocumentLinkRange>,
+    pub(crate) content_render_scratch: ContentRenderScratch,
     pub theme: Theme,
     pub config: Config,
     pub dialog: DialogState,
@@ -93,11 +101,14 @@ pub struct App {
     // Graph view state
     pub graph_view: GraphViewState,
     pub graph_index: Option<Arc<GraphIndex>>,
-    pub graph_index_receiver: Receiver<(u64, GraphIndex)>,
+    pub graph_worker: Option<GraphWorker>,
     pub graph_index_generation: u64,
     pub graph_indexing: bool,
-    pub graph_layout_receiver: Receiver<GraphLayoutWorkerResult>,
     pub graph_layout_generation: u64,
+    #[doc(hidden)]
+    pub graph_last_reused_files: usize,
+    #[doc(hidden)]
+    pub graph_last_parsed_files: usize,
     // Sidebar sorting
     pub sort_mode: SortMode,
     // Navigation history (like browser back/forward)

@@ -196,8 +196,8 @@ impl App {
 
     pub fn item_wiki_links_at(&self, index: usize) -> Vec<WikiLinkInfo> {
         let text = match self.content_items.get(index) {
-            Some(ContentItem::TextLine(line)) => line.as_str(),
-            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
+            Some(ContentItem::TextLine { range, .. }) => self.document_slice(*range),
+            Some(ContentItem::TaskItem { text, .. }) => self.document_slice(*text),
             _ => return Vec::new(),
         };
 
@@ -307,7 +307,11 @@ impl App {
             }
 
             // Use unicode widh for individual characters (CJK = 2, ASCII = 1)
-            rendered_pos += remaining.chars().next().map(|c| c.width().unwrap_or(1)).unwrap_or(1);
+            rendered_pos += remaining
+                .chars()
+                .next()
+                .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+                .unwrap_or(0);
             i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         }
 
@@ -391,7 +395,8 @@ impl App {
         }
 
         for (idx, item) in self.content_items.iter().enumerate() {
-            if let ContentItem::TextLine(line) = item {
+            if let ContentItem::TextLine { range, .. } = item {
+                let line = self.document_slice(*range);
                 if let Some(title) = heading_text(line) {
                     if slugify_heading(title) == target_slug {
                         self.content_cursor = idx;
@@ -639,7 +644,7 @@ impl App {
             if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
                 if wiki_path.to_lowercase() == note_target.to_lowercase() || note.title.to_lowercase() == note_target.to_lowercase() {
                     let body = if self.active_note_id == Some(note.id) {
-                        self.active_body.clone()
+                        self.active_document.as_ref().map(DocumentSnapshot::body_arc)
                     } else {
                         self.vault.load_body(note.id).ok()
                     };

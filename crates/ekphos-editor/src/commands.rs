@@ -575,6 +575,10 @@ impl Editor {
         self.buffer.lines()
     }
 
+    pub fn line(&self, row: usize) -> Option<&str> {
+        self.buffer.line(row)
+    }
+
     pub fn line_count(&self) -> usize {
         self.buffer.line_count()
     }

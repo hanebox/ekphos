@@ -288,5 +288,3 @@ pub enum CutItem {
     Note { source_path: PathBuf, title: String },
     Folder { source_path: PathBuf, name: String },
 }
-
-pub type GraphLayoutWorkerResult = (u64, u64, Vec<(NoteId, f32, f32)>);

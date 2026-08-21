@@ -153,7 +153,7 @@ pub(super) fn handle_graph_view_dialog(app: &mut App, key: crossterm::event::Key
 
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.dialog = DialogState::None;
+            app.close_graph_view();
         }
         KeyCode::Char('h') | KeyCode::Left => {
             navigate_graph_node(app, GraphDirection::Left);
@@ -249,7 +249,7 @@ pub(super) fn open_selected_graph_node(app: &mut App) {
         return;
     };
     if app.navigate_to_note(note_idx) {
-        app.dialog = DialogState::None;
+        app.close_graph_view();
         app.focus = Focus::Content;
     }
 }

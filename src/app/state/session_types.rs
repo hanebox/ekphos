@@ -167,7 +167,7 @@ pub struct GraphViewState {
     pub total_edges: usize,
     pub index_pending: bool,
     pub layout_pending: bool,
-    pub global_positions: HashMap<NoteId, (f32, f32)>,
+    pub global_positions: Vec<(NoteId, f32, f32)>,
     pub global_fingerprint: Option<u64>,
     pub viewport_x: f32,
     pub viewport_y: f32,
@@ -204,7 +204,7 @@ impl Default for GraphViewState {
             total_edges: 0,
             index_pending: false,
             layout_pending: false,
-            global_positions: HashMap::new(),
+            global_positions: Vec::new(),
             global_fingerprint: None,
             viewport_x: 0.0,
             viewport_y: 0.0,
@@ -231,8 +231,8 @@ pub enum Focus {
 
 #[derive(Debug, Clone)]
 pub struct OutlineItem {
-    pub level: usize,
-    pub title: String,
+    pub level: u8,
+    pub source_line: u32,
     pub line: usize,
 }
 
@@ -241,12 +241,11 @@ pub struct ImageState {
     pub size: Size,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct InlineImageRect {
     pub item_index: usize,
     pub selection_index: usize,
     pub rect: Rect,
-    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,35 +271,87 @@ impl Alignment {
 
 #[derive(Debug, Clone)]
 pub enum ContentItem {
-    TextLine(String),
-    Image(String),
-    CodeLine(String),
-    CodeFence(String),
+    TextLine {
+        range: DocumentRange,
+        source_line: u32,
+        heading_level: u8,
+    },
+    Image {
+        path: DocumentRange,
+        source_line: u32,
+    },
+    CodeLine {
+        range: DocumentRange,
+        source_line: u32,
+    },
+    CodeFence {
+        language: DocumentRange,
+        source_line: u32,
+    },
     TaskItem {
-        text: String,
+        text: DocumentRange,
         checked: bool,
-        line_index: usize,
-        indent: usize,
+        source_line: u32,
+        indent: u16,
     },
     TableRow {
-        cells: Vec<String>,
+        cells: Box<[DocumentRange]>,
+        table: u32,
+        source_line: u32,
         is_separator: bool,
         is_header: bool,
-        column_widths: Vec<usize>,
-        alignments: Vec<Alignment>,
     },
     Details {
-        summary: String,
-        content_lines: Vec<String>,
-        id: usize,
+        summary: Option<DocumentRange>,
+        content_lines: Box<[u32]>,
+        source_line: u32,
     },
     FrontmatterLine {
-        key: String,
-        value: String,
+        key: DocumentRange,
+        value: DocumentRange,
+        source_line: u32,
     },
-    FrontmatterDelimiter,
-    TagBadges {
-        tags: Vec<String>,
-        date: Option<String>,
+    FrontmatterDelimiter {
+        source_line: u32,
     },
+    TagBadges,
+}
+
+impl ContentItem {
+    pub fn source_line(&self) -> usize {
+        match self {
+            Self::TextLine { source_line, .. }
+            | Self::Image { source_line, .. }
+            | Self::CodeLine { source_line, .. }
+            | Self::CodeFence { source_line, .. }
+            | Self::TaskItem { source_line, .. }
+            | Self::TableRow { source_line, .. }
+            | Self::Details { source_line, .. }
+            | Self::FrontmatterLine { source_line, .. }
+            | Self::FrontmatterDelimiter { source_line } => *source_line as usize,
+            Self::TagBadges => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TableMetadata {
+    pub column_widths: Box<[u16]>,
+    pub alignments: Box<[Alignment]>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DocumentLinkRange {
+    pub start: u32,
+    pub len: u16,
+    pub image_count: u16,
+}
+
+#[derive(Default)]
+pub(crate) struct ContentRenderScratch {
+    pub item_text_heights: Vec<u16>,
+    pub constraints: Vec<Constraint>,
+    pub visible_indices: Vec<usize>,
+    pub height_generation: u64,
+    pub height_width: usize,
 }

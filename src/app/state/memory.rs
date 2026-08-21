@@ -12,6 +12,10 @@ pub struct AppMemorySnapshot {
     pub search_index_bytes: usize,
     pub search_result_bytes: usize,
     pub graph_bytes: usize,
+    pub graph_index_bytes: usize,
+    pub graph_session_bytes: usize,
+    pub graph_cache_reused_files: usize,
+    pub graph_parsed_files: usize,
     pub image_bytes: usize,
     pub highlight_cache_bytes: usize,
     pub live_workers: usize,
@@ -34,8 +38,21 @@ impl AppMemorySnapshot {
 impl App {
     pub fn memory_snapshot(&self) -> AppMemorySnapshot {
         let body_cache = self.body_cache.stats();
-        let parsed_document_bytes =
-            self.content_items.capacity() * std::mem::size_of::<ContentItem>() + self.content_items.iter().map(content_item_bytes).sum::<usize>();
+        let parsed_document_bytes = self.active_document.as_ref().map_or(0, DocumentSnapshot::offset_bytes)
+            + self.content_items.capacity() * std::mem::size_of::<ContentItem>()
+            + self.content_items.iter().map(content_item_bytes).sum::<usize>()
+            + self.document_tables.capacity() * std::mem::size_of::<TableMetadata>()
+            + self
+                .document_tables
+                .iter()
+                .map(|table| table.column_widths.len() * std::mem::size_of::<u16>() + table.alignments.len() * std::mem::size_of::<Alignment>())
+                .sum::<usize>()
+            + self.document_link_ranges.capacity() * std::mem::size_of::<DocumentLinkRange>()
+            + self.document_links.capacity() * std::mem::size_of::<LinkInfo>()
+            + self.document_links.iter().map(link_info_bytes).sum::<usize>()
+            + self.content_render_scratch.item_text_heights.capacity() * std::mem::size_of::<u16>()
+            + self.content_render_scratch.constraints.capacity() * std::mem::size_of::<Constraint>()
+            + self.content_render_scratch.visible_indices.capacity() * std::mem::size_of::<usize>();
         let search_result_bytes = match &self.search_picker {
             SearchPickerState::Closed => 0,
             SearchPickerState::Open {
@@ -68,17 +85,13 @@ impl App {
             }
         };
         let graph_projection_bytes = self.graph_view.nodes.capacity() * std::mem::size_of::<GraphNode>()
-            + self
-                .graph_view
-                .nodes
-                .iter()
-                .map(|node| node.title.capacity() + node.full_title.capacity() + node.path.capacity())
-                .sum::<usize>()
-            + self.graph_view.edges.capacity() * std::mem::size_of::<GraphEdge>();
+            + self.graph_view.edges.capacity() * std::mem::size_of::<GraphEdge>()
+            + self.graph_view.global_positions.capacity() * std::mem::size_of::<(NoteId, f32, f32)>();
 
+        let graph_index_bytes = self.graph_index.as_ref().map_or(0, |index| index.retained_bytes());
         AppMemorySnapshot {
             catalog_count: self.notes.len(),
-            loaded_body_bytes: self.active_body.as_ref().map_or(0, |body| body.len()) + body_cache.bytes,
+            loaded_body_bytes: self.active_document.as_ref().map_or(0, |document| document.body().len()) + body_cache.bytes,
             body_cache_hits: body_cache.hits,
             body_cache_misses: body_cache.misses,
             body_cache_evictions: body_cache.evictions,
@@ -86,7 +99,11 @@ impl App {
             editor_and_undo_bytes: self.editor.retained_bytes(),
             search_index_bytes: self.search_index.as_ref().map_or(0, |index| index.retained_bytes()),
             search_result_bytes,
-            graph_bytes: graph_projection_bytes + self.graph_index.as_ref().map_or(0, |index| index.retained_bytes()),
+            graph_bytes: graph_projection_bytes + graph_index_bytes,
+            graph_index_bytes,
+            graph_session_bytes: graph_projection_bytes,
+            graph_cache_reused_files: self.graph_last_reused_files,
+            graph_parsed_files: self.graph_last_parsed_files,
             image_bytes: self
                 .image_states
                 .values()
@@ -96,41 +113,36 @@ impl App {
             live_workers: usize::from(self.highlight_worker.is_some())
                 + usize::from(self.search_worker.is_some())
                 + usize::from(self.indexing_in_progress)
-                + usize::from(self.graph_indexing)
-                + usize::from(self.graph_view.layout_pending)
+                + usize::from(self.graph_worker.is_some())
                 + usize::from(self.highlighter_loading),
             pending_requests: usize::from(self.highlight_pending)
                 + usize::from(self.search_worker.as_ref().is_some_and(SearchWorker::is_pending))
                 + usize::from(self.indexing_in_progress)
-                + usize::from(self.graph_view.index_pending)
-                + usize::from(self.graph_view.layout_pending)
+                + usize::from(self.graph_worker.as_ref().is_some_and(GraphWorker::is_pending))
                 + self.pending_images.len(),
         }
     }
 }
 
+fn link_info_bytes(link: &LinkInfo) -> usize {
+    match link {
+        LinkInfo::Markdown { text, url, .. } => text.capacity() + url.capacity(),
+        LinkInfo::Image { path, .. } => path.capacity(),
+        LinkInfo::Wiki { target, heading, .. } => target.capacity() + heading.as_ref().map_or(0, String::capacity),
+    }
+}
+
 fn content_item_bytes(item: &ContentItem) -> usize {
     match item {
-        ContentItem::TextLine(text) | ContentItem::Image(text) | ContentItem::CodeLine(text) | ContentItem::CodeFence(text) => text.capacity(),
-        ContentItem::TaskItem { text, .. } => text.capacity(),
-        ContentItem::TableRow {
-            cells,
-            column_widths,
-            alignments,
-            ..
-        } => {
-            cells.capacity() * std::mem::size_of::<String>()
-                + cells.iter().map(String::capacity).sum::<usize>()
-                + column_widths.capacity() * std::mem::size_of::<usize>()
-                + alignments.capacity() * std::mem::size_of::<Alignment>()
-        }
-        ContentItem::Details { summary, content_lines, .. } => {
-            summary.capacity() + content_lines.capacity() * std::mem::size_of::<String>() + content_lines.iter().map(String::capacity).sum::<usize>()
-        }
-        ContentItem::FrontmatterLine { key, value } => key.capacity() + value.capacity(),
-        ContentItem::TagBadges { tags, date } => {
-            tags.capacity() * std::mem::size_of::<String>() + tags.iter().map(String::capacity).sum::<usize>() + date.as_ref().map_or(0, String::capacity)
-        }
-        ContentItem::FrontmatterDelimiter => 0,
+        ContentItem::TableRow { cells, .. } => cells.len() * std::mem::size_of::<DocumentRange>(),
+        ContentItem::Details { content_lines, .. } => content_lines.len() * std::mem::size_of::<u32>(),
+        ContentItem::TextLine { .. }
+        | ContentItem::Image { .. }
+        | ContentItem::CodeLine { .. }
+        | ContentItem::CodeFence { .. }
+        | ContentItem::TaskItem { .. }
+        | ContentItem::FrontmatterLine { .. }
+        | ContentItem::TagBadges
+        | ContentItem::FrontmatterDelimiter { .. } => 0,
     }
 }

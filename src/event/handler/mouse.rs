@@ -187,7 +187,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEv
                         app.focus = Focus::Content;
                         app.content_cursor = image.item_index;
                         app.selected_link_index = image.selection_index;
-                        app.open_path_or_url(&image.path);
+                        if let Some(LinkInfo::Image { path, .. }) = app.current_selected_link() {
+                            app.open_path_or_url(&path);
+                        }
                         return;
                     }
 

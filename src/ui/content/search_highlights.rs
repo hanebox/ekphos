@@ -3,11 +3,7 @@ use super::*;
 pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_indices: &[usize], chunks: &[Rect]) {
     let theme = &app.theme;
     let current_match_idx = app.buffer_search.current_match_index;
-    let lines: Vec<&str> = if app.mode == Mode::Edit {
-        app.editor.lines()
-    } else if let Some(body) = app.current_body() {
-        body.lines().collect()
-    } else {
+    let Some(document) = app.document() else {
         return;
     };
 
@@ -16,12 +12,8 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
             break;
         }
 
-        let source_line = app.content_item_source_lines.get(item_idx).copied().unwrap_or(usize::MAX);
-        if source_line == usize::MAX {
-            continue;
-        }
-
-        let raw_line = lines.get(source_line).copied().unwrap_or("");
+        let source_line = app.content_items.get(item_idx).map(ContentItem::source_line).unwrap_or(usize::MAX);
+        let raw_line = document.line(source_line).unwrap_or("");
 
         for (match_idx, m) in app.buffer_search.matches.iter().enumerate() {
             if m.row == source_line {
@@ -37,19 +29,18 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
                 // Use display width for CJK character support
                 let adjusted_col = match &app.content_items.get(item_idx) {
                     Some(ContentItem::TableRow {
-                        cells,
-                        column_widths,
-                        alignments,
-                        is_separator,
-                        ..
+                        cells, table, is_separator, ..
                     }) => {
                         if *is_separator {
                             continue;
                         }
-                        calc_table_adjusted_col(m.start_col, cells, column_widths, alignments)
+                        let Some(metadata) = app.table_metadata(*table) else {
+                            continue;
+                        };
+                        calc_table_adjusted_col(m.start_col, document, cells, &metadata.column_widths, &metadata.alignments)
                     }
-                    Some(ContentItem::TextLine(line)) => {
-                        let line = normalize_whitespace(line);
+                    Some(ContentItem::TextLine { range, .. }) => {
+                        let line = normalize_whitespace(document.slice(*range));
                         let (rendered_prefix_len, raw_prefix_len, content_text) = if line.starts_with("###### ") {
                             (2, 7, line[7..].to_string())
                         } else if line.starts_with("##### ") {
@@ -85,17 +76,23 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
                         let display_col = content_text
                             .chars()
                             .take(content_start_col.saturating_sub(formatting_shrinkage))
-                            .map(|c| c.width().unwrap_or(1))
+                            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
                             .sum::<usize>();
                         rendered_prefix_len + display_col
                     }
-                    Some(ContentItem::CodeLine(code)) => {
+                    Some(ContentItem::CodeLine { range, .. }) => {
+                        let code = document.slice(*range);
                         // Calculate display width of code before the match
-                        let display_col: usize = code.chars().take(m.start_col).map(|c| c.width().unwrap_or(1)).sum();
+                        let display_col: usize = code
+                            .chars()
+                            .take(m.start_col)
+                            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+                            .sum();
                         4 + display_col
                     }
                     Some(ContentItem::TaskItem { text, indent, .. }) => {
-                        let prefix = 6 + *indent;
+                        let text = document.slice(*text);
+                        let prefix = 6 + *indent as usize;
                         if m.start_col < prefix {
                             continue;
                         }
@@ -104,13 +101,17 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
                         let display_col: usize = text
                             .chars()
                             .take(content_start_col.saturating_sub(formatting_shrinkage))
-                            .map(|c| c.width().unwrap_or(1))
+                            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
                             .sum();
                         prefix + display_col
                     }
                     _ => {
                         // Calculate display width of raw line before the match
-                        let display_col: usize = raw_line.chars().take(m.start_col).map(|c| c.width().unwrap_or(1)).sum();
+                        let display_col: usize = raw_line
+                            .chars()
+                            .take(m.start_col)
+                            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+                            .sum();
                         2 + display_col
                     }
                 };
@@ -121,7 +122,7 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
                     .chars()
                     .skip(m.start_col)
                     .take(m.end_col - m.start_col)
-                    .map(|c| c.width().unwrap_or(1))
+                    .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
                     .sum();
 
                 for offset in 0..match_display_width {

@@ -12,4 +12,3 @@ description = "Graph indexing and layout for Ekphos"
 ekphos-core.workspace = true
 serde.workspace = true
 bincode.workspace = true
-unicode-width.workspace = true

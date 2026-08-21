@@ -240,7 +240,8 @@ pub(crate) fn content_item_click_col(app: &App, index: usize, item_area: Rect, m
     let cursor_indicator = if app.content_cursor == index { "▶ " } else { "  " };
 
     match app.content_items.get(index)? {
-        ContentItem::TextLine(raw_line) => {
+        ContentItem::TextLine { range, .. } => {
+            let raw_line = app.document_slice(*range);
             let line = normalize_whitespace(raw_line);
             let mut spans = if line.starts_with("- ") || line.starts_with("* ") {
                 let mut spans = vec![Span::styled(cursor_indicator, Style::default()), Span::styled("• ", Style::default())];
@@ -266,10 +267,10 @@ pub(crate) fn content_item_click_col(app: &App, index: usize, item_area: Rect, m
             rendered_col_for_wrapped_click(spans, available_width, visual_row, visual_col, &app.theme)
         }
         ContentItem::TaskItem { text, checked, indent, .. } => {
-            let expanded_text = expand_tabs(text);
+            let expanded_text = expand_tabs(app.document_slice(*text));
             let mut spans = vec![Span::styled(cursor_indicator, Style::default())];
             if *indent > 0 {
-                spans.push(Span::styled(" ".repeat(*indent), Style::default()));
+                spans.push(Span::styled(" ".repeat(*indent as usize), Style::default()));
             }
             spans.extend([
                 Span::styled("[", Style::default()),

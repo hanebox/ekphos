@@ -377,7 +377,7 @@ impl App {
                     self.editor_scroll_top = 0;
                 }
             } else {
-                for (idx, &source_line) in self.content_item_source_lines.iter().enumerate() {
+                for (idx, source_line) in self.content_items.iter().map(ContentItem::source_line).enumerate() {
                     if source_line >= target_row {
                         self.content_cursor = idx;
                         let content_height = self.content_area.height.saturating_sub(2) as usize;

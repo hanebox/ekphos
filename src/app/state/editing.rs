@@ -3,7 +3,7 @@ use super::*;
 impl App {
     pub(super) fn content_cursor_for_source_line(&self, source_line: usize) -> usize {
         let mut best_idx = 0;
-        for (idx, &line) in self.content_item_source_lines.iter().enumerate() {
+        for (idx, line) in self.content_items.iter().map(ContentItem::source_line).enumerate() {
             if line <= source_line {
                 best_idx = idx;
             } else {
@@ -20,19 +20,33 @@ impl App {
         }
         self.highlight_pending = false;
 
-        if let Some((body, content_start_line)) = self
-            .current_note()
-            .and_then(|note| self.current_body_arc().map(|body| (body, note.content_start_line)))
-        {
-            let lines: Vec<String> = body.lines().map(String::from).collect();
+        let content_start_line = self.current_note().map_or(0, |note| note.content_start_line);
+        if let Some(document) = self.active_document.take() {
+            self.edit_preview_position = Some((self.content_cursor, self.content_items.len()));
+            let target_row = self
+                .content_items
+                .get(self.content_cursor)
+                .map(ContentItem::source_line)
+                .unwrap_or(0)
+                .min(document.line_count().saturating_sub(1));
+            let lines: Vec<String> = (0..document.line_count()).filter_map(|line| document.line(line).map(str::to_owned)).collect();
             let line_count = lines.len();
 
-            let target_row = self
-                .content_item_source_lines
-                .get(self.content_cursor)
-                .copied()
-                .unwrap_or(0)
-                .min(line_count.saturating_sub(1));
+            self.content_items.clear();
+            self.content_items.shrink_to_fit();
+            self.document_tables.clear();
+            self.document_tables.shrink_to_fit();
+            self.document_links.clear();
+            self.document_links.shrink_to_fit();
+            self.document_link_ranges.clear();
+            self.document_link_ranges.shrink_to_fit();
+            self.content_render_scratch = ContentRenderScratch::default();
+            self.outline.clear();
+            self.outline.shrink_to_fit();
+            self.content_item_rects.clear();
+            self.inline_image_rects.clear();
+            self.image_states.clear();
+            drop(document);
 
             self.editor = Editor::new_with_clipboard(lines, Arc::clone(&self.dependencies.clipboard));
             self.editor.set_line_wrap(self.config.editor.line_wrap);
@@ -72,6 +86,22 @@ impl App {
             self.editor.set_frontmatter_color(self.theme.content.frontmatter);
 
             self.editor.set_cursor(target_row, 0);
+            for source_line in 0..self.editor.line_count() {
+                let Some(line) = self.editor.line(source_line) else {
+                    continue;
+                };
+                let Some(heading) = ekphos_core::markdown::heading(line).filter(|heading| heading.level <= 3 && line[heading.level..].starts_with(' ')) else {
+                    continue;
+                };
+                self.outline.push(OutlineItem {
+                    level: heading.level as u8,
+                    source_line: source_line as u32,
+                    line: source_line,
+                });
+            }
+            if !self.outline.is_empty() {
+                self.outline_state.select(Some(0));
+            }
 
             // Calculate scroll position:
             // - If frontmatter was hidden and we're near the top, start from line 0
@@ -212,8 +242,9 @@ impl App {
         self.select_current_note_in_sidebar();
 
         self.mode = Mode::Normal;
+        self.edit_preview_position = None;
+        self.editor = Editor::new_with_clipboard(vec![String::new()], Arc::clone(&self.dependencies.clipboard));
         self.update_content_items();
-        self.update_outline();
 
         // Map editor row to content_cursor using source line mapping
         self.content_cursor = self.content_cursor_for_source_line(cursor_row);
@@ -234,6 +265,13 @@ impl App {
 
         let cursor_offset_from_top = cursor_row.saturating_sub(editor_scroll);
         self.mode = Mode::Normal;
+        self.edit_preview_position = None;
+
+        self.editor = Editor::new_with_clipboard(vec![String::new()], Arc::clone(&self.dependencies.clipboard));
+        if !self.load_selected_note_body() {
+            return;
+        }
+        self.update_content_items();
 
         self.content_cursor = self.content_cursor_for_source_line(cursor_row);
         let preview_scroll = self.content_cursor.saturating_sub(cursor_offset_from_top);
@@ -241,12 +279,16 @@ impl App {
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
-        if let Some(body) = self.current_body() {
+        if let Some(body) = self
+            .current_note()
+            .and_then(|note| note.file_path.as_ref())
+            .and_then(|path| std::fs::read_to_string(path).ok())
+        {
             // Compare line-by-line with the same semantics `enter_edit_mode` uses
             // (`str::lines()` drops trailing newlines). Comparing the raw strings instead
             // fires a false positive whenever the file ends with "\n" — which is most files.
-            let note_lines: Vec<&str> = body.lines().collect();
-            self.editor.lines() != note_lines
+            let mut note_lines = body.lines();
+            (0..self.editor.line_count()).any(|row| self.editor.line(row) != note_lines.next()) || note_lines.next().is_some()
         } else {
             false
         }

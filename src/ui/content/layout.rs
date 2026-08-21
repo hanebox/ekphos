@@ -15,12 +15,12 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
 
             for (i, item) in app.content_items.iter().enumerate() {
                 match item {
-                    ContentItem::CodeFence(lang) => {
+                    ContentItem::CodeFence { language, .. } => {
                         if let Some((start_idx, block_lang)) = block_start.take() {
                             let mut lines: Vec<(usize, String)> = Vec::new();
                             for j in (start_idx + 1)..i {
-                                if let ContentItem::CodeLine(line) = &app.content_items[j] {
-                                    lines.push((j, expand_tabs(line)));
+                                if let ContentItem::CodeLine { range, .. } = &app.content_items[j] {
+                                    lines.push((j, expand_tabs(app.document_slice(*range))));
                                 }
                             }
 
@@ -35,7 +35,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                                 }
                             }
                         } else {
-                            block_start = Some((i, lang.clone()));
+                            block_start = Some((i, app.document_slice(*language).to_owned()));
                         }
                     }
                     _ => {}
@@ -106,7 +106,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let max_item_height = inner_area.height.max(1);
     let standalone_image_height = app.config.effective_image_height();
     let inline_image_height = app.config.effective_inline_image_height();
-    let inline_image_selections: Vec<Vec<(String, usize)>> = (0..app.content_items.len()).map(|index| app.item_inline_image_selections_at(index)).collect();
+    let document = app.active_document.as_ref().expect("normal-mode content requires a document snapshot");
+    let document_tables = &app.document_tables;
+    let document_link_ranges = &app.document_link_ranges;
+    let mut scratch = std::mem::take(&mut app.content_render_scratch);
 
     let calc_wrapped_height = |text: &str, prefix_len: usize| -> u16 {
         if text.is_empty() || available_width == 0 {
@@ -147,67 +150,74 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         lines.min(max_item_height)
     };
 
-    let item_text_heights: Vec<u16> = app
-        .content_items
-        .iter()
-        .enumerate()
-        .map(|(idx, item)| match item {
-            ContentItem::TextLine(line) => {
-                if inline_image_selections[idx].is_empty() {
-                    calc_wrapped_height(line, 4)
-                } else {
-                    let prose_source = line
-                        .strip_prefix("- ")
-                        .or_else(|| line.strip_prefix("* "))
-                        .or_else(|| line.strip_prefix("> "))
-                        .unwrap_or(line);
-                    let prose = inline_prose_text(prose_source, theme);
-                    if prose.is_empty() {
-                        0
+    if scratch.height_generation != app.document_generation
+        || scratch.height_width != available_width
+        || scratch.item_text_heights.len() != app.content_items.len()
+    {
+        scratch.item_text_heights.clear();
+        scratch
+            .item_text_heights
+            .extend(app.content_items.iter().enumerate().map(|(idx, item)| match item {
+                ContentItem::TextLine { range, .. } => {
+                    let line = document.slice(*range);
+                    if app.inline_image_count_at(idx) == 0 {
+                        calc_wrapped_height(line, 4)
                     } else {
-                        calc_wrapped_height(&prose, 4)
+                        let prose_source = line
+                            .strip_prefix("- ")
+                            .or_else(|| line.strip_prefix("* "))
+                            .or_else(|| line.strip_prefix("> "))
+                            .unwrap_or(line);
+                        let prose = inline_prose_text(prose_source, theme);
+                        if prose.is_empty() {
+                            0
+                        } else {
+                            calc_wrapped_height(&prose, 4)
+                        }
                     }
                 }
-            }
-            ContentItem::TaskItem { text, indent, .. } => {
-                if inline_image_selections[idx].is_empty() {
-                    calc_wrapped_height(text, 6 + *indent)
-                } else {
-                    let prose = inline_prose_text(text, theme);
-                    calc_wrapped_height(&prose, 6 + *indent)
+                ContentItem::TaskItem { text, indent, .. } => {
+                    let text = document.slice(*text);
+                    if app.inline_image_count_at(idx) == 0 {
+                        calc_wrapped_height(text, 6 + *indent as usize)
+                    } else {
+                        let prose = inline_prose_text(text, theme);
+                        calc_wrapped_height(&prose, 6 + *indent as usize)
+                    }
                 }
-            }
-            _ => 0,
-        })
-        .collect();
+                _ => 0,
+            }));
+        scratch.height_generation = app.document_generation;
+        scratch.height_width = available_width;
+    }
+    let item_text_heights = &scratch.item_text_heights;
 
     let details_states = &app.details_open_states;
     let get_item_height = |idx: usize, item: &ContentItem| -> u16 {
         match item {
-            ContentItem::TextLine(_) => {
-                let inline_images = &inline_image_selections[idx];
-                if inline_images.is_empty() {
+            ContentItem::TextLine { .. } => {
+                let inline_image_count = document_link_ranges.get(idx).map_or(0, |range| range.image_count as usize);
+                if inline_image_count == 0 {
                     item_text_heights[idx]
                 } else {
-                    item_text_heights[idx].saturating_add(inline_thumbnails_height(inline_images.len(), inner_area.width, inline_image_height))
+                    item_text_heights[idx].saturating_add(inline_thumbnails_height(inline_image_count, inner_area.width, inline_image_height))
                 }
             }
-            ContentItem::Image(_) => standalone_image_height,
-            ContentItem::CodeLine(line) => code_line_height(line, code_block_highlights.get(&idx), inner_area.width, theme).min(max_item_height),
-            ContentItem::CodeFence(_) => 1u16,
+            ContentItem::Image { .. } => standalone_image_height,
+            ContentItem::CodeLine { range, .. } => {
+                code_line_height(document.slice(*range), code_block_highlights.get(&idx), inner_area.width, theme).min(max_item_height)
+            }
+            ContentItem::CodeFence { .. } => 1u16,
             ContentItem::TaskItem { .. } => {
-                let inline_images = &inline_image_selections[idx];
-                if inline_images.is_empty() {
+                let inline_image_count = document_link_ranges.get(idx).map_or(0, |range| range.image_count as usize);
+                if inline_image_count == 0 {
                     item_text_heights[idx]
                 } else {
-                    item_text_heights[idx].saturating_add(inline_thumbnails_height(inline_images.len(), inner_area.width, inline_image_height))
+                    item_text_heights[idx].saturating_add(inline_thumbnails_height(inline_image_count, inner_area.width, inline_image_height))
                 }
             }
             ContentItem::TableRow {
-                cells,
-                is_separator,
-                column_widths,
-                ..
+                cells, is_separator, table, ..
             } => {
                 if *is_separator {
                     1u16
@@ -215,17 +225,20 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     // Budget must match render_table_row exactly. render uses area.width
                     // (= inner_area.width after chunk split), not `available_width`, which
                     // carries a 4-char list-prefix margin that tables don't need.
+                    let metadata = document_tables.get(*table as usize);
+                    let column_widths = metadata.map_or(&[][..], |metadata| metadata.column_widths.as_ref());
                     let n = column_widths.len();
                     let overhead = 3 + 3 * n;
                     let budget = (inner_area.width as usize).saturating_sub(overhead);
-                    let capped = cap_column_widths(column_widths, budget);
+                    let natural: Vec<usize> = column_widths.iter().map(|width| *width as usize).collect();
+                    let capped = cap_column_widths(&natural, budget);
                     let text_color = theme.content.text;
                     let row_lines = cells
                         .iter()
                         .enumerate()
                         .map(|(i, cell)| {
                             let w = capped.get(i).copied().unwrap_or(0);
-                            let expanded = expand_tabs(cell);
+                            let expanded = expand_tabs(document.slice(*cell));
                             // `<br>` inside a cell opens a new logical line; each logical line
                             // wraps independently and stacks vertically within the cell.
                             let mut total: usize = 0;
@@ -241,8 +254,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     (row_lines as u16).min(max_item_height)
                 }
             }
-            ContentItem::Details { content_lines, id, .. } => {
-                let is_open = details_states.get(id).copied().unwrap_or(false);
+            ContentItem::Details {
+                content_lines, source_line, ..
+            } => {
+                let is_open = details_states.get(&(*source_line as usize)).copied().unwrap_or(false);
                 if is_open {
                     1 + content_lines.len() as u16
                 } else {
@@ -251,7 +266,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
             ContentItem::FrontmatterLine { .. } => 1u16,
             ContentItem::FrontmatterDelimiter { .. } => 1u16,
-            ContentItem::TagBadges { .. } => 2u16, // 1 line padding + 1 line for tags
+            ContentItem::TagBadges => 2u16, // 1 line padding + 1 line for tags
         }
     };
 
@@ -355,8 +370,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    let mut constraints: Vec<Constraint> = Vec::new();
-    let mut visible_indices: Vec<usize> = Vec::new();
+    scratch.constraints.clear();
+    scratch.visible_indices.clear();
     let mut total_height = 0u16;
 
     for (i, item) in app.content_items.iter().enumerate().skip(scroll_offset) {
@@ -369,18 +384,23 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
         let item_height = get_item_height(i, item);
         let visible_height = visible_item_height(total_height, inner_area.height, item_height);
-        constraints.push(Constraint::Length(visible_height));
-        visible_indices.push(i);
+        scratch.constraints.push(Constraint::Length(visible_height));
+        scratch.visible_indices.push(i);
         total_height = total_height.saturating_add(visible_height);
     }
 
-    if constraints.is_empty() {
+    if scratch.constraints.is_empty() {
         app.content_area = inner_area;
         app.content_item_rects.clear();
+        app.content_render_scratch = scratch;
         return;
     }
 
-    let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(inner_area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(scratch.constraints.clone())
+        .split(inner_area);
+    let visible_indices = &scratch.visible_indices;
 
     app.content_area = inner_area;
     app.content_item_rects.clear();
@@ -397,11 +417,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         let is_cursor_line = item_idx == cursor && is_focused;
         let is_hovered = app.mouse_hover_item == Some(item_idx);
 
-        // Clone the item data to avoid borrow conflicts
-        let item_clone = app.content_items[item_idx].clone();
-
-        match item_clone {
-            ContentItem::TextLine(ref line) => {
+        match &app.content_items[item_idx] {
+            ContentItem::TextLine { range, .. } => {
+                let line = app.document_slice(*range);
                 let has_text_link = app.item_all_links_at(item_idx).iter().any(|link| !matches!(link, LinkInfo::Image { .. }));
                 let selected_is_image = is_cursor_line && matches!(app.current_selected_link(), Some(LinkInfo::Image { .. }));
                 let hovered_image = app.mouse_hover_inline_image.map(|(hovered_item, _)| hovered_item == item_idx).unwrap_or(false);
@@ -417,14 +435,12 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let context = RenderContext::new(&app.theme, chunks[chunk_idx], is_cursor_line, selected_link, has_link);
                 render_content_line(f, line, context, Some(wiki_validator), fold_state);
                 if !skip_images {
-                    let inline_images = &inline_image_selections[item_idx];
-                    if !inline_images.is_empty() {
+                    if app.inline_image_count_at(item_idx) > 0 {
                         let text_height = item_text_heights[item_idx];
                         render_inline_thumbnails(
                             f,
                             app,
                             item_idx,
-                            inline_images,
                             chunks[chunk_idx],
                             inner_area,
                             text_height,
@@ -434,33 +450,32 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                 }
             }
-            ContentItem::Image(path) => {
+            ContentItem::Image { path, .. } => {
                 if !skip_images {
-                    render_inline_image_with_cursor(f, app, item_idx, &path, chunks[chunk_idx], inner_area, is_cursor_line, is_hovered);
+                    render_inline_image_with_cursor(f, app, item_idx, *path, chunks[chunk_idx], inner_area, is_cursor_line, is_hovered);
                 }
             }
-            ContentItem::CodeLine(line) => {
+            ContentItem::CodeLine { range, .. } => {
                 let highlighted_spans = code_block_highlights.get(&item_idx).cloned();
-                render_code_line(f, &app.theme, &line, highlighted_spans, chunks[chunk_idx], is_cursor_line);
+                render_code_line(f, &app.theme, app.document_slice(*range), highlighted_spans, chunks[chunk_idx], is_cursor_line);
             }
-            ContentItem::CodeFence(lang) => {
-                render_code_fence(f, &app.theme, &lang, chunks[chunk_idx], is_cursor_line);
+            ContentItem::CodeFence { language, .. } => {
+                render_code_fence(f, &app.theme, app.document_slice(*language), chunks[chunk_idx], is_cursor_line);
             }
-            ContentItem::TaskItem { ref text, checked, indent, .. } => {
+            ContentItem::TaskItem { text, checked, indent, .. } => {
+                let text = app.document_slice(*text);
                 let selected_link = if is_cursor_line { app.selected_link_index } else { 0 };
-                let has_links = !app.item_wiki_links_at(item_idx).is_empty() || !app.item_links_at(item_idx).is_empty();
+                let has_links = !app.item_all_links_at(item_idx).is_empty();
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 let context = RenderContext::new(&app.theme, chunks[chunk_idx], is_cursor_line, selected_link, has_links);
-                render_task_item(f, text, checked, indent, context, Some(wiki_validator));
+                render_task_item(f, text, *checked, *indent as usize, context, Some(wiki_validator));
                 if !skip_images {
-                    let inline_images = &inline_image_selections[item_idx];
-                    if !inline_images.is_empty() {
+                    if app.inline_image_count_at(item_idx) > 0 {
                         let text_height = item_text_heights[item_idx];
                         render_inline_thumbnails(
                             f,
                             app,
                             item_idx,
-                            inline_images,
                             chunks[chunk_idx],
                             inner_area,
                             text_height,
@@ -474,25 +489,51 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 cells,
                 is_separator,
                 is_header,
-                column_widths,
-                alignments,
+                table,
+                ..
             } => {
-                let has_link = !is_separator && (is_cursor_line || is_hovered) && !app.item_links_at(item_idx).is_empty();
+                let has_link = !*is_separator && (is_cursor_line || is_hovered) && !app.item_all_links_at(item_idx).is_empty();
                 let context = RenderContext::new(&app.theme, chunks[chunk_idx], is_cursor_line, 0, has_link);
-                render_table_row(f, &cells, is_separator, is_header, &column_widths, &alignments, context);
+                if let (Some(document), Some(metadata)) = (app.document(), app.table_metadata(*table)) {
+                    render_table_row(
+                        f,
+                        document,
+                        cells,
+                        *is_separator,
+                        *is_header,
+                        &metadata.column_widths,
+                        &metadata.alignments,
+                        context,
+                    );
+                }
             }
-            ContentItem::Details { summary, content_lines, id } => {
-                let is_open = app.details_open_states.get(&id).copied().unwrap_or(false);
-                render_details(f, &app.theme, &summary, &content_lines, is_open, chunks[chunk_idx], is_cursor_line);
+            ContentItem::Details {
+                summary,
+                content_lines,
+                source_line,
+            } => {
+                let is_open = app.details_open_states.get(&(*source_line as usize)).copied().unwrap_or(false);
+                if let Some(document) = app.document() {
+                    render_details(f, document, &app.theme, *summary, content_lines, is_open, chunks[chunk_idx], is_cursor_line);
+                }
             }
             ContentItem::FrontmatterDelimiter { .. } => {
                 render_frontmatter_delimiter(f, &app.theme, chunks[chunk_idx], is_cursor_line);
             }
-            ContentItem::FrontmatterLine { ref key, ref value, .. } => {
-                render_frontmatter_line(f, &app.theme, key, value, chunks[chunk_idx], is_cursor_line);
+            ContentItem::FrontmatterLine { key, value, .. } => {
+                render_frontmatter_line(
+                    f,
+                    &app.theme,
+                    app.document_slice(*key),
+                    app.document_slice(*value),
+                    chunks[chunk_idx],
+                    is_cursor_line,
+                );
             }
-            ContentItem::TagBadges { ref tags, ref date } => {
-                render_tag_badges_inline(f, &app.theme, tags, date.as_deref(), chunks[chunk_idx], is_cursor_line);
+            ContentItem::TagBadges => {
+                if let Some(frontmatter) = app.current_note().and_then(|note| note.frontmatter.as_ref()) {
+                    render_tag_badges_inline(f, &app.theme, &frontmatter.tags, frontmatter.date.as_deref(), chunks[chunk_idx], is_cursor_line);
+                }
             }
         }
     }
@@ -500,4 +541,5 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     if app.buffer_search.active && !app.buffer_search.matches.is_empty() {
         apply_content_search_highlights(f, app, &visible_indices, &chunks);
     }
+    app.content_render_scratch = scratch;
 }

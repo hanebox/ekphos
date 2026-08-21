@@ -24,7 +24,7 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
         .outline
         .iter()
         .map(|item| {
-            let indent = "  ".repeat(item.level.saturating_sub(1));
+            let indent = "  ".repeat(item.level.saturating_sub(1) as usize);
             let prefix = match item.level {
                 1 => "# ",
                 2 => "## ",
@@ -37,7 +37,14 @@ pub fn render_outline(f: &mut Frame, app: &mut App, area: Rect) {
                 3 => Style::default().fg(outline_theme.heading3),
                 _ => Style::default().fg(outline_theme.heading4),
             };
-            ListItem::new(Line::from(Span::styled(format!("{}{}{}", indent, prefix, expand_tabs(&item.title)), style)))
+            let source_line = item.source_line as usize;
+            let raw_title = if app.mode == Mode::Edit {
+                app.editor.line(source_line).unwrap_or("")
+            } else {
+                app.document().and_then(|document| document.line(source_line)).unwrap_or("")
+            };
+            let title = ekphos_core::markdown::heading(raw_title).map_or(raw_title, |heading| heading.text);
+            ListItem::new(Line::from(Span::styled(format!("{}{}{}", indent, prefix, expand_tabs(title)), style)))
         })
         .collect();
 

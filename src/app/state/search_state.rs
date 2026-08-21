@@ -150,7 +150,7 @@ impl App {
 
     fn search_body(&self, note_id: NoteId) -> Option<Arc<str>> {
         if self.active_note_id == Some(note_id) {
-            return self.active_body.clone();
+            return self.active_document.as_ref().map(DocumentSnapshot::body_arc);
         }
         let path = self.notes.iter().find(|note| note.id == note_id)?.file_path.as_ref()?;
         fs::read_to_string(path).ok().map(Arc::from)
@@ -684,7 +684,7 @@ impl App {
                             let mut best_match_idx = 0;
                             let mut best_match_diff = usize::MAX;
 
-                            for (i, &source_line) in self.content_item_source_lines.iter().enumerate() {
+                            for (i, source_line) in self.content_items.iter().map(ContentItem::source_line).enumerate() {
                                 if source_line == target_line_0indexed {
                                     best_match_idx = i;
                                     break;

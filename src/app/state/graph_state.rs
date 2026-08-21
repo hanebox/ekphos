@@ -1,17 +1,20 @@
 use super::*;
 
+const RETAINED_GRAPH_INDEX_BUDGET: usize = 16 * 1024 * 1024;
+
 impl App {
     pub fn start_graph_index_build(&mut self) {
         self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
         let generation = self.graph_index_generation;
-        let sources: Vec<(GraphSourceMetadata, PathBuf)> = self
+        let sources: Vec<GraphSourceFile> = self
             .notes
             .iter()
             .enumerate()
             .filter_map(|(note_index, note)| {
-                let path = note.file_path.clone()?;
-                Some((
-                    GraphSourceMetadata {
+                let absolute_path = note.file_path.clone()?;
+                let fingerprint = self.vault.fingerprint(note.id)?;
+                Some(GraphSourceFile {
+                    metadata: GraphSourceMetadata {
                         note_id: note.id,
                         title: note.title.clone(),
                         path: self.get_wiki_path_for_note(note_index).unwrap_or_else(|| note.title.clone()),
@@ -21,80 +24,101 @@ impl App {
                             .map(|frontmatter| frontmatter.tags.iter().map(|tag| tag.to_string()).collect())
                             .unwrap_or_default(),
                     },
-                    path,
-                ))
+                    absolute_path,
+                    fingerprint: GraphFileFingerprint {
+                        size: fingerprint.size,
+                        modified_nanos: fingerprint.modified_nanos.map(std::num::NonZeroU64::get).unwrap_or(0),
+                    },
+                })
             })
             .collect();
-        let (sender, receiver) = mpsc::channel();
-        self.graph_index_receiver = receiver;
-        // Note indices can be reassigned by a reload. Keep the last rendered
-        // projection on screen, but do not use an old index for new actions.
+        let cache_path = self.graph_cache_path("graph_index.bin");
+        self.graph_worker
+            .get_or_insert_with(GraphWorker::new)
+            .submit_build(generation, sources, cache_path);
+
         self.graph_index = None;
         self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
+        self.graph_view.global_positions = Vec::new();
+        self.graph_view.global_fingerprint = None;
         self.graph_view.layout_pending = false;
         self.graph_indexing = true;
         self.graph_view.index_pending = true;
-        std::thread::spawn(move || {
-            let paths: HashMap<NoteId, PathBuf> = sources.iter().map(|(source, path)| (source.note_id, path.clone())).collect();
-            let metadata = sources.into_iter().map(|(source, _)| source).collect();
-            let index = std::panic::catch_unwind(|| {
-                GraphIndex::build_from_loader(metadata, |note_id| paths.get(&note_id).and_then(|path| fs::read_to_string(path).ok()))
-            })
-            .unwrap_or_default();
-            let _ = sender.send((generation, index));
-        });
     }
 
     pub fn graph_has_background_work(&self) -> bool {
-        self.graph_indexing || self.graph_view.layout_pending
+        self.graph_indexing || self.graph_view.layout_pending || self.graph_worker.as_ref().is_some_and(GraphWorker::is_pending)
     }
 
-    /// Poll graph workers. Returns true when graph UI state changed.
+    /// Poll the single managed graph worker. Generation checks prevent a reload
+    /// or a replaced layout request from installing stale note IDs.
     pub fn poll_graph_workers(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok((generation, index)) = self.graph_index_receiver.try_recv() {
-            if generation != self.graph_index_generation {
-                continue;
+        let Some(response) = self.graph_worker.as_ref().and_then(GraphWorker::try_take) else {
+            return false;
+        };
+        match response {
+            GraphResponse::Index { generation, outcome } => {
+                if generation != self.graph_index_generation {
+                    return false;
+                }
+                let fingerprint_changed = self
+                    .graph_index
+                    .as_ref()
+                    .map(|current| current.fingerprint != outcome.index.fingerprint)
+                    .or_else(|| self.graph_view.global_fingerprint.map(|fingerprint| fingerprint != outcome.index.fingerprint))
+                    .unwrap_or(true);
+                self.graph_last_reused_files = outcome.reused_files;
+                self.graph_last_parsed_files = outcome.parsed_files;
+                self.graph_index = Some(Arc::new(outcome.index));
+                self.graph_indexing = false;
+                self.graph_view.index_pending = false;
+                if fingerprint_changed {
+                    self.graph_view.global_positions = Vec::new();
+                    self.graph_view.global_fingerprint = None;
+                }
+                if self.dialog == DialogState::GraphView {
+                    self.rebuild_graph_projection(true);
+                    if self.graph_view.mode == GraphMode::Global {
+                        self.start_global_graph_layout();
+                    }
+                }
+                true
             }
-            let fingerprint_changed = self
-                .graph_index
-                .as_ref()
-                .map(|current| current.fingerprint != index.fingerprint)
-                .or_else(|| self.graph_view.global_fingerprint.map(|fingerprint| fingerprint != index.fingerprint))
-                .unwrap_or(true);
-            self.graph_index = Some(Arc::new(index));
-            self.graph_indexing = false;
-            self.graph_view.index_pending = false;
-            if fingerprint_changed {
-                self.graph_view.global_positions.clear();
-                self.graph_view.global_fingerprint = None;
+            GraphResponse::Layout {
+                generation,
+                fingerprint,
+                mut positions,
+            } => {
+                if generation != self.graph_layout_generation || self.graph_index.as_ref().map(|index| index.fingerprint) != Some(fingerprint) {
+                    return false;
+                }
+                positions.sort_unstable_by_key(|(note_id, _, _)| *note_id);
+                positions.shrink_to_fit();
+                self.graph_view.global_positions = positions;
+                self.graph_view.global_fingerprint = Some(fingerprint);
+                self.graph_view.layout_pending = false;
+                if self.dialog == DialogState::GraphView && self.graph_view.mode == GraphMode::Global {
+                    self.rebuild_graph_projection(true);
+                }
+                true
             }
-            if self.dialog == DialogState::GraphView {
-                self.rebuild_graph_projection(true);
-                self.start_global_graph_layout();
+            GraphResponse::Failed { generation } => {
+                if generation == self.graph_index_generation {
+                    self.graph_indexing = false;
+                    self.graph_view.index_pending = false;
+                }
+                if generation == self.graph_layout_generation {
+                    self.graph_view.layout_pending = false;
+                }
+                true
             }
-            changed = true;
         }
-
-        while let Ok((generation, fingerprint, positions)) = self.graph_layout_receiver.try_recv() {
-            if generation != self.graph_layout_generation {
-                continue;
-            }
-            if self.graph_index.as_ref().map(|index| index.fingerprint) != Some(fingerprint) {
-                continue;
-            }
-            self.graph_view.global_positions = positions.into_iter().map(|(note_index, x, y)| (note_index, (x, y))).collect();
-            self.graph_view.global_fingerprint = Some(fingerprint);
-            self.graph_view.layout_pending = false;
-            if self.dialog == DialogState::GraphView && self.graph_view.mode == GraphMode::Global {
-                self.rebuild_graph_projection(true);
-            }
-            changed = true;
-        }
-        changed
     }
 
     pub(super) fn start_global_graph_layout(&mut self) {
+        if self.dialog != DialogState::GraphView || self.graph_view.mode != GraphMode::Global {
+            return;
+        }
         let Some(index) = self.graph_index.clone() else {
             return;
         };
@@ -106,46 +130,35 @@ impl App {
             .get(self.graph_view.root_note_index)
             .map(|note| note.id)
             .unwrap_or_else(|| NoteId::new(0));
-        let mut projection = index.project(GraphMode::Global, root_note_id, 1, GraphLinkScope::All, &GraphFilter::default(), true);
-        graph::apply_global_seed_layout(&mut projection.nodes);
-        self.graph_view.global_positions = projection.nodes.iter().map(|node| (node.note_id, (node.x, node.y))).collect();
+        let projection = index.project(GraphMode::Global, root_note_id, 1, GraphLinkScope::All, &GraphFilter::default(), true);
         self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
         let generation = self.graph_layout_generation;
-        let fingerprint = index.fingerprint;
-        let cache_path = search::get_index_path_in(&self.dependencies.cache_dir, &self.config.notes_path()).with_file_name("graph_layout.bin");
-        let (sender, receiver) = mpsc::channel();
-        self.graph_layout_receiver = receiver;
+        let cache_path = self.graph_cache_path("graph_layout.bin");
+        self.graph_worker
+            .get_or_insert_with(GraphWorker::new)
+            .submit_layout(generation, index, projection, cache_path);
         self.graph_view.layout_pending = true;
-        std::thread::spawn(move || {
-            if let Some(positions) = graph::load_layout_cache(&cache_path, fingerprint, &projection.nodes) {
-                let _ = sender.send((generation, fingerprint, positions));
-                return;
-            }
-            graph::apply_global_layout(&mut projection.nodes, &projection.edges);
-            graph::save_layout_cache(&cache_path, fingerprint, &projection.nodes);
-            let positions = projection.nodes.into_iter().map(|node| (node.note_id, node.x, node.y)).collect();
-            let _ = sender.send((generation, fingerprint, positions));
-        });
     }
 
-    /// Open a fresh Local graph. Session preferences remain, but the active
-    /// note always becomes the root as promised by Ctrl+G.
+    /// Open a fresh Local graph. Global projection and layout remain absent
+    /// until the user explicitly switches modes.
     pub fn build_graph(&mut self) {
         self.graph_view.mode = GraphMode::Local;
         self.graph_view.root_note_index = self.selected_note;
         self.graph_view.selected_note_index = Some(self.selected_note);
         self.graph_view.index_pending = self.graph_index.is_none();
+        self.graph_view.global_positions = Vec::new();
+        self.graph_view.global_fingerprint = None;
         if self.graph_index.is_none() && !self.graph_indexing {
             self.start_graph_index_build();
         }
         self.rebuild_graph_projection(true);
-        self.start_global_graph_layout();
     }
 
     pub fn rebuild_graph_projection(&mut self, refit: bool) {
         let Some(index) = self.graph_index.clone() else {
-            self.graph_view.nodes.clear();
-            self.graph_view.edges.clear();
+            self.graph_view.nodes = Vec::new();
+            self.graph_view.edges = Vec::new();
             self.graph_view.total_nodes = 0;
             self.graph_view.total_edges = 0;
             return;
@@ -165,20 +178,19 @@ impl App {
             self.graph_view.show_orphans,
         );
         match self.graph_view.mode {
-            GraphMode::Local => graph::apply_local_layout(&mut projection.nodes),
+            GraphMode::Local => graph::apply_local_layout(&index, &mut projection.nodes),
             GraphMode::Global => {
-                if !self.graph_view.global_positions.is_empty() {
-                    for node in &mut projection.nodes {
-                        if let Some(&(x, y)) = self.graph_view.global_positions.get(&node.note_id) {
-                            node.x = x;
-                            node.y = y;
-                            node.home_x = x;
-                            node.home_y = y;
-                        }
+                for node in &mut projection.nodes {
+                    if let Ok(position) = self.graph_view.global_positions.binary_search_by_key(&node.note_id, |(note_id, _, _)| *note_id) {
+                        let (_, x, y) = self.graph_view.global_positions[position];
+                        node.x = x;
+                        node.y = y;
+                        node.home_x = x;
+                        node.home_y = y;
                     }
                 }
                 if self.graph_view.global_positions.is_empty() {
-                    graph::apply_global_seed_layout(&mut projection.nodes);
+                    graph::apply_global_seed_layout(&index, &mut projection.nodes);
                 }
             }
         }
@@ -186,13 +198,13 @@ impl App {
             .graph_view
             .selected_note_index
             .or(Some(self.graph_view.root_note_index))
-            .and_then(|index| self.notes.get(index).map(|note| note.id));
+            .and_then(|note_index| self.notes.get(note_index).map(|note| note.id));
         let selected = preferred
             .and_then(|note_id| projection.nodes.iter().position(|node| node.note_id == note_id))
             .or(projection.root_node)
             .or_else(|| (!projection.nodes.is_empty()).then_some(0));
         self.graph_view.selected_node = selected;
-        self.graph_view.selected_note_index = selected.and_then(|idx| self.note_index_for_id(projection.nodes[idx].note_id));
+        self.graph_view.selected_note_index = selected.and_then(|node| self.note_index_for_id(projection.nodes[node].note_id));
         self.graph_view.total_nodes = projection.total_nodes;
         self.graph_view.total_edges = projection.total_edges;
         self.graph_view.nodes = projection.nodes;
@@ -214,6 +226,12 @@ impl App {
         self.rebuild_graph_projection(true);
         if self.graph_view.mode == GraphMode::Global {
             self.start_global_graph_layout();
+        } else if self.graph_view.layout_pending {
+            self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
+            self.graph_view.layout_pending = false;
+            if let Some(worker) = &self.graph_worker {
+                worker.cancel();
+            }
         }
     }
 
@@ -262,5 +280,46 @@ impl App {
         self.graph_view.root_note_index = note_index;
         self.graph_view.mode = GraphMode::Local;
         self.rebuild_graph_projection(true);
+    }
+
+    pub fn close_graph_view(&mut self) {
+        self.dialog = DialogState::None;
+        self.release_graph_session();
+    }
+
+    pub fn release_graph_session(&mut self) {
+        self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
+        self.graph_layout_generation = self.graph_layout_generation.wrapping_add(1);
+        self.graph_indexing = false;
+        if let Some(worker) = self.graph_worker.take() {
+            worker.cancel();
+            drop(worker);
+        }
+        self.graph_view.nodes = Vec::new();
+        self.graph_view.edges = Vec::new();
+        self.graph_view.global_positions = Vec::new();
+        self.graph_view.global_fingerprint = None;
+        self.graph_view.selected_node = None;
+        self.graph_view.index_pending = false;
+        self.graph_view.layout_pending = false;
+        self.graph_view.drag_start = None;
+        self.graph_view.dragging_node = None;
+        self.graph_view.is_panning = false;
+        if self
+            .graph_index
+            .as_ref()
+            .is_some_and(|index| index.retained_bytes() > RETAINED_GRAPH_INDEX_BUDGET)
+        {
+            self.graph_index = None;
+        }
+    }
+
+    pub(super) fn invalidate_graph_service(&mut self) {
+        self.release_graph_session();
+        self.graph_index = None;
+    }
+
+    fn graph_cache_path(&self, file_name: &str) -> PathBuf {
+        search::get_index_path_in(&self.dependencies.cache_dir, &self.config.notes_path()).with_file_name(file_name)
     }
 }

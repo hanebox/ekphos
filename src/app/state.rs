@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ekphos_core::NoteId;
 use image::DynamicImage;
 use ratatui::{
-    layout::{Rect, Size},
+    layout::{Constraint, Rect, Size},
     style::Style,
     widgets::{Block, Borders, ListState},
 };
@@ -21,13 +21,19 @@ use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker}
 use crate::keybindings::{KeybindingFallback, KeybindingWarning, Keymap};
 use ekphos_editor::{Editor, Position};
 use ekphos_graph as graph;
-use ekphos_graph::{GraphEdge, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode, GraphSourceMetadata};
+use ekphos_graph::{
+    GraphEdge, GraphFileFingerprint, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode, GraphResponse, GraphSourceFile, GraphSourceMetadata,
+    GraphWorker,
+};
 use ekphos_search as search;
 use ekphos_search::{SearchHit, SearchIndex, SearchWorker};
 use ekphos_vim::VimState;
 
 mod session_types;
 pub use session_types::*;
+
+mod document_snapshot;
+pub use document_snapshot::{DocumentRange, DocumentSnapshot};
 
 use super::welcome_notes::{DEMO_NOTE_CONTENT, GETTING_STARTED_CONTENT};
 
@@ -256,16 +262,17 @@ impl AppBuilder {
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
         let (_, index_receiver) = mpsc::channel();
-        let (_, graph_index_receiver) = mpsc::channel();
-        let (_, graph_layout_receiver) = mpsc::channel();
 
         let mut app = App {
             vault: ekphos_vault::Vault::default(),
             body_cache: ekphos_vault::BodyCache::default(),
             active_note_id: None,
             active_fingerprint: None,
-            active_body: None,
+            active_document: None,
             document_generation: 0,
+            catalog_generation: 0,
+            document_parse_key: None,
+            document_parse_count: 0,
             notes: Vec::new(),
             selected_note: 0,
             list_state,
@@ -289,9 +296,13 @@ impl AppBuilder {
             block_insert_state: None,
             content_cursor: 0,
             content_scroll_offset: 0,
+            edit_preview_position: None,
             floating_cursor_mode: config.floating_cursor,
             content_items: Vec::new(),
-            content_item_source_lines: Vec::new(),
+            document_tables: Vec::new(),
+            document_links: Vec::new(),
+            document_link_ranges: Vec::new(),
+            content_render_scratch: ContentRenderScratch::default(),
             theme,
             config,
             dialog,
@@ -345,11 +356,12 @@ impl AppBuilder {
             help_scroll: 0,
             graph_view: GraphViewState::default(),
             graph_index: None,
-            graph_index_receiver,
+            graph_worker: None,
             graph_index_generation: 0,
             graph_indexing: false,
-            graph_layout_receiver,
             graph_layout_generation: 0,
+            graph_last_reused_files: 0,
+            graph_last_parsed_files: 0,
             sort_mode: SortMode::default(),
             navigation_history: Vec::new(),
             navigation_index: 0,
@@ -573,11 +585,11 @@ mod tests {
         ];
 
         assert_eq!(
-            App::inline_image_selections_for_links(links.clone(), false),
+            App::inline_image_selections_for_links(&links, false),
             vec![("one.png".to_string(), 1), ("two.png".to_string(), 2)]
         );
         assert_eq!(
-            App::inline_image_selections_for_links(links, true),
+            App::inline_image_selections_for_links(&links, true),
             vec![("one.png".to_string(), 2), ("two.png".to_string(), 3)]
         );
     }

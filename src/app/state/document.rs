@@ -1,283 +1,412 @@
 use super::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-impl App {
-    pub fn update_outline(&mut self) {
-        self.outline.clear();
+struct ParsedDocument {
+    items: Vec<ContentItem>,
+    tables: Vec<TableMetadata>,
+    outline: Vec<OutlineItem>,
+    links: Vec<LinkInfo>,
+    link_ranges: Vec<DocumentLinkRange>,
+}
 
-        for (idx, item) in self.content_items.iter().enumerate() {
-            if let ContentItem::TextLine(line) = item {
-                if line.starts_with("# ") {
-                    self.outline.push(OutlineItem {
-                        level: 1,
-                        title: line.trim_start_matches("# ").to_string(),
-                        line: idx,
-                    });
-                } else if line.starts_with("## ") {
-                    self.outline.push(OutlineItem {
-                        level: 2,
-                        title: line.trim_start_matches("## ").to_string(),
-                        line: idx,
-                    });
-                } else if line.starts_with("### ") {
-                    self.outline.push(OutlineItem {
-                        level: 3,
-                        title: line.trim_start_matches("### ").to_string(),
-                        line: idx,
-                    });
+impl ParsedDocument {
+    fn push_item(&mut self, item: ContentItem, document: &DocumentSnapshot, wiki_exists: &dyn Fn(&str) -> bool) {
+        let mut links = match &item {
+            ContentItem::TextLine { range, .. } => parse_text_links(document.slice(*range), wiki_exists),
+            ContentItem::TaskItem { text, .. } => parse_text_links(document.slice(*text), wiki_exists),
+            ContentItem::TableRow {
+                cells,
+                table,
+                is_separator: false,
+                ..
+            } => self.tables.get(*table as usize).map_or_else(Vec::new, |metadata| {
+                let cells: Vec<&str> = cells.iter().map(|range| document.slice(*range)).collect();
+                let widths: Vec<usize> = metadata.column_widths.iter().map(|width| *width as usize).collect();
+                App::extract_table_links(&cells, &widths, &metadata.alignments)
+                    .into_iter()
+                    .map(|(text, url, start_col, end_col)| LinkInfo::Markdown { text, url, start_col, end_col })
+                    .collect()
+            }),
+            _ => Vec::new(),
+        };
+        links.sort_by_key(LinkInfo::start_col);
+        let start = self.links.len();
+        self.links.append(&mut links);
+        self.link_ranges.push(DocumentLinkRange {
+            start: u32::try_from(start).unwrap_or(u32::MAX),
+            len: u16::try_from(self.links.len() - start).unwrap_or(u16::MAX),
+            image_count: u16::try_from(self.links[start..].iter().filter(|link| matches!(link, LinkInfo::Image { .. })).count()).unwrap_or(u16::MAX),
+        });
+        self.items.push(item);
+    }
+}
+
+fn parse_text_links(text: &str, wiki_exists: &dyn Fn(&str) -> bool) -> Vec<LinkInfo> {
+    let inline_images = App::inline_image_links_in_text(text);
+    let mut links: Vec<LinkInfo> = App::parse_markdown_links_in_text(text)
+        .into_iter()
+        .map(|(label, url, start_col, end_col)| {
+            if inline_images.iter().any(|(path, image_start)| path == &url && *image_start == start_col) {
+                LinkInfo::Image { path: url, start_col, end_col }
+            } else {
+                LinkInfo::Markdown {
+                    text: label,
+                    url,
+                    start_col,
+                    end_col,
                 }
             }
+        })
+        .collect();
+    links.extend(ekphos_core::markdown::wiki_links(text).into_iter().map(|link| {
+        let start_col = App::calc_wiki_rendered_pos(text, link.range.start);
+        LinkInfo::Wiki {
+            target: link.target.to_owned(),
+            heading: link.heading.map(str::to_owned),
+            start_col,
+            end_col: start_col + link.display_text().width(),
+            is_valid: wiki_exists(link.target),
+        }
+    }));
+    links
+}
+
+fn range_for_slice(document: &DocumentSnapshot, source_line: usize, slice: &str) -> DocumentRange {
+    let line = document.line(source_line).unwrap_or("");
+    let relative_start = slice.as_ptr() as usize - line.as_ptr() as usize;
+    document
+        .range_within_line(source_line, relative_start..relative_start + slice.len())
+        .unwrap_or_default()
+}
+
+fn push_text_line(parsed: &mut ParsedDocument, document: &DocumentSnapshot, source_line: usize, wiki_exists: &dyn Fn(&str) -> bool) {
+    let line = document.line(source_line).unwrap_or("");
+    let heading = ekphos_core::markdown::heading(line).filter(|heading| heading.level <= 3 && line[heading.level..].starts_with(' '));
+    let heading_level = heading.as_ref().map_or(0, |heading| heading.level as u8);
+    let item_index = parsed.items.len();
+    if heading.is_some() {
+        parsed.outline.push(OutlineItem {
+            level: heading_level,
+            source_line: source_line as u32,
+            line: item_index,
+        });
+    }
+    parsed.push_item(
+        ContentItem::TextLine {
+            range: document.line_range(source_line).unwrap_or_default(),
+            source_line: source_line as u32,
+            heading_level,
+        },
+        document,
+        wiki_exists,
+    );
+}
+
+fn parse_document(
+    document: &DocumentSnapshot,
+    frontmatter: Option<&CompactFrontmatter>,
+    content_start_line: usize,
+    frontmatter_hidden: bool,
+    show_tags: bool,
+    wiki_exists: &dyn Fn(&str) -> bool,
+) -> ParsedDocument {
+    let mut parsed = ParsedDocument {
+        items: Vec::with_capacity(document.line_count()),
+        tables: Vec::new(),
+        outline: Vec::new(),
+        links: Vec::new(),
+        link_ranges: Vec::with_capacity(document.line_count()),
+    };
+    let mut line_index = 0usize;
+    let has_frontmatter = frontmatter.is_some() && content_start_line > 0;
+
+    if has_frontmatter && !frontmatter_hidden {
+        parsed.push_item(ContentItem::FrontmatterDelimiter { source_line: 0 }, document, wiki_exists);
+        for source_line in 1..content_start_line.saturating_sub(1).min(document.line_count()) {
+            let line = document.line(source_line).unwrap_or("");
+            let (key, value) = if let Some(colon) = line.find(':') {
+                (line[..colon].trim(), line[colon + 1..].trim())
+            } else {
+                (&line[..0], line)
+            };
+            parsed.push_item(
+                ContentItem::FrontmatterLine {
+                    key: range_for_slice(document, source_line, key),
+                    value: range_for_slice(document, source_line, value),
+                    source_line: source_line as u32,
+                },
+                document,
+                wiki_exists,
+            );
+        }
+        parsed.push_item(
+            ContentItem::FrontmatterDelimiter {
+                source_line: content_start_line.saturating_sub(1) as u32,
+            },
+            document,
+            wiki_exists,
+        );
+        line_index = content_start_line;
+    } else if has_frontmatter {
+        if show_tags && frontmatter.is_some_and(|metadata| !metadata.tags.is_empty() || metadata.date.is_some()) {
+            parsed.push_item(ContentItem::TagBadges, document, wiki_exists);
+        }
+        line_index = content_start_line;
+    }
+
+    let mut in_code_block = false;
+    while line_index < document.line_count() {
+        let line = document.line(line_index).unwrap_or("");
+
+        if line.starts_with("```") {
+            let language = line.trim_start_matches('`');
+            parsed.push_item(
+                ContentItem::CodeFence {
+                    language: range_for_slice(document, line_index, language),
+                    source_line: line_index as u32,
+                },
+                document,
+                wiki_exists,
+            );
+            in_code_block = !in_code_block;
+            line_index += 1;
+            continue;
         }
 
+        if in_code_block {
+            parsed.push_item(
+                ContentItem::CodeLine {
+                    range: document.line_range(line_index).unwrap_or_default(),
+                    source_line: line_index as u32,
+                },
+                document,
+                wiki_exists,
+            );
+            line_index += 1;
+            continue;
+        }
+
+        if let Some(path) = standalone_image_path(line) {
+            parsed.push_item(
+                ContentItem::Image {
+                    path: range_for_slice(document, line_index, path),
+                    source_line: line_index as u32,
+                },
+                document,
+                wiki_exists,
+            );
+            line_index += 1;
+            continue;
+        }
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+            let checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
+            let leading_bytes = line.len().saturating_sub(trimmed.len());
+            let indent: usize = line[..leading_bytes]
+                .chars()
+                .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+                .sum();
+            parsed.push_item(
+                ContentItem::TaskItem {
+                    text: range_for_slice(document, line_index, &trimmed[6..]),
+                    checked,
+                    source_line: line_index as u32,
+                    indent: u16::try_from(indent).unwrap_or(u16::MAX),
+                },
+                document,
+                wiki_exists,
+            );
+            line_index += 1;
+            continue;
+        }
+
+        let trimmed_line = line.trim();
+        if trimmed_line.starts_with("<details") && (trimmed_line.ends_with('>') || trimmed_line.contains("><")) {
+            let details_start_line = line_index;
+            let mut summary = None;
+            let mut content_lines = Vec::new();
+            let mut found_end = false;
+            line_index += 1;
+
+            while line_index < document.line_count() {
+                let source = document.line(line_index).unwrap_or("");
+                let detail_line = source.trim();
+                if detail_line.contains("</details>") {
+                    found_end = true;
+                    line_index += 1;
+                    break;
+                }
+                if detail_line.starts_with("<summary>") || detail_line.contains("<summary>") {
+                    let summary_text = if let (Some(start), Some(end)) = (detail_line.find("<summary>"), detail_line.find("</summary>")) {
+                        detail_line[start + 9..end].trim()
+                    } else {
+                        detail_line.trim_start_matches("<summary>").trim()
+                    };
+                    if !summary_text.is_empty() {
+                        summary = Some(range_for_slice(document, line_index, summary_text));
+                    }
+                    line_index += 1;
+                    continue;
+                }
+                if detail_line == "</summary>" {
+                    line_index += 1;
+                    continue;
+                }
+                content_lines.push(line_index as u32);
+                line_index += 1;
+            }
+
+            if found_end {
+                parsed.push_item(
+                    ContentItem::Details {
+                        summary,
+                        content_lines: content_lines.into_boxed_slice(),
+                        source_line: details_start_line as u32,
+                    },
+                    document,
+                    wiki_exists,
+                );
+            } else {
+                push_text_line(&mut parsed, document, details_start_line, wiki_exists);
+            }
+            continue;
+        }
+
+        if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') {
+            let table_id = parsed.tables.len() as u32;
+            let mut rows: Vec<(Box<[DocumentRange]>, bool, u32)> = Vec::new();
+            while line_index < document.line_count() {
+                let source = document.line(line_index).unwrap_or("");
+                let table_line = source.trim();
+                if !table_line.starts_with('|') || !table_line.ends_with('|') {
+                    break;
+                }
+                let inner = &table_line[1..table_line.len() - 1];
+                let cells: Box<[DocumentRange]> = inner
+                    .split('|')
+                    .map(str::trim)
+                    .map(|cell| range_for_slice(document, line_index, cell))
+                    .collect();
+                let is_separator = cells.iter().all(|range| {
+                    let cell = document.slice(*range);
+                    !cell.is_empty() && cell.chars().all(|character| character == '-' || character == ':')
+                });
+                rows.push((cells, is_separator, line_index as u32));
+                line_index += 1;
+            }
+
+            let column_count = rows.iter().map(|(cells, _, _)| cells.len()).max().unwrap_or(0);
+            let mut widths = vec![0u16; column_count];
+            for (cells, is_separator, _) in &rows {
+                if !is_separator {
+                    for (column, cell) in cells.iter().enumerate() {
+                        let width = crate::ui::cell_visible_width(document.slice(*cell)).max(3);
+                        widths[column] = widths[column].max(u16::try_from(width).unwrap_or(u16::MAX));
+                    }
+                }
+            }
+            for width in &mut widths {
+                *width = (*width).max(3);
+            }
+            let separator = rows.iter().position(|(_, is_separator, _)| *is_separator);
+            let mut alignments = vec![Alignment::Left; column_count];
+            if let Some(separator_index) = separator {
+                for (column, cell) in rows[separator_index].0.iter().enumerate() {
+                    alignments[column] = Alignment::from_separator_cell(document.slice(*cell));
+                }
+            }
+            parsed.tables.push(TableMetadata {
+                column_widths: widths.into_boxed_slice(),
+                alignments: alignments.into_boxed_slice(),
+            });
+            for (row_index, (cells, is_separator, source_line)) in rows.into_iter().enumerate() {
+                parsed.push_item(
+                    ContentItem::TableRow {
+                        cells,
+                        table: table_id,
+                        source_line,
+                        is_separator,
+                        is_header: separator.is_some_and(|separator_index| row_index < separator_index),
+                    },
+                    document,
+                    wiki_exists,
+                );
+            }
+            continue;
+        }
+
+        push_text_line(&mut parsed, document, line_index, wiki_exists);
+        line_index += 1;
+    }
+    parsed
+}
+
+impl App {
+    pub(crate) fn document(&self) -> Option<&DocumentSnapshot> {
+        self.active_document.as_ref()
+    }
+
+    pub(crate) fn document_slice(&self, range: DocumentRange) -> &str {
+        self.active_document.as_ref().map_or("", |document| document.slice(range))
+    }
+
+    pub(crate) fn table_metadata(&self, table: u32) -> Option<&TableMetadata> {
+        self.document_tables.get(table as usize)
+    }
+
+    pub fn update_outline(&mut self) {
         if !self.outline.is_empty() {
             self.outline_state.select(Some(0));
         }
     }
 
     pub fn update_content_items(&mut self) {
+        let parse_key = (
+            self.document_generation,
+            self.catalog_generation,
+            self.frontmatter_hidden,
+            self.config.show_tags,
+        );
+        if self.active_document.is_some() && self.document_parse_key == Some(parse_key) {
+            return;
+        }
         self.content_items.clear();
-        self.content_item_source_lines.clear();
+        self.document_tables.clear();
+        self.document_links.clear();
+        self.document_link_ranges.clear();
+        self.outline.clear();
         self.image_states.clear();
         self.inline_image_rects.clear();
         self.mouse_hover_inline_image = None;
         self.details_open_states.clear();
         self.heading_fold_states.clear();
 
-        // Get note data to extract frontmatter info
-        let note_data = self
-            .current_note()
-            .and_then(|note| self.current_body_arc().map(|body| (body, note.frontmatter.clone(), note.content_start_line)));
-
-        if let Some((content, frontmatter, content_start_line)) = note_data {
-            let mut in_code_block = false;
-            let lines: Vec<&str> = content.lines().collect();
-            let mut i = 0;
-
-            // Handle frontmatter display
-            let has_frontmatter = frontmatter.is_some() && content_start_line > 0;
-            if has_frontmatter && !self.frontmatter_hidden {
-                self.content_items.push(ContentItem::FrontmatterDelimiter);
-                self.content_item_source_lines.push(0);
-
-                // Parse and show frontmatter lines as key-value pairs
-                for line_idx in 1..content_start_line.saturating_sub(1) {
-                    if line_idx < lines.len() {
-                        let line = lines[line_idx];
-                        if let Some(colon_pos) = line.find(':') {
-                            let key = line[..colon_pos].trim().to_string();
-                            let value = line[colon_pos + 1..].trim().to_string();
-                            self.content_items.push(ContentItem::FrontmatterLine { key, value });
-                        } else {
-                            self.content_items.push(ContentItem::FrontmatterLine {
-                                key: String::new(),
-                                value: line.to_string(),
-                            });
-                        }
-                        self.content_item_source_lines.push(line_idx);
-                    }
-                }
-
-                // Closing delimiter
-                if content_start_line > 0 {
-                    let closing_idx = content_start_line.saturating_sub(1);
-                    self.content_items.push(ContentItem::FrontmatterDelimiter);
-                    self.content_item_source_lines.push(closing_idx);
-                }
-
-                i = content_start_line;
-            } else if has_frontmatter {
-                if self.config.show_tags {
-                    if let Some(ref fm) = frontmatter {
-                        if !fm.tags.is_empty() || fm.date.is_some() {
-                            self.content_items.push(ContentItem::TagBadges {
-                                tags: fm.tags.iter().map(|tag| tag.to_string()).collect(),
-                                date: fm.date.as_deref().map(str::to_owned),
-                            });
-                            self.content_item_source_lines.push(0);
-                        }
-                    }
-                }
-                i = content_start_line;
-            }
-
-            while i < lines.len() {
-                let line = lines[i];
-                let line_index = i;
-
-                // Check for code fence
-                if line.starts_with("```") {
-                    let lang = line.trim_start_matches('`').to_string();
-                    self.content_items.push(ContentItem::CodeFence(lang));
-                    self.content_item_source_lines.push(line_index);
-                    in_code_block = !in_code_block;
-                    i += 1;
-                    continue;
-                }
-
-                // If inside code block, add as CodeLine
-                if in_code_block {
-                    self.content_items.push(ContentItem::CodeLine(line.to_string()));
-                    self.content_item_source_lines.push(line_index);
-                    i += 1;
-                    continue;
-                }
-
-                // A line containing exactly one image gets the larger standalone
-                // treatment. Multiple images on the same source line remain inline
-                // and flow next to one another in the content renderer.
-                if let Some(path) = standalone_image_path(line) {
-                    self.content_items.push(ContentItem::Image(path.to_string()));
-                    self.content_item_source_lines.push(line_index);
-                    i += 1;
-                    continue;
-                }
-
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
-                    let checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
-                    let text = trimmed[6..].to_string();
-                    let indent = line.chars().count() - trimmed.chars().count();
-                    self.content_items.push(ContentItem::TaskItem {
-                        text,
-                        checked,
-                        line_index,
-                        indent,
-                    });
-                    self.content_item_source_lines.push(line_index);
-                    i += 1;
-                    continue;
-                }
-
-                let trimmed_line = line.trim();
-                if trimmed_line.starts_with("<details") && (trimmed_line.ends_with(">") || trimmed_line.contains("><")) {
-                    let details_start_line = line_index;
-                    let mut summary = String::new();
-                    let mut content_lines: Vec<String> = Vec::new();
-                    let mut found_end = false;
-                    i += 1;
-
-                    while i < lines.len() {
-                        let dline = lines[i].trim();
-
-                        if dline.contains("</details>") {
-                            found_end = true;
-                            i += 1;
-                            break;
-                        }
-
-                        if dline.starts_with("<summary>") || dline.contains("<summary>") {
-                            if dline.contains("</summary>") {
-                                if let Some(start) = dline.find("<summary>") {
-                                    if let Some(end) = dline.find("</summary>") {
-                                        summary = dline[start + 9..end].trim().to_string();
-                                    }
-                                }
-                            } else {
-                                summary = dline.trim_start_matches("<summary>").trim().to_string();
-                            }
-                            i += 1;
-                            continue;
-                        }
-
-                        if dline == "</summary>" {
-                            i += 1;
-                            continue;
-                        }
-
-                        content_lines.push(lines[i].to_string());
-                        i += 1;
-                    }
-
-                    if found_end {
-                        if summary.is_empty() {
-                            summary = "Details".to_string();
-                        }
-                        self.content_items.push(ContentItem::Details {
-                            summary,
-                            content_lines,
-                            id: details_start_line,
-                        });
-                        self.content_item_source_lines.push(details_start_line);
-                        continue;
-                    } else {
-                        self.content_items.push(ContentItem::TextLine(line.to_string()));
-                        self.content_item_source_lines.push(line_index);
-                        continue;
-                    }
-                }
-
-                if trimmed_line.starts_with('|') && trimmed_line.ends_with('|') {
-                    let table_start_line = line_index;
-                    let mut table_rows: Vec<(Vec<String>, bool)> = Vec::new();
-
-                    while i < lines.len() {
-                        let tline = lines[i].trim();
-                        if tline.starts_with('|') && tline.ends_with('|') {
-                            let inner = &tline[1..tline.len() - 1];
-                            let cells: Vec<String> = inner.split('|').map(|s| s.trim().to_string()).collect();
-                            let is_separator = cells.iter().all(|cell| {
-                                let c = cell.trim();
-                                !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
-                            });
-                            table_rows.push((cells, is_separator));
-                            i += 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let num_cols = table_rows.iter().map(|(cells, _)| cells.len()).max().unwrap_or(0);
-                    let mut column_widths: Vec<usize> = vec![0; num_cols];
-
-                    for (cells, is_sep) in &table_rows {
-                        if !is_sep {
-                            for (col_idx, cell) in cells.iter().enumerate() {
-                                if col_idx < column_widths.len() {
-                                    column_widths[col_idx] = column_widths[col_idx].max(crate::ui::cell_visible_width(cell));
-                                }
-                            }
-                        }
-                    }
-
-                    for w in &mut column_widths {
-                        *w = (*w).max(3);
-                    }
-
-                    let separator_idx = table_rows.iter().position(|(_, is_sep)| *is_sep);
-
-                    // Derive per-column alignment from the separator row. Tables without
-                    // a separator fall back to Left (GFM default).
-                    let mut alignments: Vec<Alignment> = vec![Alignment::Left; num_cols];
-                    if let Some(sep_idx) = separator_idx {
-                        if let Some((sep_cells, _)) = table_rows.get(sep_idx) {
-                            for (col_idx, cell) in sep_cells.iter().enumerate() {
-                                if col_idx >= alignments.len() {
-                                    break;
-                                }
-                                alignments[col_idx] = Alignment::from_separator_cell(cell);
-                            }
-                        }
-                    }
-
-                    for (row_idx, (cells, is_separator)) in table_rows.into_iter().enumerate() {
-                        let is_header = separator_idx.map(|sep_idx| row_idx < sep_idx).unwrap_or(false);
-                        self.content_items.push(ContentItem::TableRow {
-                            cells,
-                            is_separator,
-                            is_header,
-                            column_widths: column_widths.clone(),
-                            alignments: alignments.clone(),
-                        });
-                        self.content_item_source_lines.push(table_start_line + row_idx);
-                    }
-                    continue;
-                }
-
-                self.content_items.push(ContentItem::TextLine(line.to_string()));
-                self.content_item_source_lines.push(line_index);
-                i += 1;
-            }
+        if let Some(document) = self.active_document.as_ref() {
+            let (frontmatter, content_start_line) = self
+                .current_note()
+                .map(|note| (note.frontmatter.as_ref(), note.content_start_line))
+                .unwrap_or((None, 0));
+            let parsed = parse_document(
+                document,
+                frontmatter,
+                content_start_line,
+                self.frontmatter_hidden,
+                self.config.show_tags,
+                &|target| self.wiki_link_exists(target),
+            );
+            self.content_items = parsed.items;
+            self.document_tables = parsed.tables;
+            self.outline = parsed.outline;
+            self.document_links = parsed.links;
+            self.document_link_ranges = parsed.link_ranges;
+            self.document_parse_key = Some(parse_key);
+            self.document_parse_count = self.document_parse_count.saturating_add(1);
+        } else {
+            self.document_parse_key = None;
         }
         self.content_cursor = 0;
+        self.update_outline();
     }
 
     pub fn next_content_line(&mut self) {
@@ -412,39 +541,13 @@ impl App {
     }
 
     pub fn toggle_current_task(&mut self) {
-        let saved_cursor = self.content_cursor;
-
-        if let Some(item) = self.content_items.get(self.content_cursor) {
-            if let ContentItem::TaskItem { line_index, checked, .. } = item {
-                let line_index = *line_index;
-                let new_checked = !*checked;
-
-                if let Some(body) = self.current_body_arc() {
-                    let lines: Vec<&str> = body.lines().collect();
-                    if line_index < lines.len() {
-                        let line = lines[line_index];
-                        let new_line = if new_checked {
-                            line.replacen("- [ ]", "- [x]", 1)
-                        } else {
-                            line.replacen("- [x]", "- [ ]", 1).replacen("- [X]", "- [ ]", 1)
-                        };
-
-                        let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-                        new_lines[line_index] = new_line;
-                        let _ = self.persist_active_body(new_lines.join("\n"));
-                    }
-                }
-
-                self.update_content_items();
-                self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
-            }
-        }
+        self.toggle_task_at(self.content_cursor);
     }
 
     pub fn toggle_current_details(&mut self) {
         if let Some(item) = self.content_items.get(self.content_cursor) {
-            if let ContentItem::Details { id, .. } = item {
-                let id = *id;
+            if let ContentItem::Details { source_line, .. } = item {
+                let id = *source_line as usize;
                 let current = self.details_open_states.get(&id).copied().unwrap_or(false);
                 self.details_open_states.insert(id, !current);
             }
@@ -456,11 +559,7 @@ impl App {
             .map(|heading| heading.level)
     }
     pub fn is_heading_at(&self, idx: usize) -> bool {
-        if let Some(ContentItem::TextLine(line)) = self.content_items.get(idx) {
-            Self::heading_level(line).is_some()
-        } else {
-            false
-        }
+        matches!(self.content_items.get(idx), Some(ContentItem::TextLine { heading_level, .. }) if *heading_level > 0)
     }
     pub fn is_heading_folded(&self, idx: usize) -> bool {
         self.heading_fold_states.get(&idx).copied().unwrap_or(false)
@@ -485,19 +584,17 @@ impl App {
         }
     }
     pub fn get_heading_children_range(&self, heading_idx: usize) -> std::ops::Range<usize> {
-        let heading_level = if let Some(ContentItem::TextLine(line)) = self.content_items.get(heading_idx) {
-            Self::heading_level(line).unwrap_or(0)
+        let heading_level = if let Some(ContentItem::TextLine { heading_level, .. }) = self.content_items.get(heading_idx) {
+            *heading_level as usize
         } else {
             return heading_idx..heading_idx;
         };
 
         let mut end_idx = heading_idx + 1;
         while end_idx < self.content_items.len() {
-            if let ContentItem::TextLine(line) = &self.content_items[end_idx] {
-                if let Some(level) = Self::heading_level(line) {
-                    if level <= heading_level {
-                        break;
-                    }
+            if let ContentItem::TextLine { heading_level: level, .. } = &self.content_items[end_idx] {
+                if *level > 0 && *level as usize <= heading_level {
+                    break;
                 }
             }
             end_idx += 1;
@@ -556,8 +653,8 @@ impl App {
     }
 
     pub fn current_item_is_image(&self) -> Option<&str> {
-        if let Some(ContentItem::Image(path)) = self.content_items.get(self.content_cursor) {
-            Some(path)
+        if let Some(ContentItem::Image { path, .. }) = self.content_items.get(self.content_cursor) {
+            Some(self.document_slice(*path))
         } else {
             None
         }
@@ -573,38 +670,12 @@ impl App {
         links.get(idx).map(|(_, url, _, _)| url.clone())
     }
 
-    pub fn item_all_links_at(&self, index: usize) -> Vec<LinkInfo> {
-        let mut all_links = Vec::new();
-        let inline_images = self.inline_image_links_at(index);
-
-        for (text, url, start, end) in self.item_links_at(index) {
-            if inline_images.iter().any(|(path, start_col)| path == &url && *start_col == start) {
-                all_links.push(LinkInfo::Image {
-                    path: url,
-                    start_col: start,
-                    end_col: end,
-                });
-            } else {
-                all_links.push(LinkInfo::Markdown {
-                    text,
-                    url,
-                    start_col: start,
-                    end_col: end,
-                });
-            }
-        }
-        for wiki in self.item_wiki_links_at(index) {
-            all_links.push(LinkInfo::Wiki {
-                target: wiki.target,
-                heading: wiki.heading,
-                start_col: wiki.start_col,
-                end_col: wiki.end_col,
-                is_valid: wiki.is_valid,
-            });
-        }
-
-        all_links.sort_by_key(|link| link.start_col());
-        all_links
+    pub fn item_all_links_at(&self, index: usize) -> &[LinkInfo] {
+        let Some(range) = self.document_link_ranges.get(index) else {
+            return &[];
+        };
+        let start = range.start as usize;
+        self.document_links.get(start..start + range.len as usize).unwrap_or(&[])
     }
 
     /// Inline preview images on a content item, paired with the selection index
@@ -615,30 +686,21 @@ impl App {
         Self::inline_image_selections_for_links(all_links, is_task)
     }
 
-    pub(super) fn inline_image_selections_for_links(all_links: Vec<LinkInfo>, is_task: bool) -> Vec<(String, usize)> {
+    pub(crate) fn inline_image_count_at(&self, index: usize) -> usize {
+        self.document_link_ranges.get(index).map_or(0, |range| range.image_count as usize)
+    }
+
+    pub(super) fn inline_image_selections_for_links(all_links: &[LinkInfo], is_task: bool) -> Vec<(String, usize)> {
         let task_offset = usize::from(is_task && !all_links.is_empty());
 
         all_links
-            .into_iter()
+            .iter()
             .enumerate()
             .filter_map(|(link_index, link)| match link {
-                LinkInfo::Image { path, .. } => Some((path, link_index + task_offset)),
+                LinkInfo::Image { path, .. } => Some((path.clone(), link_index + task_offset)),
                 _ => None,
             })
             .collect()
-    }
-
-    /// Extract single-bang Markdown images which are rendered as previews. The
-    /// returned column is the position in the formatted text after Markdown
-    /// syntax has been removed; images themselves occupy no text cells.
-    pub(super) fn inline_image_links_at(&self, index: usize) -> Vec<(String, usize)> {
-        let text = match self.content_items.get(index) {
-            Some(ContentItem::TextLine(line)) => line.as_str(),
-            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
-            _ => return Vec::new(),
-        };
-
-        Self::inline_image_links_in_text(text)
     }
 
     pub(super) fn inline_image_links_in_text(text: &str) -> Vec<(String, usize)> {
@@ -756,7 +818,13 @@ impl App {
     /// wraps (capped widths, multi-line rows), keyboard Enter-to-open still works because it
     /// only uses the URL; mouse click accuracy on wrapped lines is not guaranteed by this
     /// method's output.
+    #[cfg(test)]
     pub(super) fn extract_simple_table_links(cells: &[String], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
+        let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
+        Self::extract_table_links(&cells, column_widths, alignments)
+    }
+
+    fn extract_table_links(cells: &[&str], column_widths: &[usize], alignments: &[Alignment]) -> Vec<(String, String, usize, usize)> {
         let mut links = Vec::new();
         let mut col_cursor = 0usize; // column within content area (after `  │` prefix)
         for (i, cell) in cells.iter().enumerate() {
@@ -778,7 +846,7 @@ impl App {
                 if let Some((display, url, raw_start, raw_end)) = Self::bracket_link_at(cell, scan) {
                     let pre_visible = crate::ui::cell_visible_width(&cell[..raw_start]);
                     let start = cell_start + pre_visible;
-                    let end = start + display.chars().count();
+                    let end = start + display.width();
                     links.push((display, url, start, end));
                     scan = raw_end;
                     continue;
@@ -787,7 +855,7 @@ impl App {
                     let url = cell[scan..scan + url_len].to_string();
                     let pre_visible = crate::ui::cell_visible_width(&cell[..scan]);
                     let start = cell_start + pre_visible;
-                    let end = start + url.chars().count();
+                    let end = start + url.width();
                     links.push((url.clone(), url, start, end));
                     scan += url_len;
                     continue;
@@ -819,27 +887,7 @@ impl App {
         Some((display, link.destination.to_string(), link.range.start, link.range.end))
     }
 
-    /// Extract all links and images from a specific content item as (text, url, start_col, end_col) tuples
-    /// The columns are character positions in the rendered line (after prefix like "▶ " or "• ")
-    pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
-        let text = match self.content_items.get(index) {
-            Some(ContentItem::TextLine(line)) => line.as_str(),
-            Some(ContentItem::TaskItem { text, .. }) => text.as_str(),
-            Some(ContentItem::TableRow {
-                cells,
-                is_separator,
-                column_widths,
-                alignments,
-                ..
-            }) => {
-                if *is_separator {
-                    return Vec::new();
-                }
-                return Self::extract_simple_table_links(cells, column_widths, alignments);
-            }
-            _ => return Vec::new(),
-        };
-
+    fn parse_markdown_links_in_text(text: &str) -> Vec<(String, String, usize, usize)> {
         let mut links = Vec::new();
         let mut search_start = 0;
         // Raw byte ranges claimed by bracket-style links/images. Used to skip bare URLs
@@ -876,7 +924,7 @@ impl App {
                             if !url.is_empty() {
                                 let display_text = if alt_text.is_empty() { url.to_string() } else { alt_text.to_string() };
                                 let rendered_start = Self::calc_rendered_pos(text, abs_img_pos);
-                                let rendered_end = rendered_start + display_text.chars().count();
+                                let rendered_end = rendered_start + display_text.width();
 
                                 links.push((display_text, url.to_string(), rendered_start, rendered_end));
                             }
@@ -967,7 +1015,7 @@ impl App {
                         if !url.is_empty() {
                             let display_text = if link_text.is_empty() { url.to_string() } else { link_text.to_string() };
                             let rendered_start = Self::calc_rendered_pos(text, abs_bracket_pos);
-                            let rendered_end = rendered_start + display_text.chars().count();
+                            let rendered_end = rendered_start + display_text.width();
 
                             links.push((display_text, url.to_string(), rendered_start, rendered_end));
                         }
@@ -991,7 +1039,7 @@ impl App {
                 if !overlaps && !is_inside_inline_code(text, pos) {
                     let url = text[pos..end].to_string();
                     let rendered_start = Self::calc_rendered_pos(text, pos);
-                    let rendered_end = rendered_start + url.chars().count();
+                    let rendered_end = rendered_start + url.width();
                     links.push((url.clone(), url, rendered_start, rendered_end));
                 }
                 pos = end;
@@ -1001,6 +1049,17 @@ impl App {
         }
 
         links
+    }
+
+    pub fn item_links_at(&self, index: usize) -> Vec<(String, String, usize, usize)> {
+        self.item_all_links_at(index)
+            .iter()
+            .filter_map(|link| match link {
+                LinkInfo::Markdown { text, url, start_col, end_col } => Some((text.clone(), url.clone(), *start_col, *end_col)),
+                LinkInfo::Image { path, start_col, end_col } => Some((path.clone(), path.clone(), *start_col, *end_col)),
+                LinkInfo::Wiki { .. } => None,
+            })
+            .collect()
     }
 
     pub(super) fn calc_rendered_pos(text: &str, target_pos: usize) -> usize {
@@ -1019,7 +1078,7 @@ impl App {
                         let full_link_len = 2 + bracket_end + 2 + paren_end + 1;
 
                         if i + full_link_len <= target_pos {
-                            let display_len = if alt_text.is_empty() { url.chars().count() } else { alt_text.chars().count() };
+                            let display_len = if alt_text.is_empty() { url.width() } else { alt_text.width() };
                             rendered_pos += display_len;
                             i += full_link_len;
                             continue;
@@ -1054,7 +1113,7 @@ impl App {
                     let full_link_len = 2 + end_pos + 2;
 
                     if i + full_link_len <= target_pos {
-                        rendered_pos += target.chars().count();
+                        rendered_pos += target.width();
                         i += full_link_len;
                         continue;
                     } else {
@@ -1072,9 +1131,9 @@ impl App {
 
                         if i + full_link_len <= target_pos {
                             let display_len = if link_text.is_empty() {
-                                after_bracket[..paren_end].chars().count()
+                                after_bracket[..paren_end].width()
                             } else {
-                                link_text.chars().count()
+                                link_text.width()
                             };
                             rendered_pos += display_len;
                             i += full_link_len;
@@ -1085,8 +1144,15 @@ impl App {
                     }
                 }
             }
-            rendered_pos += 1;
-            i += remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            let character = remaining.chars().next();
+            rendered_pos += character.map_or(0, |character| {
+                if character == '\t' {
+                    4
+                } else {
+                    unicode_width::UnicodeWidthChar::width(character).unwrap_or(0)
+                }
+            });
+            i += character.map_or(1, char::len_utf8);
         }
 
         rendered_pos
@@ -1134,7 +1200,7 @@ impl App {
     }
 
     pub fn item_has_link_at(&self, index: usize) -> bool {
-        !self.item_links_at(index).is_empty() || !self.item_wiki_links_at(index).is_empty()
+        !self.item_all_links_at(index).is_empty()
     }
 
     pub(super) fn get_line_prefix_len(&self, index: usize) -> usize {
@@ -1142,16 +1208,16 @@ impl App {
             // Bullet markers are already counted by calc_rendered_pos because
             // they are present in the source line, even though the renderer
             // replaces them with a visual bullet.
-            Some(ContentItem::TextLine(_)) => 2,
-            Some(ContentItem::TaskItem { indent, .. }) => 6 + indent,
+            Some(ContentItem::TextLine { .. }) => 2,
+            Some(ContentItem::TaskItem { indent, .. }) => 6 + *indent as usize,
             Some(ContentItem::TableRow { .. }) => 3, // "  " cursor indicator + "│" left border
             _ => 2,
         }
     }
 
     pub fn item_is_image_at(&self, index: usize) -> Option<&str> {
-        if let Some(ContentItem::Image(path)) = self.content_items.get(index) {
-            Some(path)
+        if let Some(ContentItem::Image { path, .. }) = self.content_items.get(index) {
+            Some(self.document_slice(*path))
         } else {
             None
         }
@@ -1162,8 +1228,8 @@ impl App {
     }
 
     pub fn toggle_details_at(&mut self, index: usize) {
-        if let Some(ContentItem::Details { id, .. }) = self.content_items.get(index) {
-            let id = *id;
+        if let Some(ContentItem::Details { source_line, .. }) = self.content_items.get(index) {
+            let id = *source_line as usize;
             let current = self.details_open_states.get(&id).copied().unwrap_or(false);
             self.details_open_states.insert(id, !current);
         }
@@ -1175,36 +1241,38 @@ impl App {
             _ => return false,
         };
         let click_col = col.saturating_sub(content_x) as usize;
-        click_col >= 2 + indent && click_col <= 4 + indent
+        click_col >= 2 + indent as usize && click_col <= 4 + indent as usize
     }
 
     pub fn toggle_task_at(&mut self, index: usize) {
         let saved_cursor = self.content_cursor;
-
-        if let Some(item) = self.content_items.get(index) {
-            if let ContentItem::TaskItem { line_index, checked, .. } = item {
-                let line_index = *line_index;
-                let new_checked = !*checked;
-
-                if let Some(body) = self.current_body_arc() {
-                    let lines: Vec<&str> = body.lines().collect();
-                    if line_index < lines.len() {
-                        let line = lines[line_index];
-                        let new_line = if new_checked {
-                            line.replacen("- [ ]", "- [x]", 1)
-                        } else {
-                            line.replacen("- [x]", "- [ ]", 1).replacen("- [X]", "- [ ]", 1)
-                        };
-
-                        let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
-                        new_lines[line_index] = new_line;
-                        let _ = self.persist_active_body(new_lines.join("\n"));
-                    }
-                }
-
-                self.update_content_items();
-                self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
-            }
+        let Some((source_line, checked)) = self.content_items.get(index).and_then(|item| match item {
+            ContentItem::TaskItem { source_line, checked, .. } => Some((*source_line as usize, *checked)),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(document) = self.document() else {
+            return;
+        };
+        let Some(line_range) = document.line_range(source_line) else {
+            return;
+        };
+        let line = document.slice(line_range);
+        let marker = if checked {
+            line.find("- [x]").or_else(|| line.find("- [X]"))
+        } else {
+            line.find("- [ ]")
+        };
+        let Some(marker) = marker else {
+            return;
+        };
+        let checkbox = line_range.start() + marker + 3;
+        let mut body = document.body().to_owned();
+        body.replace_range(checkbox..checkbox + 1, if checked { " " } else { "x" });
+        if self.persist_active_body(body) {
+            self.update_content_items();
+            self.content_cursor = saved_cursor.min(self.content_items.len().saturating_sub(1));
         }
     }
 
@@ -1311,5 +1379,66 @@ impl App {
         let _ = Command::new("xdg-open").arg(url).spawn();
         #[cfg(target_os = "windows")]
         let _ = Command::new("cmd").args(["/c", "start", "", url]).spawn();
+    }
+}
+
+#[cfg(test)]
+mod phase6_tests {
+    use super::*;
+
+    #[test]
+    fn shared_pass_emits_ranges_outline_links_and_one_table_metadata_owner() {
+        let source = "# Head e\u{301}\nText [link](https://example.test) and [[Head]].\n- [x] task 😀\n| name | value |\n|:-----|------:|\n| 日本 | [open](target.md) |\n```rust\nlet x = 1;\n```\n<details>\n<summary>More</summary>\ninside\n</details>\n![image](image.png)\n";
+        let document = DocumentSnapshot::new(Arc::from(source));
+        let parsed = parse_document(&document, None, 0, true, true, &|target| target == "Head");
+
+        assert_eq!(parsed.outline.len(), 1);
+        assert_eq!(parsed.outline[0].source_line, 0);
+        assert_eq!(parsed.tables.len(), 1);
+        let table_ids: Vec<u32> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::TableRow { table, .. } => Some(*table),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(table_ids, [0, 0, 0]);
+        assert_eq!(parsed.tables[0].alignments.as_ref(), [Alignment::Left, Alignment::Right]);
+        assert!(parsed.items.iter().any(|item| matches!(item, ContentItem::TaskItem { checked: true, .. })));
+        assert!(parsed.items.iter().any(|item| matches!(item, ContentItem::CodeFence { .. })));
+        assert!(parsed.items.iter().any(|item| matches!(item, ContentItem::Details { .. })));
+        assert!(parsed.items.iter().any(|item| matches!(item, ContentItem::Image { .. })));
+        assert!(parsed
+            .links
+            .iter()
+            .any(|link| matches!(link, LinkInfo::Markdown { url, .. } if url == "https://example.test")));
+        assert!(parsed
+            .links
+            .iter()
+            .any(|link| matches!(link, LinkInfo::Wiki { target, is_valid: true, .. } if target == "Head")));
+        assert_eq!(parsed.items.len(), parsed.link_ranges.len());
+        assert!(std::mem::size_of::<ContentItem>() <= 40);
+        assert!(std::mem::size_of::<DocumentLinkRange>() <= 8);
+    }
+
+    #[test]
+    fn frontmatter_items_are_ranges_into_the_snapshot() {
+        let source = "---\ntags: [one]\ndate: 2026-08-21\n---\n# Body\n";
+        let document = DocumentSnapshot::new(Arc::from(source));
+        let frontmatter = CompactFrontmatter {
+            tags: vec![Box::<str>::from("one")].into_boxed_slice(),
+            date: Some(Box::from("2026-08-21")),
+        };
+        let parsed = parse_document(&document, Some(&frontmatter), 4, false, true, &|_| false);
+        let values: Vec<(&str, &str)> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::FrontmatterLine { key, value, .. } => Some((document.slice(*key), document.slice(*value))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, [("tags", "[one]"), ("date", "2026-08-21")]);
     }
 }

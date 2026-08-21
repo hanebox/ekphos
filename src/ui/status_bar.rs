@@ -15,18 +15,20 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
     // Calculate stats - count only actual words, not markdown syntax
-    let word_count = if let Some(body) = app.current_body() {
-        body.split_whitespace().filter(|word| word.chars().any(|c| c.is_alphanumeric())).count()
-    } else {
-        0
+    let word_count = match app.mode {
+        Mode::Normal => app.current_body().map_or(0, |body| {
+            body.split_whitespace().filter(|word| word.chars().any(|c| c.is_alphanumeric())).count()
+        }),
+        Mode::Edit => (0..app.editor.line_count())
+            .filter_map(|row| app.editor.line(row))
+            .flat_map(str::split_whitespace)
+            .filter(|word| word.chars().any(|character| character.is_alphanumeric()))
+            .count(),
     };
 
     // Calculate percentage
-    let percentage = if app.content_items.is_empty() {
-        0
-    } else {
-        ((app.content_cursor + 1) * 100) / app.content_items.len()
-    };
+    let (position, item_count) = app.edit_preview_position.unwrap_or((app.content_cursor, app.content_items.len()));
+    let percentage = if item_count == 0 { 0 } else { ((position + 1) * 100) / item_count };
 
     let note_path = if app.zen_mode {
         // In zen mode, just show the note title

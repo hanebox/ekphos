@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::config::Theme;
-use ekphos_graph::{fit_zoom_for_bounds, GraphMode, GraphNode, GraphRelation};
+use ekphos_graph::{fit_zoom_for_bounds, GraphIndexNode, GraphMode, GraphNode, GraphRelation};
 
 const NODE_WIDTH: u16 = 3;
 const NODE_HEIGHT: u16 = 2;
@@ -125,12 +125,16 @@ fn render_top_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Enter apply · Esc cancel", Style::default().fg(theme.muted)),
         ])
     } else if let Some(selected) = app.graph_view.selected_node.and_then(|idx| app.graph_view.nodes.get(idx)) {
+        let metadata = graph_node_metadata(app, selected);
         Line::from(vec![
             Span::styled(
-                format!(" {} ", selected.full_title),
+                format!(" {} ", metadata.map_or("", |node| node.title.as_str())),
                 Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{}  ", selected.path), Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{}  ", metadata.map_or("", |node| node.path.as_str())),
+                Style::default().fg(theme.muted),
+            ),
             Span::styled(format!("←{}  →{}", selected.in_degree, selected.out_degree), Style::default().fg(theme.info)),
         ])
     } else {
@@ -250,11 +254,13 @@ fn connected_nodes(app: &App, selected: Option<usize>) -> HashSet<usize> {
     if let Some(selected) = selected {
         connected.insert(selected);
         for edge in &app.graph_view.edges {
-            if edge.from == selected {
-                connected.insert(edge.to);
+            let from = edge.from_index();
+            let to = edge.to_index();
+            if from == selected {
+                connected.insert(to);
             }
-            if edge.to == selected {
-                connected.insert(edge.from);
+            if to == selected {
+                connected.insert(from);
             }
         }
     }
@@ -276,7 +282,13 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
         DetailLevel::Detail => (screen_cells.saturating_mul(2).max(128), screen_cells.saturating_mul(2).max(128)),
     };
     let selected_count = selected
-        .map(|idx| app.graph_view.edges.iter().filter(|edge| edge.from == idx || edge.to == idx).count())
+        .map(|idx| {
+            app.graph_view
+                .edges
+                .iter()
+                .filter(|edge| edge.from_index() == idx || edge.to_index() == idx)
+                .count()
+        })
         .unwrap_or(0);
     let normal_count = app.graph_view.edges.len().saturating_sub(selected_count);
     let mut seen_normal = HashSet::with_capacity(edge_budget);
@@ -291,8 +303,10 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
         let mut pass_index = 0usize;
         let mut drawn = 0usize;
         for edge in &app.graph_view.edges {
-            let is_selected = selected.map(|idx| edge.from == idx || edge.to == idx).unwrap_or(false);
-            if is_selected != selected_pass || edge.from >= app.graph_view.nodes.len() || edge.to >= app.graph_view.nodes.len() {
+            let from_index = edge.from_index();
+            let to_index = edge.to_index();
+            let is_selected = selected.map(|idx| from_index == idx || to_index == idx).unwrap_or(false);
+            if is_selected != selected_pass || from_index >= app.graph_view.nodes.len() || to_index >= app.graph_view.nodes.len() {
                 continue;
             }
             let sample_index = pass_index;
@@ -300,8 +314,8 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
             if sample_index % stride != 0 || drawn >= budget {
                 continue;
             }
-            let from = screen_position(app, area, &app.graph_view.nodes[edge.from]);
-            let to = screen_position(app, area, &app.graph_view.nodes[edge.to]);
+            let from = screen_position(app, area, &app.graph_view.nodes[from_index]);
+            let to = screen_position(app, area, &app.graph_view.nodes[to_index]);
             if from == to {
                 continue;
             }
@@ -487,7 +501,8 @@ fn render_detail_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: &H
         } else {
             relation_color(node, &app.theme, false)
         };
-        if place_label(buffer, node, x + 1, y + 1, color, area, &mut occupied) {
+        let title = graph_node_metadata(app, node).map_or("", |metadata| metadata.title.as_str());
+        if place_label(buffer, title, x + 1, y + 1, color, area, &mut occupied) {
             placed += 1;
         }
     }
@@ -521,8 +536,24 @@ fn draw_box_node(buffer: &mut Buffer, x: i32, y: i32, color: Color, selected: bo
     }
 }
 
-fn place_label(buffer: &mut Buffer, node: &GraphNode, anchor_x: i32, anchor_y: i32, color: Color, area: Rect, occupied: &mut HashSet<(u16, u16)>) -> bool {
-    let width = node.title.width() as i32;
+fn place_label(buffer: &mut Buffer, title: &str, anchor_x: i32, anchor_y: i32, color: Color, area: Rect, occupied: &mut HashSet<(u16, u16)>) -> bool {
+    const MAX_WIDTH: usize = 28;
+    let full_width = title.width();
+    let truncated = full_width > MAX_WIDTH;
+    let content_limit = if truncated { MAX_WIDTH - 3 } else { MAX_WIDTH };
+    let content_width = title
+        .chars()
+        .map(|ch| ch.width().unwrap_or(1))
+        .scan(0usize, |used, width| {
+            if *used + width > content_limit {
+                None
+            } else {
+                *used += width;
+                Some(width)
+            }
+        })
+        .sum::<usize>();
+    let width = (content_width + usize::from(truncated) * 3) as i32;
     let candidates = [
         (anchor_x - width / 2, anchor_y + 2),
         (anchor_x - width / 2, anchor_y - 2),
@@ -540,15 +571,29 @@ fn place_label(buffer: &mut Buffer, node: &GraphNode, anchor_x: i32, anchor_y: i
     };
 
     let mut offset = 0i32;
-    for ch in node.title.chars() {
-        put(buffer, x + offset, y, ch, color, area);
+    for ch in title.chars() {
         let char_width = ch.width().unwrap_or(1) as i32;
+        if offset + char_width > content_limit as i32 {
+            break;
+        }
+        put(buffer, x + offset, y, ch, color, area);
         for cell in 0..char_width {
             occupied.insert(((x + offset + cell) as u16, y as u16));
         }
         offset += char_width;
     }
+    if truncated {
+        for _ in 0..3 {
+            put(buffer, x + offset, y, '.', color, area);
+            occupied.insert(((x + offset) as u16, y as u16));
+            offset += 1;
+        }
+    }
     true
+}
+
+fn graph_node_metadata<'a>(app: &'a App, node: &GraphNode) -> Option<&'a GraphIndexNode> {
+    app.graph_index.as_ref()?.metadata_for_note(node.note_id)
 }
 
 fn draw_arrow(buffer: &mut Buffer, from: (i32, i32), to: (i32, i32), area: Rect, color: Color, bidirectional: bool) {
@@ -735,9 +780,6 @@ mod tests {
     fn bounds_are_finite_for_single_node() {
         let mut node = GraphNode {
             note_id: ekphos_core::NoteId::new(0),
-            title: "A".into(),
-            full_title: "A".into(),
-            path: "A".into(),
             x: 2.0,
             y: 3.0,
             home_x: 2.0,
@@ -771,6 +813,26 @@ mod tests {
         assert_eq!(label_budget(DetailLevel::Compact, 1, area), 0);
         assert_eq!(label_budget(DetailLevel::Detail, 201, area), 0);
         assert_eq!(label_budget(DetailLevel::Detail, 20, area), 20);
+    }
+
+    #[test]
+    fn looked_up_unicode_labels_are_truncated_without_projection_strings() {
+        let area = Rect::new(0, 0, 40, 4);
+        let mut buffer = Buffer::empty(area);
+        let mut occupied = HashSet::new();
+        assert!(place_label(
+            &mut buffer,
+            "日本語のとても長いノートタイトルです追加",
+            1,
+            1,
+            Color::White,
+            area,
+            &mut occupied,
+        ));
+        assert_eq!(occupied.len(), 27);
+        assert_eq!(buffer.cell((27, 1)).map(|cell| cell.symbol()), Some("."));
+        assert_eq!(buffer.cell((28, 1)).map(|cell| cell.symbol()), Some("."));
+        assert_eq!(buffer.cell((29, 1)).map(|cell| cell.symbol()), Some("."));
     }
 
     #[test]

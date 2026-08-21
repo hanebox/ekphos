@@ -36,6 +36,7 @@ impl App {
         };
 
         self.vault = vault;
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.body_cache.retain_valid(&self.vault);
 
         let mut previous_notes: HashMap<NoteId, Note> = std::mem::take(&mut self.notes).into_iter().map(|note| (note.id, note)).collect();
@@ -84,9 +85,7 @@ impl App {
 
         // Existing feature indexes are invalid after a catalog generation. They
         // rebuild on first use so startup remains metadata-only.
-        self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
-        self.graph_index = None;
-        self.graph_indexing = false;
+        self.invalidate_graph_service();
         if let SearchPickerState::Open {
             content_results,
             hydrated_content_results,
@@ -153,26 +152,27 @@ impl App {
     #[doc(hidden)]
     pub fn current_body(&self) -> Option<&str> {
         let note_id = self.current_note().map(|note| note.id)?;
-        (self.active_note_id == Some(note_id)).then(|| self.active_body.as_deref()).flatten()
-    }
-
-    pub(crate) fn current_body_arc(&self) -> Option<Arc<str>> {
-        let note_id = self.current_note().map(|note| note.id)?;
-        (self.active_note_id == Some(note_id)).then(|| self.active_body.clone()).flatten()
+        (self.active_note_id == Some(note_id))
+            .then(|| self.active_document.as_ref().map(DocumentSnapshot::body))
+            .flatten()
     }
 
     pub(super) fn load_selected_note_body(&mut self) -> bool {
         let Some(note_id) = self.current_note().map(|note| note.id) else {
             self.active_note_id = None;
             self.active_fingerprint = None;
-            self.active_body = None;
+            self.active_document = None;
             return true;
         };
         self.load_note_body(note_id)
     }
 
     pub(super) fn load_note_body(&mut self, note_id: NoteId) -> bool {
-        if self.active_note_id == Some(note_id) && self.active_fingerprint == self.vault.fingerprint(note_id) && self.vault.validate(note_id).is_ok() {
+        if self.active_note_id == Some(note_id)
+            && self.active_document.is_some()
+            && self.active_fingerprint == self.vault.fingerprint(note_id)
+            && self.vault.validate(note_id).is_ok()
+        {
             return true;
         }
         let request_generation = self.document_generation.wrapping_add(1);
@@ -188,16 +188,16 @@ impl App {
             return false;
         }
 
-        if let (Some(old_id), Some(old_body)) = (self.active_note_id, self.active_body.take()) {
+        if let (Some(old_id), Some(old_document)) = (self.active_note_id, self.active_document.take()) {
             if old_id != note_id {
                 if let Some(fingerprint) = self.vault.fingerprint(old_id) {
-                    self.body_cache.insert(old_id, fingerprint, old_body);
+                    self.body_cache.insert(old_id, fingerprint, old_document.into_body());
                 }
             }
         }
         self.active_note_id = Some(note_id);
         self.active_fingerprint = self.vault.fingerprint(note_id);
-        self.active_body = Some(body);
+        self.active_document = Some(DocumentSnapshot::new(body));
         true
     }
 
@@ -207,7 +207,7 @@ impl App {
         };
         self.body_cache.invalidate(note_id);
         self.active_note_id = Some(note_id);
-        self.active_body = Some(Arc::<str>::from(body));
+        self.active_document = Some(DocumentSnapshot::new(Arc::<str>::from(body)));
         self.document_generation = self.document_generation.wrapping_add(1);
     }
 
@@ -240,8 +240,7 @@ impl App {
         self.body_cache.invalidate(note_id);
         self.replace_active_body(body);
         self.refresh_current_note_after_save();
-        self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
-        self.graph_index = None;
+        self.invalidate_graph_service();
         if let SearchPickerState::Open {
             content_results,
             hydrated_content_results,

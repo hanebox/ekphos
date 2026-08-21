@@ -7,7 +7,10 @@ use super::*;
 /// ASCII (1 col each), so subtracting their char-count from the display width
 /// gives the visible-content's display width.
 pub(crate) fn cell_visible_width(cell: &str) -> usize {
-    let display_width = UnicodeWidthStr::width(cell);
+    let display_width: usize = cell
+        .chars()
+        .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+        .sum();
     let total_chars = cell.chars().count();
     let marker_chars = calc_formatting_shrinkage(cell, total_chars);
     display_width.saturating_sub(marker_chars)
@@ -108,13 +111,20 @@ pub(super) fn try_match_br(bytes: &[u8], at: usize) -> Option<usize> {
 /// Calculate the adjusted column for a table cell
 /// Raw format: "| cell1 | cell2 |"
 /// Rendered:   "▶ │ cell1 │ cell2 │" with cells padded to column widths
-pub(super) fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_widths: &[usize], alignments: &[crate::app::Alignment]) -> usize {
+pub(super) fn calc_table_adjusted_col(
+    raw_col: usize,
+    document: &DocumentSnapshot,
+    cells: &[DocumentRange],
+    column_widths: &[u16],
+    alignments: &[crate::app::Alignment],
+) -> usize {
     use crate::app::Alignment;
     let mut rendered_pos = 3;
     let mut raw_pos = 0;
 
-    for (cell_idx, cell) in cells.iter().enumerate() {
-        let col_width = column_widths.get(cell_idx).copied().unwrap_or(3);
+    for (cell_idx, range) in cells.iter().enumerate() {
+        let cell = document.slice(*range);
+        let col_width = column_widths.get(cell_idx).copied().unwrap_or(3) as usize;
         if raw_pos == 0 {
             raw_pos = 1;
         }
@@ -122,7 +132,10 @@ pub(super) fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_w
         let raw_cell_start = raw_pos;
 
         let cell_char_len = cell.chars().count();
-        let cell_display_width = cell.width();
+        let cell_display_width: usize = cell
+            .chars()
+            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
+            .sum();
         let raw_cell_end = raw_cell_start + cell_char_len + 3; // " content |"
 
         if raw_col >= raw_cell_start && raw_col < raw_cell_end {
@@ -131,7 +144,7 @@ pub(super) fn calc_table_adjusted_col(raw_col: usize, cells: &[String], column_w
             let display_offset: usize = cell
                 .chars()
                 .take(char_offset_in_raw_cell.min(cell_char_len))
-                .map(|c| c.width().unwrap_or(1))
+                .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
                 .sum();
             let pad = col_width.saturating_sub(cell_display_width);
             let alignment = alignments.get(cell_idx).copied().unwrap_or(Alignment::Left);

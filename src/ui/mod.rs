@@ -175,15 +175,15 @@ mod tests {
 
     impl GoldenApp {
         fn new() -> Self {
+            Self::with_content("---\ntags: [golden]\n---\n# Golden fixture\n\nA [[fixture]] link.\n\n- [ ] stable task\n")
+        }
+
+        fn with_content(content: &str) -> Self {
             let id = NEXT_GOLDEN_ROOT.fetch_add(1, Ordering::Relaxed);
             let root = std::env::temp_dir().join(format!("ekphos-golden-{}-{id}", std::process::id()));
             let vault = root.join("vault");
             fs::create_dir_all(&vault).unwrap();
-            fs::write(
-                vault.join("fixture.md"),
-                "---\ntags: [golden]\n---\n# Golden fixture\n\nA [[fixture]] link.\n\n- [ ] stable task\n",
-            )
-            .unwrap();
+            fs::write(vault.join("fixture.md"), content).unwrap();
             let config = Config {
                 welcome_shown: false,
                 check_updates: false,
@@ -244,6 +244,26 @@ mod tests {
         let mut fixture = GoldenApp::new();
         fixture.app.enter_edit_mode();
         assert_eq!(fixture.hash(80, 24), 16_481_934_834_706_604_804);
+    }
+
+    #[test]
+    fn golden_document_snapshot_unicode_tables_links_and_inline_images() {
+        let mut fixture = GoldenApp::with_content(
+            "---\ntags: [golden, phase6]\ndate: 2026-08-21\n---\n# ASCII and\ttabs\n\nCombining e\u{301}, CJK 日本語, emoji 😀, and a [wide link 開く](https://example.test).\n\nA deliberately long wrapping line keeps ASCII, e\u{301}, 日本語, and 😀 coordinates stable across terminal rows.\n\n- [ ] task with [[fixture|wiki alias]]\n\n| left | centered 日本 | right 😀 |\n|:-----|:-------------:|---------:|\n| e\u{301} | [開く](https://example.test/table) | tabs\there |\n\nText before ![inline](missing.png) and after.\n",
+        );
+        assert_eq!(fixture.hash(100, 36), 1_420_924_652_973_427_897);
+    }
+
+    #[test]
+    fn unicode_and_tab_link_click_columns_use_terminal_cells() {
+        let fixture = GoldenApp::with_content("# Clicks\n\nASCII e\u{301} 日本 😀\t[開く](https://example.test) tail\n");
+        let item = fixture.app.content_items.iter().position(|item| item.source_line() == 2).unwrap();
+        let links = fixture.app.item_links_at(item);
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].2, links[0].3), (19, 23));
+        assert_eq!(fixture.app.find_clicked_link_at_col(item, 21).as_deref(), Some("https://example.test"));
+        assert_eq!(fixture.app.find_clicked_link_at_col(item, 24).as_deref(), Some("https://example.test"));
+        assert_eq!(fixture.app.find_clicked_link_at_col(item, 25), None);
     }
 
     #[test]
