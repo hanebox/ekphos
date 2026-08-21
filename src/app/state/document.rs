@@ -43,7 +43,9 @@ impl App {
         self.heading_fold_states.clear();
 
         // Get note data to extract frontmatter info
-        let note_data = self.current_note().map(|n| (n.content.clone(), n.frontmatter.clone(), n.content_start_line));
+        let note_data = self
+            .current_note()
+            .and_then(|note| self.current_body_arc().map(|body| (body, note.frontmatter.clone(), note.content_start_line)));
 
         if let Some((content, frontmatter, content_start_line)) = note_data {
             let mut in_code_block = false;
@@ -87,8 +89,8 @@ impl App {
                     if let Some(ref fm) = frontmatter {
                         if !fm.tags.is_empty() || fm.date.is_some() {
                             self.content_items.push(ContentItem::TagBadges {
-                                tags: fm.tags.clone(),
-                                date: fm.date.clone(),
+                                tags: fm.tags.iter().map(|tag| tag.to_string()).collect(),
+                                date: fm.date.as_deref().map(str::to_owned),
                             });
                             self.content_item_source_lines.push(0);
                         }
@@ -417,8 +419,8 @@ impl App {
                 let line_index = *line_index;
                 let new_checked = !*checked;
 
-                if let Some(note) = self.notes.get_mut(self.selected_note) {
-                    let lines: Vec<&str> = note.content.lines().collect();
+                if let Some(body) = self.current_body_arc() {
+                    let lines: Vec<&str> = body.lines().collect();
                     if line_index < lines.len() {
                         let line = lines[line_index];
                         let new_line = if new_checked {
@@ -429,11 +431,7 @@ impl App {
 
                         let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
                         new_lines[line_index] = new_line;
-                        note.content = new_lines.join("\n");
-
-                        if let Some(ref path) = note.file_path {
-                            let _ = fs::write(path, &note.content);
-                        }
+                        let _ = self.persist_active_body(new_lines.join("\n"));
                     }
                 }
 
@@ -1188,8 +1186,8 @@ impl App {
                 let line_index = *line_index;
                 let new_checked = !*checked;
 
-                if let Some(note) = self.notes.get_mut(self.selected_note) {
-                    let lines: Vec<&str> = note.content.lines().collect();
+                if let Some(body) = self.current_body_arc() {
+                    let lines: Vec<&str> = body.lines().collect();
                     if line_index < lines.len() {
                         let line = lines[line_index];
                         let new_line = if new_checked {
@@ -1200,11 +1198,7 @@ impl App {
 
                         let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
                         new_lines[line_index] = new_line;
-                        note.content = new_lines.join("\n");
-
-                        if let Some(ref path) = note.file_path {
-                            let _ = fs::write(path, &note.content);
-                        }
+                        let _ = self.persist_active_body(new_lines.join("\n"));
                     }
                 }
 
@@ -1281,9 +1275,13 @@ impl App {
                             }
                         }
 
+                        let target_id = self.notes[note_idx].id;
                         for (idx, item) in self.sidebar_items.iter().enumerate() {
-                            if let SidebarItemKind::Note { note_index } = &item.kind {
-                                if *note_index == note_idx {
+                            if let SidebarItemKind::Note { note_id } = &item.kind {
+                                if *note_id == target_id {
+                                    if !self.load_note_body(target_id) {
+                                        return;
+                                    }
                                     self.end_buffer_search();
                                     self.selected_sidebar_index = idx;
                                     self.selected_note = note_idx;

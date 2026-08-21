@@ -15,8 +15,8 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
     // Calculate stats - count only actual words, not markdown syntax
-    let word_count = if let Some(note) = app.current_note() {
-        note.content.split_whitespace().filter(|word| word.chars().any(|c| c.is_alphanumeric())).count()
+    let word_count = if let Some(body) = app.current_body() {
+        body.split_whitespace().filter(|word| word.chars().any(|c| c.is_alphanumeric())).count()
     } else {
         0
     };

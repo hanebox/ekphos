@@ -144,7 +144,10 @@ pub enum SearchPickerState {
         mode: SearchPickerMode,
         query: String,
         file_results: Vec<FilePickerResult>,
-        content_results: Vec<ContentSearchResult>,
+        content_results: Vec<SearchHit>,
+        hydrated_content_results: Vec<HydratedSearchResult>,
+        content_preview: Option<ContentSearchPreview>,
+        hydration_key: Option<(u64, usize, usize)>,
         selected_index: usize,
         scroll_offset: usize,
         search_in_progress: bool,
@@ -172,9 +175,17 @@ pub struct ContentSearchResult {
     pub match_end: usize,
 }
 
-pub struct ContentSearchResponse {
-    pub search_id: u64,
-    pub results: Vec<ContentSearchResult>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct HydratedSearchResult {
+    pub result_index: usize,
+    pub result: ContentSearchResult,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContentSearchPreview {
+    pub note_id: NoteId,
+    pub start_line: usize,
+    pub lines: Vec<String>,
 }
 
 /// A suggestion item for wiki link autocomplete
@@ -240,17 +251,17 @@ impl LinkInfo {
 
 #[derive(Debug, Clone)]
 pub enum FileTreeItem {
-    Folder {
-        name: String,
-        path: PathBuf,
-        expanded: bool,
-        children: Vec<FileTreeItem>,
-        depth: usize,
-    },
-    Note {
-        note_index: usize,
-        depth: usize,
-    },
+    Folder(Box<FileTreeFolder>),
+    Note { note_id: NoteId, depth: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct FileTreeFolder {
+    pub name: String,
+    pub path: PathBuf,
+    pub expanded: bool,
+    pub children: Vec<FileTreeItem>,
+    pub depth: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -262,8 +273,14 @@ pub struct SidebarItem {
 
 #[derive(Debug, Clone)]
 pub enum SidebarItemKind {
-    Folder { path: PathBuf, expanded: bool },
-    Note { note_index: usize },
+    Folder(Box<SidebarFolder>),
+    Note { note_id: NoteId },
+}
+
+#[derive(Debug, Clone)]
+pub struct SidebarFolder {
+    pub path: PathBuf,
+    pub expanded: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -5,8 +5,8 @@ pub(super) fn apply_content_search_highlights(f: &mut Frame, app: &App, visible_
     let current_match_idx = app.buffer_search.current_match_index;
     let lines: Vec<&str> = if app.mode == Mode::Edit {
         app.editor.lines()
-    } else if let Some(note) = app.notes.get(app.selected_note) {
-        note.content.lines().collect()
+    } else if let Some(body) = app.current_body() {
+        body.lines().collect()
     } else {
         return;
     };

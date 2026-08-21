@@ -4,6 +4,9 @@ use super::*;
 pub struct AppMemorySnapshot {
     pub catalog_count: usize,
     pub loaded_body_bytes: usize,
+    pub body_cache_hits: u64,
+    pub body_cache_misses: u64,
+    pub body_cache_evictions: u64,
     pub parsed_document_bytes: usize,
     pub editor_and_undo_bytes: usize,
     pub search_index_bytes: usize,
@@ -30,6 +33,7 @@ impl AppMemorySnapshot {
 
 impl App {
     pub fn memory_snapshot(&self) -> AppMemorySnapshot {
+        let body_cache = self.body_cache.stats();
         let parsed_document_bytes =
             self.content_items.capacity() * std::mem::size_of::<ContentItem>() + self.content_items.iter().map(content_item_bytes).sum::<usize>();
         let search_result_bytes = match &self.search_picker {
@@ -38,6 +42,8 @@ impl App {
                 query,
                 file_results,
                 content_results,
+                hydrated_content_results,
+                content_preview,
                 ..
             } => {
                 query.capacity()
@@ -46,11 +52,19 @@ impl App {
                         .iter()
                         .map(|result| result.display_name.capacity() + result.folder_hint.as_ref().map_or(0, String::capacity))
                         .sum::<usize>()
-                    + content_results.capacity() * std::mem::size_of::<ContentSearchResult>()
-                    + content_results
+                    + content_results.capacity() * std::mem::size_of::<SearchHit>()
+                    + hydrated_content_results.capacity() * std::mem::size_of::<HydratedSearchResult>()
+                    + hydrated_content_results
                         .iter()
-                        .map(|result| result.display_name.capacity() + result.matched_line.capacity() + result.folder_hint.as_ref().map_or(0, String::capacity))
+                        .map(|entry| {
+                            entry.result.display_name.capacity()
+                                + entry.result.matched_line.capacity()
+                                + entry.result.folder_hint.as_ref().map_or(0, String::capacity)
+                        })
                         .sum::<usize>()
+                    + content_preview.as_ref().map_or(0, |preview| {
+                        preview.lines.capacity() * std::mem::size_of::<String>() + preview.lines.iter().map(String::capacity).sum::<usize>()
+                    })
             }
         };
         let graph_projection_bytes = self.graph_view.nodes.capacity() * std::mem::size_of::<GraphNode>()
@@ -64,10 +78,13 @@ impl App {
 
         AppMemorySnapshot {
             catalog_count: self.notes.len(),
-            loaded_body_bytes: self.notes.iter().map(|note| note.content.capacity()).sum(),
+            loaded_body_bytes: self.active_body.as_ref().map_or(0, |body| body.len()) + body_cache.bytes,
+            body_cache_hits: body_cache.hits,
+            body_cache_misses: body_cache.misses,
+            body_cache_evictions: body_cache.evictions,
             parsed_document_bytes,
             editor_and_undo_bytes: self.editor.retained_bytes(),
-            search_index_bytes: self.search_index.retained_bytes(),
+            search_index_bytes: self.search_index.as_ref().map_or(0, |index| index.retained_bytes()),
             search_result_bytes,
             graph_bytes: graph_projection_bytes + self.graph_index.as_ref().map_or(0, |index| index.retained_bytes()),
             image_bytes: self
@@ -77,11 +94,13 @@ impl App {
                 .sum(),
             highlight_cache_bytes: self.highlighter.as_ref().map_or(0, Highlighter::retained_cache_bytes),
             live_workers: usize::from(self.highlight_worker.is_some())
+                + usize::from(self.search_worker.is_some())
                 + usize::from(self.indexing_in_progress)
                 + usize::from(self.graph_indexing)
                 + usize::from(self.graph_view.layout_pending)
                 + usize::from(self.highlighter_loading),
             pending_requests: usize::from(self.highlight_pending)
+                + usize::from(self.search_worker.as_ref().is_some_and(SearchWorker::is_pending))
                 + usize::from(self.indexing_in_progress)
                 + usize::from(self.graph_view.index_pending)
                 + usize::from(self.graph_view.layout_pending)

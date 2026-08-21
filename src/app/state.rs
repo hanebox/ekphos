@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
@@ -21,9 +21,9 @@ use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker}
 use crate::keybindings::{KeybindingFallback, KeybindingWarning, Keymap};
 use ekphos_editor::{Editor, Position};
 use ekphos_graph as graph;
-use ekphos_graph::{GraphEdge, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode, GraphSourceNote};
+use ekphos_graph::{GraphEdge, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode, GraphSourceMetadata};
 use ekphos_search as search;
-use ekphos_search::SearchIndex;
+use ekphos_search::{SearchHit, SearchIndex, SearchWorker};
 use ekphos_vim::VimState;
 
 mod session_types;
@@ -255,12 +255,17 @@ impl AppBuilder {
         let frontmatter_hidden = config.frontmatter_hidden;
         let (image_sender, image_receiver) = mpsc::channel();
         let (highlighter_sender, highlighter_receiver) = mpsc::channel();
-        let (content_search_sender, content_search_receiver) = mpsc::channel();
         let (_, index_receiver) = mpsc::channel();
         let (_, graph_index_receiver) = mpsc::channel();
         let (_, graph_layout_receiver) = mpsc::channel();
 
         let mut app = App {
+            vault: ekphos_vault::Vault::default(),
+            body_cache: ekphos_vault::BodyCache::default(),
+            active_note_id: None,
+            active_fingerprint: None,
+            active_body: None,
+            document_generation: 0,
             notes: Vec::new(),
             selected_note: 0,
             list_state,
@@ -354,10 +359,11 @@ impl AppBuilder {
             search_picker_area: Rect::default(),
             search_picker_results_area: Rect::default(),
             search_picker_last_click: None,
-            content_search_sender,
-            content_search_receiver,
             next_search_id: 0,
-            search_index: SearchIndex::default(),
+            search_generation: 0,
+            search_generation_signal: Arc::new(AtomicU64::new(0)),
+            search_worker: None,
+            search_index: None,
             index_receiver,
             indexing_in_progress: false,
             index_progress: Arc::new(AtomicUsize::new(0)),
@@ -372,7 +378,6 @@ impl AppBuilder {
 
         if should_load {
             app.load_notes_from_dir();
-            app.start_index_build();
             if let Some(target_path) = target_file {
                 app.select_note_by_path(&target_path);
             } else if let Some(last_path) = read_last_opened_note(&app.dependencies.cache_dir) {
@@ -513,6 +518,13 @@ fn fuzzy_match(text: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase3_note_layout_is_compact() {
+        assert!(std::mem::size_of::<Note>() <= 136);
+        assert!(std::mem::size_of::<FileTreeItem>() <= 16);
+        assert!(std::mem::size_of::<SidebarItem>() <= 48);
+    }
 
     #[test]
     fn standalone_image_requires_exactly_one_image_on_the_source_line() {

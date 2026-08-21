@@ -2,6 +2,12 @@ use super::*;
 
 pub struct App {
     pub(crate) dependencies: AppDependencies,
+    pub(crate) vault: ekphos_vault::Vault,
+    pub(crate) body_cache: ekphos_vault::BodyCache,
+    pub(crate) active_note_id: Option<NoteId>,
+    pub(crate) active_fingerprint: Option<ekphos_vault::FileFingerprint>,
+    pub(crate) active_body: Option<Arc<str>>,
+    pub(crate) document_generation: u64,
     pub notes: Vec<Note>,
     pub selected_note: usize,
     #[allow(dead_code)]
@@ -106,13 +112,14 @@ pub struct App {
     pub search_picker_area: ratatui::layout::Rect,
     pub search_picker_results_area: ratatui::layout::Rect,
     pub search_picker_last_click: Option<(std::time::Instant, usize)>, // (time, selected_index)
-    pub content_search_sender: Sender<ContentSearchResponse>,
-    pub content_search_receiver: Receiver<ContentSearchResponse>,
     pub next_search_id: u64,
+    pub(crate) search_generation: u64,
+    pub(crate) search_generation_signal: Arc<AtomicU64>,
+    pub(crate) search_worker: Option<SearchWorker>,
     // Search index for fast content search
-    pub search_index: SearchIndex,
+    pub search_index: Option<Arc<SearchIndex>>,
     /// Channel to receive completed index from background thread
-    pub index_receiver: Receiver<SearchIndex>,
+    pub index_receiver: Receiver<(u64, SearchIndex)>,
     pub indexing_in_progress: bool,
     /// Progress counters (updated by background thread, read by main thread)
     pub index_progress: Arc<AtomicUsize>,
@@ -140,7 +147,7 @@ pub enum DeleteType {
 /// Navigation history entry storing note index and cursor/scroll position
 #[derive(Debug, Clone)]
 pub struct NavigationEntry {
-    pub note_idx: usize,
+    pub note_id: NoteId,
     pub content_cursor: usize,
     pub content_scroll_offset: usize,
 }

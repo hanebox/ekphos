@@ -55,6 +55,7 @@ bincode = "1.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clipboard-rs = { version = "0.3", features = ["wayland"] }
 libc = "0.2"
+memmap2 = "0.9"
 
 [dependencies]
 ekphos-core.workspace = true

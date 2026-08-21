@@ -94,6 +94,15 @@ pub struct GraphSourceNote {
 }
 
 #[derive(Debug, Clone)]
+pub struct GraphSourceMetadata {
+    pub note_id: NoteId,
+    pub title: String,
+    /// Vault-relative path without the `.md` suffix.
+    pub path: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct GraphIndexNode {
     pub note_id: NoteId,
     pub title: String,
@@ -320,6 +329,24 @@ fn tokenize_filter(query: &str) -> Vec<String> {
 
 impl GraphIndex {
     pub fn build(sources: Vec<GraphSourceNote>) -> Self {
+        let mut bodies = HashMap::with_capacity(sources.len());
+        let metadata = sources
+            .into_iter()
+            .map(|source| {
+                bodies.insert(source.note_id, source.content);
+                GraphSourceMetadata {
+                    note_id: source.note_id,
+                    title: source.title,
+                    path: source.path,
+                    tags: source.tags,
+                }
+            })
+            .collect();
+        Self::build_from_loader(metadata, |note_id| bodies.remove(&note_id))
+    }
+
+    /// Build an index while retaining at most one source body at a time.
+    pub fn build_from_loader(sources: Vec<GraphSourceMetadata>, mut load_body: impl FnMut(NoteId) -> Option<String>) -> Self {
         let node_count = sources.len();
         let mut root_titles = HashMap::with_capacity(node_count);
         let mut all_titles = HashMap::with_capacity(node_count);
@@ -337,7 +364,10 @@ impl GraphIndex {
         let mut directed = HashSet::new();
         for (from, source) in sources.iter().enumerate() {
             let mut targets_for_note = HashSet::new();
-            for target in extract_wiki_targets(&source.content) {
+            let Some(content) = load_body(source.note_id) else {
+                continue;
+            };
+            for target in extract_wiki_targets(&content) {
                 let normalized = normalize_wiki_path(&target);
                 let to = if normalized.contains('/') {
                     paths.get(&normalized).copied()

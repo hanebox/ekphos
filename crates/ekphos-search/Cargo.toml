@@ -9,6 +9,8 @@ repository.workspace = true
 description = "Search indexing and query engine for Ekphos"
 
 [dependencies]
+ekphos-core.workspace = true
 serde.workspace = true
 bincode.workspace = true
 dirs.workspace = true
+memmap2.workspace = true

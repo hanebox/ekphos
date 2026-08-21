@@ -74,7 +74,7 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
                     SidebarItemKind::Note { .. } => {
                         app.dialog = DialogState::DeleteConfirm;
                     }
-                    SidebarItemKind::Folder { .. } => {
+                    SidebarItemKind::Folder(_) => {
                         app.dialog = DialogState::DeleteFolderConfirm;
                     }
                 }
@@ -89,14 +89,14 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         AppCommand::RenameItem => {
             if let Some(item) = app.sidebar_items.get(app.selected_sidebar_index) {
                 match &item.kind {
-                    SidebarItemKind::Note { note_index } => {
-                        if let Some(note) = app.notes.get(*note_index) {
+                    SidebarItemKind::Note { note_id } => {
+                        if let Some(note) = app.notes.iter().find(|note| note.id == *note_id) {
                             app.input_buffer = note.title.clone();
                             app.dialog_error = None;
                             app.dialog = DialogState::RenameNote;
                         }
                     }
-                    SidebarItemKind::Folder { .. } => {
+                    SidebarItemKind::Folder(_) => {
                         app.input_buffer = item.display_name.clone();
                         app.dialog_error = None;
                         app.dialog = DialogState::RenameFolder;

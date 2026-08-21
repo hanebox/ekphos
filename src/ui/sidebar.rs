@@ -64,20 +64,25 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let indent = "  ".repeat(item.depth);
 
             let is_cut = match (&app.cut_buffer, &item.kind) {
-                (Some(CutItem::Note { source_path, .. }), SidebarItemKind::Note { note_index }) => app
+                (Some(CutItem::Note { source_path, .. }), SidebarItemKind::Note { note_id }) => app
                     .notes
-                    .get(*note_index)
+                    .iter()
+                    .find(|note| note.id == *note_id)
                     .and_then(|note| note.file_path.as_ref())
                     .map(|path| path == source_path)
                     .unwrap_or(false),
-                (Some(CutItem::Folder { source_path, .. }), SidebarItemKind::Folder { path, .. }) => path == source_path,
+                (Some(CutItem::Folder { source_path, .. }), SidebarItemKind::Folder(folder)) => &folder.path == source_path,
                 _ => false,
             };
 
             let (icon, mut style) = match &item.kind {
-                SidebarItemKind::Folder { expanded, .. } => {
-                    let icon = if *expanded { "▼ " } else { "▶ " };
-                    let folder_color = if *expanded { sidebar_theme.folder_expanded } else { sidebar_theme.folder };
+                SidebarItemKind::Folder(folder) => {
+                    let icon = if folder.expanded { "▼ " } else { "▶ " };
+                    let folder_color = if folder.expanded {
+                        sidebar_theme.folder_expanded
+                    } else {
+                        sidebar_theme.folder
+                    };
                     let style = if is_selected {
                         Style::default().fg(folder_color).add_modifier(Modifier::BOLD)
                     } else {
@@ -85,9 +90,14 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
                     };
                     (icon, style)
                 }
-                SidebarItemKind::Note { note_index } => {
+                SidebarItemKind::Note { note_id } => {
                     let icon = "  ";
-                    let is_match = is_searching && app.search_matched_notes.contains(note_index);
+                    let is_match = is_searching
+                        && app
+                            .notes
+                            .iter()
+                            .position(|note| note.id == *note_id)
+                            .is_some_and(|index| app.search_matched_notes.contains(&index));
                     let style = if is_selected {
                         Style::default().fg(sidebar_theme.item_selected).add_modifier(Modifier::BOLD)
                     } else if is_match {
@@ -103,7 +113,11 @@ pub fn render_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
                 style = style.add_modifier(Modifier::DIM | Modifier::ITALIC);
             }
 
-            let display = format!("{}{}{}", indent, icon, item.display_name);
+            let display_name = match item.kind {
+                SidebarItemKind::Note { note_id } => app.notes.iter().find(|note| note.id == note_id).map(|note| note.title.as_str()).unwrap_or(""),
+                SidebarItemKind::Folder(_) => item.display_name.as_str(),
+            };
+            let display = format!("{}{}{}", indent, icon, display_name);
             ListItem::new(Line::from(Span::styled(display, style)))
         })
         .collect();

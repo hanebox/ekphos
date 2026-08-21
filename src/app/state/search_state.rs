@@ -8,120 +8,80 @@ impl App {
 
         let notes_dir = self.config.notes_path();
         let index_path = search::get_index_path_in(&self.dependencies.cache_dir, &notes_dir);
-        let notes_dir_str = notes_dir.to_string_lossy().to_string();
+        let sources = self.search_index_sources();
 
-        let note_data: Vec<(usize, String, String, u64)> = self
-            .notes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, note)| {
-                let path = note.file_path.as_ref()?;
-                let rel_path = path.strip_prefix(&notes_dir).ok()?.to_string_lossy().to_string();
-                let mtime = note.modified_time?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-                Some((idx, rel_path, note.content.clone(), mtime))
-            })
-            .collect();
-
-        if note_data.is_empty() {
+        if sources.is_empty() {
             self.index_progress.store(0, Ordering::Relaxed);
             self.index_total.store(0, Ordering::Relaxed);
-            self.search_index = SearchIndex {
-                version: 2,
-                notes_dir: notes_dir_str,
-                ready: true,
-                indexing_complete: true,
-                ..Default::default()
-            };
+            self.search_index = SearchIndex::build_from_loader(&notes_dir, &sources, |_| None).ok().map(Arc::new);
             return;
         }
 
         self.indexing_in_progress = true;
         self.index_started_at = Some(std::time::Instant::now());
-
         self.index_progress.store(0, Ordering::Relaxed);
-        self.index_total.store(note_data.len(), Ordering::Relaxed);
+        self.index_total.store(sources.len(), Ordering::Relaxed);
         let progress = Arc::clone(&self.index_progress);
         let total = Arc::clone(&self.index_total);
-        let (sender, receiver) = mpsc::channel();
+        let generation = self.search_generation;
+        let generation_signal = Arc::clone(&self.search_generation_signal);
+        let (sender, receiver) = mpsc::sync_channel(1);
         self.index_receiver = receiver;
 
         std::thread::spawn(move || {
-            let build_full_with_progress = |note_data: &[(usize, String, String, u64)], notes_dir: &str, progress: &Arc<AtomicUsize>| -> SearchIndex {
-                let mut index = SearchIndex {
-                    version: 2,
-                    notes_dir: notes_dir.to_string(),
-                    ..Default::default()
-                };
-                for (i, (note_idx, rel_path, content, mtime)) in note_data.iter().enumerate() {
-                    index.index_note_pub(*note_idx, rel_path, content, *mtime);
-                    progress.store(i + 1, Ordering::Relaxed);
-                }
-                index
-            };
-
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let existing_index = search::load_index(&index_path);
-
-                let mut index = if let Some(mut cached) = existing_index {
-                    if cached.notes_dir == notes_dir_str {
-                        let current_files: Vec<(String, u64)> = note_data.iter().map(|(_, path, _, mtime)| (path.clone(), *mtime)).collect();
-                        let current_paths: Vec<String> = current_files.iter().map(|(p, _)| p.clone()).collect();
-
-                        cached.remove_deleted(&current_paths);
-                        let stale = cached.get_stale_files(&current_files);
-
-                        if stale.is_empty() {
-                            progress.store(note_data.len(), Ordering::Relaxed);
-                            total.store(note_data.len(), Ordering::Relaxed);
-                            cached
-                        } else {
-                            total.store(stale.len(), Ordering::Relaxed);
-                            progress.store(0, Ordering::Relaxed);
-
-                            let stale_notes: Vec<_> = note_data.iter().filter(|(_, path, _, _)| stale.contains(path)).cloned().collect();
-
-                            for (i, note) in stale_notes.iter().enumerate() {
-                                cached.update_with_notes(&[note.clone()]);
-                                progress.store(i + 1, Ordering::Relaxed);
-                            }
-                            cached
-                        }
+                let cached = search::load_index(&index_path);
+                let mut loaded = 0usize;
+                let mut load = |source: &search::SearchSource| {
+                    if generation_signal.load(Ordering::Acquire) != generation {
+                        return None;
+                    }
+                    let body = fs::read_to_string(&source.absolute_path).ok().map(Arc::<str>::from);
+                    loaded += 1;
+                    progress.store(loaded, Ordering::Relaxed);
+                    body
+                };
+                let index = if let Some(cached) = cached {
+                    if cached.matches_sources(&notes_dir, &sources) {
+                        Ok(cached)
                     } else {
-                        build_full_with_progress(&note_data, &notes_dir_str, &progress)
+                        cached.update_from_loader(&notes_dir, &sources, &mut load)
                     }
                 } else {
-                    build_full_with_progress(&note_data, &notes_dir_str, &progress)
+                    SearchIndex::build_from_loader(&notes_dir, &sources, &mut load)
                 };
-
-                index.ready = true;
-                index.indexing_complete = true;
-                let _ = search::save_index(&index, &index_path);
-                let _ = sender.send(index);
+                progress.store(sources.len(), Ordering::Relaxed);
+                total.store(sources.len(), Ordering::Relaxed);
+                if let Ok(index) = index {
+                    if generation_signal.load(Ordering::Acquire) != generation {
+                        return;
+                    }
+                    let installed = if search::save_index(&index, &index_path).is_ok() {
+                        search::load_index(&index_path).unwrap_or(index)
+                    } else {
+                        index
+                    };
+                    let _ = sender.send((generation, installed));
+                }
             }));
-
-            if result.is_err() {
-                let mut empty = SearchIndex::default();
-                empty.ready = true;
-                empty.indexing_complete = true;
-                let _ = sender.send(empty);
-            }
+            let _ = result;
         });
     }
 
     pub fn poll_index_build(&mut self) {
-        // Early return if not indexing
         if !self.indexing_in_progress {
             return;
         }
 
-        if let Ok(index) = self.index_receiver.try_recv() {
-            self.search_index = index;
-            self.indexing_in_progress = false;
-            self.index_started_at = None;
-            // Reset progress counters
-            self.index_progress.store(0, Ordering::Relaxed);
-            self.index_total.store(0, Ordering::Relaxed);
-            return;
+        while let Ok((generation, index)) = self.index_receiver.try_recv() {
+            if generation == self.search_generation {
+                self.search_index = Some(Arc::new(index));
+                self.indexing_in_progress = false;
+                self.index_started_at = None;
+                self.index_progress.store(0, Ordering::Relaxed);
+                self.index_total.store(0, Ordering::Relaxed);
+                return;
+            }
         }
 
         const INDEXING_TIMEOUT_SECS: u64 = 60;
@@ -131,165 +91,193 @@ impl App {
                 self.index_started_at = None;
                 self.index_progress.store(0, Ordering::Relaxed);
                 self.index_total.store(0, Ordering::Relaxed);
-                self.search_index.ready = true;
-                self.search_index.indexing_complete = true;
             }
         }
-    }
-
-    /// Search using the index (fast path)
-    pub(super) fn search_with_index(&self, query: &str) -> Vec<ContentSearchResult> {
-        let query_lower = query.to_lowercase();
-        let mut results = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        // i think most people should be fine with 15k limits
-        const MAX_RESULTS: usize = 15000;
-        const MAX_EXACT_MATCHES: usize = 15000;
-        const MAX_PREFIX_MATCHES: usize = 15000;
-        const MAX_PREFIX_TERMS_SCANNED: usize = 15000;
-        const MAX_LINE_SCAN_NOTES: usize = 15000;
-
-        let create_result = |note_idx: usize, line_num: usize, line: &str, query_lower: &str| -> Option<ContentSearchResult> {
-            let note = self.notes.get(note_idx)?;
-            let wiki_path = self.get_wiki_path_for_note(note_idx);
-            let folder_hint = wiki_path.as_ref().and_then(|wp| wp.rfind('/').map(|pos| wp[..pos].to_string()));
-
-            let line_lower = line.to_lowercase();
-            let match_byte_pos = line_lower.find(query_lower)?;
-            let line_chars: Vec<char> = line.chars().collect();
-            let match_start_char = line_lower[..match_byte_pos].chars().count();
-            let match_end_char = match_start_char + query_lower.chars().count();
-
-            let mut score = 100;
-            let title_lower = note.title.to_lowercase();
-            if title_lower.contains(query_lower) {
-                score += 50;
-            }
-            if match_start_char == 0 {
-                score += 20;
-            }
-            if match_start_char == 0 || !line_chars.get(match_start_char.saturating_sub(1)).map(|c| c.is_alphanumeric()).unwrap_or(false) {
-                score += 10;
-            }
-
-            let context_size = 25;
-            let start = match_start_char.saturating_sub(context_size);
-            let end = (match_end_char + context_size).min(line_chars.len());
-
-            let mut matched_line: String = line_chars[start..end].iter().collect();
-            let display_match_start = match_start_char - start;
-            let display_match_end = match_end_char - start;
-
-            if start > 0 {
-                matched_line = format!("...{}", matched_line);
-            }
-            if end < line_chars.len() {
-                matched_line.push_str("...");
-            }
-
-            Some(ContentSearchResult {
-                display_name: note.title.clone(),
-                matched_line,
-                line_number: line_num + 1,
-                note_index: note_idx,
-                folder_hint,
-                score,
-                match_start: display_match_start + if start > 0 { 3 } else { 0 },
-                match_end: display_match_end + if start > 0 { 3 } else { 0 },
-            })
-        };
-
-        if let Some(positions) = self.search_index.terms.get(&query_lower) {
-            for &(note_idx, line_num, _) in positions.iter().take(MAX_EXACT_MATCHES) {
-                if seen.insert((note_idx, line_num)) {
-                    if let Some(lines) = self.search_index.lines.get(note_idx) {
-                        if let Some(line) = lines.get(line_num) {
-                            if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
-                                results.push(result);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Phase 2 Prefix matches - limit terms scanned to prevent freeze
-        if results.len() < MAX_RESULTS {
-            let mut terms_scanned = 0;
-            let mut prefix_matches = 0;
-
-            for (word, positions) in &self.search_index.terms {
-                // Early exit conditions
-                if terms_scanned >= MAX_PREFIX_TERMS_SCANNED || prefix_matches >= MAX_PREFIX_MATCHES {
-                    break;
-                }
-                terms_scanned += 1;
-
-                if word.starts_with(&query_lower) && word != &query_lower {
-                    for &(note_idx, line_num, _) in positions.iter().take(50) {
-                        if prefix_matches >= MAX_PREFIX_MATCHES {
-                            break;
-                        }
-                        if seen.insert((note_idx, line_num)) {
-                            if let Some(lines) = self.search_index.lines.get(note_idx) {
-                                if let Some(line) = lines.get(line_num) {
-                                    if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
-                                        results.push(result);
-                                        prefix_matches += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Phase 3 Line scan fallback for substring matches
-        if results.len() < MAX_RESULTS {
-            let mut notes_scanned = 0;
-            'outer: for (note_idx, lines) in self.search_index.lines.iter().enumerate() {
-                if notes_scanned >= MAX_LINE_SCAN_NOTES || results.len() >= MAX_RESULTS {
-                    break;
-                }
-                notes_scanned += 1;
-
-                for (line_num, line) in lines.iter().enumerate() {
-                    if seen.contains(&(note_idx, line_num)) {
-                        continue;
-                    }
-                    if line.to_lowercase().contains(&query_lower) {
-                        if let Some(result) = create_result(note_idx, line_num, line, &query_lower) {
-                            seen.insert((note_idx, line_num));
-                            results.push(result);
-                            if results.len() >= MAX_RESULTS {
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        results.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.display_name.cmp(&b.display_name))
-                .then_with(|| a.line_number.cmp(&b.line_number))
-        });
-        results.truncate(MAX_RESULTS);
-        results
     }
 
     #[doc(hidden)]
     pub fn headless_content_search(&self, query: &str) -> Vec<ContentSearchResult> {
-        self.search_with_index(query)
+        let hits = self.headless_content_search_hits(query);
+        let indexed_hits: Vec<_> = hits.iter().copied().enumerate().collect();
+        self.hydrate_search_hits(&indexed_hits).into_iter().map(|entry| entry.result).collect()
     }
 
     #[doc(hidden)]
     pub fn headless_file_search(&self, query: &str) -> Vec<FilePickerResult> {
         self.build_file_picker_results(query)
+    }
+
+    fn search_index_sources(&self) -> Vec<search::SearchSource> {
+        let notes_dir = self.config.notes_path();
+        self.notes
+            .iter()
+            .filter_map(|note| {
+                let absolute_path = note.file_path.clone()?;
+                let relative_path = absolute_path.strip_prefix(&notes_dir).ok()?.to_string_lossy().to_string().into_boxed_str();
+                let fingerprint = self.vault.fingerprint(note.id)?;
+                Some(search::SearchSource {
+                    note_id: note.id,
+                    relative_path,
+                    absolute_path,
+                    fingerprint: search::SearchFileFingerprint {
+                        size: fingerprint.size,
+                        modified_nanos: fingerprint.modified_nanos.map(std::num::NonZeroU64::get).unwrap_or(0),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn headless_content_search_hits(&self, query: &str) -> Vec<search::SearchHit> {
+        let sources = self.content_search_sources();
+        search::search_sources(&sources, query, self.search_index.as_deref(), || false).unwrap_or_default()
+    }
+
+    fn content_search_sources(&self) -> Arc<[search::ContentSearchSource]> {
+        self.notes
+            .iter()
+            .filter_map(|note| {
+                Some(search::ContentSearchSource {
+                    note_id: note.id,
+                    title: note.title.clone().into_boxed_str(),
+                    absolute_path: note.file_path.clone()?,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn search_body(&self, note_id: NoteId) -> Option<Arc<str>> {
+        if self.active_note_id == Some(note_id) {
+            return self.active_body.clone();
+        }
+        let path = self.notes.iter().find(|note| note.id == note_id)?.file_path.as_ref()?;
+        fs::read_to_string(path).ok().map(Arc::from)
+    }
+
+    fn hydrate_search_hits(&self, requested: &[(usize, search::SearchHit)]) -> Vec<HydratedSearchResult> {
+        let mut by_note: HashMap<NoteId, Vec<(usize, usize, search::SearchHit)>> = HashMap::new();
+        for (output_index, (result_index, hit)) in requested.iter().copied().enumerate() {
+            by_note.entry(hit.note_id).or_default().push((output_index, result_index, hit));
+        }
+        let mut output = vec![None; requested.len()];
+        for (note_id, entries) in by_note {
+            let Some(body) = self.search_body(note_id) else {
+                continue;
+            };
+            let wanted: HashMap<u32, Vec<(usize, usize, search::SearchHit)>> = entries.into_iter().fold(HashMap::new(), |mut lines, entry| {
+                lines.entry(entry.2.line_number).or_default().push(entry);
+                lines
+            });
+            for (line_number, line) in body.lines().enumerate() {
+                let Ok(line_number) = u32::try_from(line_number) else {
+                    break;
+                };
+                let Some(entries) = wanted.get(&line_number) else {
+                    continue;
+                };
+                for &(output_index, result_index, hit) in entries {
+                    if let Some(result) = self.hydrate_search_line(hit, line) {
+                        output[output_index] = Some(HydratedSearchResult { result_index, result });
+                    }
+                }
+            }
+        }
+        output.into_iter().flatten().collect()
+    }
+
+    fn hydrate_search_line(&self, hit: search::SearchHit, line: &str) -> Option<ContentSearchResult> {
+        let note_index = self.note_index_for_id(hit.note_id)?;
+        let note = self.notes.get(note_index)?;
+        let wiki_path = self.get_wiki_path_for_note(note_index);
+        let folder_hint = wiki_path.as_ref().and_then(|path| path.rfind('/').map(|position| path[..position].to_string()));
+        let line_chars: Vec<char> = line.chars().collect();
+        let match_start = (hit.match_start as usize).min(line_chars.len());
+        let match_end = (hit.match_end as usize).min(line_chars.len()).max(match_start);
+        let context_size = 25;
+        let start = match_start.saturating_sub(context_size);
+        let end = (match_end + context_size).min(line_chars.len());
+        let mut matched_line: String = line_chars[start..end].iter().collect();
+        if start > 0 {
+            matched_line.insert_str(0, "...");
+        }
+        if end < line_chars.len() {
+            matched_line.push_str("...");
+        }
+        let ellipsis = usize::from(start > 0) * 3;
+        Some(ContentSearchResult {
+            display_name: note.title.clone(),
+            matched_line,
+            line_number: hit.line_number as usize + 1,
+            note_index,
+            folder_hint,
+            score: hit.score,
+            match_start: match_start - start + ellipsis,
+            match_end: match_end - start + ellipsis,
+        })
+    }
+
+    pub(crate) fn ensure_search_hydrated(&mut self) {
+        const VISIBLE_RESULTS: usize = 18;
+        const PREVIEW_BEFORE: usize = 5;
+        const PREVIEW_AFTER: usize = 8;
+        let (search_id, selected_index, scroll_offset, hits, already_hydrated) = match &self.search_picker {
+            SearchPickerState::Open {
+                mode: SearchPickerMode::Content,
+                search_id,
+                selected_index,
+                scroll_offset,
+                content_results,
+                hydration_key,
+                ..
+            } => {
+                let key = (*search_id, *selected_index, *scroll_offset);
+                (
+                    *search_id,
+                    *selected_index,
+                    *scroll_offset,
+                    content_results.clone(),
+                    *hydration_key == Some(key),
+                )
+            }
+            _ => return,
+        };
+        if already_hydrated {
+            return;
+        }
+        let requested: Vec<_> = hits.iter().copied().enumerate().skip(scroll_offset).take(VISIBLE_RESULTS).collect();
+        let hydrated = self.hydrate_search_hits(&requested);
+        let preview = hits.get(selected_index).and_then(|hit| {
+            let body = self.search_body(hit.note_id)?;
+            let match_line = hit.line_number as usize;
+            let start_line = match_line.saturating_sub(PREVIEW_BEFORE);
+            let lines = body
+                .lines()
+                .skip(start_line)
+                .take(PREVIEW_BEFORE + PREVIEW_AFTER + 1)
+                .map(str::to_owned)
+                .collect();
+            Some(ContentSearchPreview {
+                note_id: hit.note_id,
+                start_line,
+                lines,
+            })
+        });
+        if let SearchPickerState::Open {
+            search_id: current_id,
+            hydrated_content_results,
+            content_preview,
+            hydration_key,
+            ..
+        } = &mut self.search_picker
+        {
+            if *current_id == search_id {
+                *hydrated_content_results = hydrated;
+                *content_preview = preview;
+                *hydration_key = Some((search_id, selected_index, scroll_offset));
+            }
+        }
     }
 
     // ==================== Mouse Selection Helpers ====================
@@ -352,6 +340,9 @@ impl App {
             query: String::new(),
             file_results: Vec::new(),
             content_results: Vec::new(),
+            hydrated_content_results: Vec::new(),
+            content_preview: None,
+            hydration_key: None,
             selected_index: 0,
             scroll_offset: 0,
             search_in_progress: false,
@@ -361,6 +352,21 @@ impl App {
 
     pub fn close_search_picker(&mut self) {
         self.search_picker = SearchPickerState::Closed;
+        self.release_search_service();
+    }
+
+    pub(super) fn release_search_service(&mut self) {
+        if let Some(worker) = &self.search_worker {
+            worker.cancel();
+        }
+        self.search_worker = None;
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_generation_signal.store(self.search_generation, Ordering::Release);
+        self.search_index = None;
+        self.indexing_in_progress = false;
+        self.index_started_at = None;
+        self.index_progress.store(0, Ordering::Relaxed);
+        self.index_total.store(0, Ordering::Relaxed);
     }
 
     pub fn toggle_search_picker_mode(&mut self) {
@@ -391,6 +397,22 @@ impl App {
                 }
             }
             SearchPickerMode::Files => {
+                if let SearchPickerState::Open {
+                    content_results,
+                    hydrated_content_results,
+                    content_preview,
+                    hydration_key,
+                    search_in_progress,
+                    ..
+                } = &mut self.search_picker
+                {
+                    *content_results = Vec::new();
+                    *hydrated_content_results = Vec::new();
+                    *content_preview = None;
+                    *hydration_key = None;
+                    *search_in_progress = false;
+                }
+                self.release_search_service();
                 if query.is_empty() {
                     if let SearchPickerState::Open { file_results, .. } = &mut self.search_picker {
                         file_results.clear();
@@ -459,144 +481,65 @@ impl App {
             return;
         };
 
-        if self.search_index.ready {
-            let results = self.search_with_index(&query);
-            if let SearchPickerState::Open {
-                content_results,
-                search_in_progress,
-                selected_index,
-                scroll_offset,
-                ..
-            } = &mut self.search_picker
-            {
-                *content_results = results;
-                *search_in_progress = false;
-                *selected_index = 0;
-                *scroll_offset = 0;
-            }
-            return;
+        if !self.indexing_in_progress && self.search_index.is_none() {
+            self.start_index_build();
         }
 
-        self.next_search_id += 1;
+        self.next_search_id = self.next_search_id.wrapping_add(1);
         let search_id = self.next_search_id;
 
         if let SearchPickerState::Open {
             search_in_progress,
             search_id: state_search_id,
+            hydrated_content_results,
+            content_preview,
+            hydration_key,
             ..
         } = &mut self.search_picker
         {
             *search_in_progress = true;
             *state_search_id = search_id;
+            hydrated_content_results.clear();
+            *content_preview = None;
+            *hydration_key = None;
         }
 
-        let notes: Vec<(usize, String, String, Option<String>)> = self
-            .notes
-            .iter()
-            .enumerate()
-            .map(|(idx, note)| {
-                let wiki_path = self.get_wiki_path_for_note(idx);
-                let folder_hint = wiki_path.as_ref().and_then(|wp| wp.rfind('/').map(|pos| wp[..pos].to_string()));
-                (idx, note.title.clone(), note.content.clone(), folder_hint)
-            })
-            .collect();
-
-        let sender = self.content_search_sender.clone();
-
-        // Spawn background thread for content search
-        std::thread::spawn(move || {
-            let query_lower = query.to_lowercase();
-            let mut results: Vec<ContentSearchResult> = Vec::new();
-
-            for (note_idx, title, content, folder_hint) in notes {
-                let title_lower = title.to_lowercase();
-                let title_matches = title_lower.contains(&query_lower);
-
-                for (line_num, line) in content.lines().enumerate() {
-                    let line_lower = line.to_lowercase();
-                    if let Some(match_byte_pos) = line_lower.find(&query_lower) {
-                        // Convert byte position to character position for Unicode support
-                        let line_chars: Vec<char> = line.chars().collect();
-                        let match_start_char = line_lower[..match_byte_pos].chars().count();
-                        let match_end_char = match_start_char + query_lower.chars().count();
-
-                        // Calculate score
-                        let mut score = 100;
-                        if title_matches {
-                            score += 50;
-                        }
-                        if match_start_char == 0 {
-                            score += 20;
-                        }
-                        // Word boundary bonus - use char position, not byte position
-                        if match_start_char == 0 || !line_chars.get(match_start_char.saturating_sub(1)).map(|c| c.is_alphanumeric()).unwrap_or(false) {
-                            score += 10;
-                        }
-
-                        // Get context around match (max 60 chars total)
-                        let context_size = 25;
-                        let start = match_start_char.saturating_sub(context_size);
-                        let end = (match_end_char + context_size).min(line_chars.len());
-
-                        let mut matched_line: String = line_chars[start..end].iter().collect();
-                        let display_match_start = match_start_char - start;
-                        let display_match_end = match_end_char - start;
-
-                        // Add ellipsis if truncated
-                        if start > 0 {
-                            matched_line = format!("...{}", matched_line);
-                        }
-                        if end < line_chars.len() {
-                            matched_line.push_str("...");
-                        }
-
-                        results.push(ContentSearchResult {
-                            display_name: title.clone(),
-                            matched_line,
-                            line_number: line_num + 1,
-                            note_index: note_idx,
-                            folder_hint: folder_hint.clone(),
-                            score,
-                            match_start: display_match_start + if start > 0 { 3 } else { 0 },
-                            match_end: display_match_end + if start > 0 { 3 } else { 0 },
-                        });
-                    }
-                }
-            }
-
-            results.sort_by(|a, b| {
-                b.score
-                    .cmp(&a.score)
-                    .then_with(|| a.display_name.cmp(&b.display_name))
-                    .then_with(|| a.line_number.cmp(&b.line_number))
-            });
-
-            results.truncate(500);
-
-            let _ = sender.send(ContentSearchResponse { search_id, results });
-        });
+        let sources = self.content_search_sources();
+        let worker = self.search_worker.get_or_insert_with(SearchWorker::new);
+        worker.submit(search_id, self.search_generation, query, sources, self.search_index.clone());
     }
 
     /// Polls for content search results (call in main loop)
     pub fn poll_content_search(&mut self) {
-        while let Ok(response) = self.content_search_receiver.try_recv() {
+        let response = self.search_worker.as_ref().and_then(SearchWorker::try_take);
+        if let Some(response) = response {
+            if response.generation != self.search_generation {
+                return;
+            }
             if let SearchPickerState::Open {
                 search_id,
                 content_results,
+                hydrated_content_results,
+                content_preview,
+                hydration_key,
                 search_in_progress,
                 selected_index,
                 scroll_offset,
                 ..
             } = &mut self.search_picker
             {
-                if response.search_id == *search_id {
-                    *content_results = response.results;
+                if response.query_id == *search_id {
+                    *content_results = response.hits;
+                    hydrated_content_results.clear();
+                    *content_preview = None;
+                    *hydration_key = None;
                     *search_in_progress = false;
                     *selected_index = 0;
                     *scroll_offset = 0;
                 }
             }
         }
+        self.ensure_search_hydrated();
     }
 
     pub fn is_content_search_in_progress(&self) -> bool {
@@ -647,17 +590,24 @@ impl App {
                 if query.is_empty() {
                     if let SearchPickerState::Open {
                         content_results,
+                        hydrated_content_results,
+                        content_preview,
+                        hydration_key,
                         selected_index,
                         scroll_offset,
                         search_in_progress,
                         ..
                     } = &mut self.search_picker
                     {
-                        content_results.clear();
+                        *content_results = Vec::new();
+                        *hydrated_content_results = Vec::new();
+                        *content_preview = None;
+                        *hydration_key = None;
                         *selected_index = 0;
                         *scroll_offset = 0;
                         *search_in_progress = false;
                     }
+                    self.release_search_service();
                 } else {
                     self.start_content_search();
                 }
@@ -676,14 +626,17 @@ impl App {
         {
             match mode {
                 SearchPickerMode::Files => file_results.get(*selected_index).map(|r| (r.note_index, None)),
-                SearchPickerMode::Content => content_results.get(*selected_index).map(|r| (r.note_index, Some(r.line_number))),
+                SearchPickerMode::Content => content_results.get(*selected_index).and_then(|result| {
+                    self.note_index_for_id(result.note_id)
+                        .map(|index| (index, Some(result.line_number as usize + 1)))
+                }),
             }
         } else {
             None
         };
 
         let Some((note_index, line_number)) = result_info else {
-            self.search_picker = SearchPickerState::Closed;
+            self.close_search_picker();
             return;
         };
 
@@ -710,9 +663,13 @@ impl App {
                 }
             }
 
+            let target_id = self.notes[note_index].id;
             for (idx, item) in self.sidebar_items.iter().enumerate() {
-                if let SidebarItemKind::Note { note_index: idx_note } = &item.kind {
-                    if *idx_note == note_index {
+                if let SidebarItemKind::Note { note_id } = &item.kind {
+                    if *note_id == target_id {
+                        if !self.load_note_body(target_id) {
+                            break;
+                        }
                         self.end_buffer_search();
                         self.selected_sidebar_index = idx;
                         self.selected_note = note_index;
@@ -760,7 +717,7 @@ impl App {
             }
         }
 
-        self.search_picker = SearchPickerState::Closed;
+        self.close_search_picker();
     }
 
     pub fn search_picker_select_prev(&mut self) {

@@ -348,9 +348,13 @@ impl App {
                 }
             }
 
+            let target_id = self.notes[note_idx].id;
             for (idx, item) in self.sidebar_items.iter().enumerate() {
-                if let SidebarItemKind::Note { note_index } = &item.kind {
-                    if *note_index == note_idx {
+                if let SidebarItemKind::Note { note_id } = &item.kind {
+                    if *note_id == target_id {
+                        if !self.load_note_body(target_id) {
+                            return false;
+                        }
                         // Clear search when navigating to wiki link
                         self.end_buffer_search();
                         self.selected_sidebar_index = idx;
@@ -404,8 +408,11 @@ impl App {
     /// push a note to navigation history
     /// called when navigating to a new note
     pub fn push_navigation_history(&mut self, note_idx: usize) {
+        let Some(note_id) = self.notes.get(note_idx).map(|note| note.id) else {
+            return;
+        };
         if let Some(current) = self.navigation_history.get(self.navigation_index) {
-            if current.note_idx == note_idx {
+            if current.note_id == note_id {
                 return;
             }
         }
@@ -419,7 +426,7 @@ impl App {
         }
 
         self.navigation_history.push(NavigationEntry {
-            note_idx,
+            note_id,
             content_cursor: 0,
             content_scroll_offset: 0,
         });
@@ -445,7 +452,9 @@ impl App {
 
         self.navigation_index -= 1;
         if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
-            return self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
+            if let Some(note_idx) = self.note_index_for_id(entry.note_id) {
+                return self.go_to_note_without_history(note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
+            }
         }
         false
     }
@@ -462,7 +471,9 @@ impl App {
 
         self.navigation_index += 1;
         if let Some(entry) = self.navigation_history.get(self.navigation_index).cloned() {
-            return self.go_to_note_without_history(entry.note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
+            if let Some(note_idx) = self.note_index_for_id(entry.note_id) {
+                return self.go_to_note_without_history(note_idx, Some(entry.content_cursor), Some(entry.content_scroll_offset));
+            }
         }
         false
     }
@@ -508,9 +519,13 @@ impl App {
             }
         }
 
+        let target_id = self.notes[note_idx].id;
         for (idx, item) in self.sidebar_items.iter().enumerate() {
-            if let SidebarItemKind::Note { note_index } = &item.kind {
-                if *note_index == note_idx {
+            if let SidebarItemKind::Note { note_id } = &item.kind {
+                if *note_id == target_id {
+                    if !self.load_note_body(target_id) {
+                        return false;
+                    }
                     self.end_buffer_search();
                     self.selected_sidebar_index = idx;
                     self.selected_note = note_idx;
@@ -575,8 +590,8 @@ impl App {
         }
 
         for item in &self.sidebar_items {
-            if let SidebarItemKind::Folder { path, .. } = &item.kind {
-                if let Ok(relative) = path.strip_prefix(&notes_path) {
+            if let SidebarItemKind::Folder(folder) = &item.kind {
+                if let Ok(relative) = folder.path.strip_prefix(&notes_path) {
                     let folder_path = relative.to_string_lossy().to_string();
 
                     if folder_path.is_empty() {
@@ -594,7 +609,7 @@ impl App {
                             display_name: item.display_name.clone(),
                             insert_text: format!("{}/", folder_path),
                             is_folder: true,
-                            path: path.display().to_string(),
+                            path: folder.path.display().to_string(),
                             score,
                             folder_hint: None,
                         });
@@ -623,7 +638,15 @@ impl App {
         for (idx, note) in self.notes.iter().enumerate() {
             if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
                 if wiki_path.to_lowercase() == note_target.to_lowercase() || note.title.to_lowercase() == note_target.to_lowercase() {
-                    for line in note.content.lines() {
+                    let body = if self.active_note_id == Some(note.id) {
+                        self.active_body.clone()
+                    } else {
+                        self.vault.load_body(note.id).ok()
+                    };
+                    let Some(body) = body else {
+                        break;
+                    };
+                    for line in body.lines() {
                         let heading: Option<(usize, String)> = if line.starts_with("### ") {
                             Some((3, line.trim_start_matches("### ").to_string()))
                         } else if line.starts_with("## ") {

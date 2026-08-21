@@ -20,10 +20,12 @@ impl App {
         }
         self.highlight_pending = false;
 
-        if let Some(note) = self.current_note() {
-            let lines: Vec<String> = note.content.lines().map(String::from).collect();
+        if let Some((body, content_start_line)) = self
+            .current_note()
+            .and_then(|note| self.current_body_arc().map(|body| (body, note.content_start_line)))
+        {
+            let lines: Vec<String> = body.lines().map(String::from).collect();
             let line_count = lines.len();
-            let content_start_line = note.content_start_line;
 
             let target_row = self
                 .content_item_source_lines
@@ -198,18 +200,9 @@ impl App {
 
         let cursor_offset_from_top = cursor_row.saturating_sub(editor_scroll);
 
-        if let Some(note) = self.notes.get_mut(self.selected_note) {
-            note.content = self.editor.lines().join("\n");
-            // Re-parse frontmatter after content change
-            let (frontmatter, content_start_line) = ekphos_vault::Frontmatter::parse(&note.content);
-            note.frontmatter = frontmatter;
-            note.content_start_line = content_start_line;
-            // Save to file
-            if let Some(ref path) = note.file_path {
-                let _ = ekphos_vault::save_note(path, &note.content);
-                // Update modified time after save
-                note.modified_time = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-            }
+        let content = self.editor.lines().join("\n");
+        if !self.persist_active_body(content) {
+            return;
         }
 
         // Re-sort and rebuild sidebar to reflect updated modified time
@@ -221,7 +214,6 @@ impl App {
         self.mode = Mode::Normal;
         self.update_content_items();
         self.update_outline();
-        self.start_graph_index_build();
 
         // Map editor row to content_cursor using source line mapping
         self.content_cursor = self.content_cursor_for_source_line(cursor_row);
@@ -249,11 +241,11 @@ impl App {
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
-        if let Some(note) = self.notes.get(self.selected_note) {
+        if let Some(body) = self.current_body() {
             // Compare line-by-line with the same semantics `enter_edit_mode` uses
             // (`str::lines()` drops trailing newlines). Comparing the raw strings instead
             // fires a false positive whenever the file ends with "\n" — which is most files.
-            let note_lines: Vec<&str> = note.content.lines().collect();
+            let note_lines: Vec<&str> = body.lines().collect();
             self.editor.lines() != note_lines
         } else {
             false

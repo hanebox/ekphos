@@ -51,12 +51,27 @@ pub struct BlockInsertState {
 pub struct Note {
     pub id: NoteId,
     pub title: String,
-    pub content: String,
     pub file_path: Option<PathBuf>,
+    pub file_size: u64,
     pub modified_time: Option<std::time::SystemTime>,
     pub created_time: Option<std::time::SystemTime>,
-    pub frontmatter: Option<ekphos_vault::Frontmatter>,
+    pub frontmatter: Option<CompactFrontmatter>,
     pub content_start_line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompactFrontmatter {
+    pub tags: Box<[Box<str>]>,
+    pub date: Option<Box<str>>,
+}
+
+impl From<ekphos_core::FrontmatterSummary> for CompactFrontmatter {
+    fn from(summary: ekphos_core::FrontmatterSummary) -> Self {
+        Self {
+            tags: summary.tags.into_iter().map(String::into_boxed_str).collect(),
+            date: summary.date.map(String::into_boxed_str),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

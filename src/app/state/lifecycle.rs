@@ -50,27 +50,9 @@ impl App {
         if self.mode == Mode::Edit {
             return;
         }
-        let current_note_path = self.current_note().and_then(|n| n.file_path.clone());
         let scroll_offset = self.content_scroll_offset;
         let content_cursor = self.content_cursor;
         self.load_notes_from_dir();
-        if let Some(path) = current_note_path {
-            for (idx, item) in self.sidebar_items.iter().enumerate() {
-                if let SidebarItemKind::Note { note_index } = &item.kind {
-                    if self
-                        .notes
-                        .get(*note_index)
-                        .and_then(|n| n.file_path.as_ref())
-                        .map(|p| p == &path)
-                        .unwrap_or(false)
-                    {
-                        self.selected_sidebar_index = idx;
-                        self.selected_note = *note_index;
-                        break;
-                    }
-                }
-            }
-        }
         // Rebuild content_items for the restored note BEFORE clamping positions,
         // so that content_items.len() reflects the correct note's length
         self.update_content_items();

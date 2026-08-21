@@ -15,15 +15,16 @@ const POPUP_MAX_VISIBLE_ITEMS: usize = 10;
 const POPUP_MAX_VISIBLE_ITEMS_CONTENT: usize = 18;
 const POPUP_MIN_CONTENT_HEIGHT: usize = 3;
 const POPUP_MIN_CONTENT_HEIGHT_WITH_PREVIEW: usize = 17;
-const PREVIEW_LINES_BEFORE: usize = 5;
-const PREVIEW_LINES_AFTER: usize = 8;
 
 pub fn render_search_picker(f: &mut Frame, app: &mut App) {
+    app.ensure_search_hydrated();
     if let SearchPickerState::Open {
         mode,
         query,
         file_results,
         content_results,
+        hydrated_content_results,
+        content_preview,
         selected_index,
         scroll_offset,
         search_in_progress,
@@ -55,20 +56,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
             }
             SearchPickerMode::Content => {
                 // Fixed height for content mode to accommodate preview
-                let visible_items = content_results.len().min(POPUP_MAX_VISIBLE_ITEMS_CONTENT);
-                let height = if has_preview {
-                    // Use fixed height for preview layout
-                    POPUP_MIN_CONTENT_HEIGHT_WITH_PREVIEW
-                } else {
-                    let h: usize = content_results
-                        .iter()
-                        .skip(*scroll_offset)
-                        .take(visible_items)
-                        .map(|r| if r.folder_hint.is_some() { 3 } else { 2 })
-                        .sum();
-                    h.max(POPUP_MIN_CONTENT_HEIGHT)
-                };
-                (content_results.len(), height)
+                (content_results.len(), POPUP_MIN_CONTENT_HEIGHT_WITH_PREVIEW)
             }
         };
 
@@ -214,7 +202,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
             } else {
                 render_content_results_compact(
                     &mut list_lines,
-                    content_results,
+                    hydrated_content_results,
                     *selected_index,
                     *scroll_offset,
                     max_name_width,
@@ -228,7 +216,16 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
             f.render_widget(list, list_area);
 
             // Render preview
-            render_preview(f, app, content_results, *selected_index, preview_area, query, theme, *search_in_progress);
+            render_preview(
+                f,
+                hydrated_content_results,
+                content_preview.as_ref(),
+                *selected_index,
+                preview_area,
+                query,
+                theme,
+                *search_in_progress,
+            );
 
             // Store areas for mouse handling
             app.search_picker_area = popup_area;
@@ -278,7 +275,7 @@ pub fn render_search_picker(f: &mut Frame, app: &mut App) {
                     } else {
                         render_content_results(
                             &mut result_lines,
-                            content_results,
+                            hydrated_content_results,
                             *selected_index,
                             *scroll_offset,
                             max_name_width,
@@ -370,14 +367,20 @@ fn render_file_results(
 
 fn render_content_results(
     lines: &mut Vec<Line>,
-    results: &[crate::app::ContentSearchResult],
+    results: &[crate::app::HydratedSearchResult],
     selected_index: usize,
     scroll_offset: usize,
     max_name_width: usize,
     popup_width: u16,
     theme: &crate::config::Theme,
 ) {
-    for (idx, result) in results.iter().enumerate().skip(scroll_offset).take(POPUP_MAX_VISIBLE_ITEMS_CONTENT) {
+    for entry in results
+        .iter()
+        .filter(|entry| entry.result_index >= scroll_offset)
+        .take(POPUP_MAX_VISIBLE_ITEMS_CONTENT)
+    {
+        let idx = entry.result_index;
+        let result = &entry.result;
         let is_selected = idx == selected_index;
 
         let content_width = (popup_width as usize).saturating_sub(2);
@@ -511,7 +514,7 @@ fn render_content_results(
 /// Format: "L{num} → {matched line with highlighted query}"
 fn render_content_results_compact(
     lines: &mut Vec<Line>,
-    results: &[crate::app::ContentSearchResult],
+    results: &[crate::app::HydratedSearchResult],
     selected_index: usize,
     scroll_offset: usize,
     _max_name_width: usize,
@@ -521,7 +524,13 @@ fn render_content_results_compact(
 ) {
     let query_lower = query.to_lowercase();
 
-    for (idx, result) in results.iter().enumerate().skip(scroll_offset).take(POPUP_MAX_VISIBLE_ITEMS_CONTENT) {
+    for entry in results
+        .iter()
+        .filter(|entry| entry.result_index >= scroll_offset)
+        .take(POPUP_MAX_VISIBLE_ITEMS_CONTENT)
+    {
+        let idx = entry.result_index;
+        let result = &entry.result;
         let is_selected = idx == selected_index;
         let content_width = (area_width as usize).saturating_sub(2);
 
@@ -618,8 +627,8 @@ fn render_content_results_compact(
 /// Render preview panel showing context around the selected match
 fn render_preview(
     f: &mut Frame,
-    app: &App,
-    results: &[crate::app::ContentSearchResult],
+    results: &[crate::app::HydratedSearchResult],
+    preview: Option<&crate::app::ContentSearchPreview>,
     selected_index: usize,
     area: Rect,
     query: &str,
@@ -647,8 +656,7 @@ fn render_preview(
 
     let query_lower = query.to_lowercase();
 
-    if let Some(result) = results.get(selected_index) {
-        let note_idx = result.note_index;
+    if let Some(result) = results.iter().find(|entry| entry.result_index == selected_index).map(|entry| &entry.result) {
         let match_line = result.line_number.saturating_sub(1); // Convert to 0-indexed
 
         // Render fixed header
@@ -678,84 +686,80 @@ fn render_preview(
         let mut content_lines: Vec<Line> = Vec::new();
         let mut match_display_line: usize = 0;
 
-        if let Some(note_lines) = app.search_index.lines.get(note_idx) {
-            let start_line = match_line.saturating_sub(PREVIEW_LINES_BEFORE);
-            let end_line = (match_line + PREVIEW_LINES_AFTER + 1).min(note_lines.len());
-
+        if let Some(preview) = preview {
             let prefix_width = 7; // "  42 │ " = 7 chars
             let content_width = (area.width as usize).saturating_sub(prefix_width);
 
-            for line_num in start_line..end_line {
-                if let Some(line_content) = note_lines.get(line_num) {
-                    let display_line_num = line_num + 1; // 1-indexed for display
-                    let is_match_line = line_num == match_line;
+            for (offset, line_content) in preview.lines.iter().enumerate() {
+                let line_num = preview.start_line + offset;
+                let display_line_num = line_num + 1; // 1-indexed for display
+                let is_match_line = line_num == match_line;
 
-                    if is_match_line {
-                        match_display_line = content_lines.len();
-                    }
+                if is_match_line {
+                    match_display_line = content_lines.len();
+                }
 
-                    let line_num_style = if is_match_line {
-                        Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+                let line_num_style = if is_match_line {
+                    Style::default().fg(theme.primary).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+                let normal_style = Style::default().fg(theme.foreground);
+                let highlight_style = Style::default().fg(theme.warning).add_modifier(Modifier::BOLD);
+
+                let wrapped_segments = wrap_line(line_content, content_width);
+
+                for (seg_idx, segment) in wrapped_segments.iter().enumerate() {
+                    let prefix = if seg_idx == 0 {
+                        format!("{:>4} │ ", display_line_num)
                     } else {
-                        Style::default().fg(theme.muted)
+                        "     │ ".to_string()
                     };
-                    let normal_style = Style::default().fg(theme.foreground);
-                    let highlight_style = Style::default().fg(theme.warning).add_modifier(Modifier::BOLD);
 
-                    let wrapped_segments = wrap_line(line_content, content_width);
+                    let mut spans = vec![Span::styled(prefix, line_num_style)];
 
-                    for (seg_idx, segment) in wrapped_segments.iter().enumerate() {
-                        let prefix = if seg_idx == 0 {
-                            format!("{:>4} │ ", display_line_num)
-                        } else {
-                            "     │ ".to_string()
-                        };
+                    if !query_lower.is_empty() {
+                        let seg_lower = segment.to_lowercase();
+                        let seg_chars: Vec<char> = segment.chars().collect();
+                        let seg_chars_len = seg_chars.len();
+                        let mut last_end = 0;
 
-                        let mut spans = vec![Span::styled(prefix, line_num_style)];
+                        let mut search_start = 0;
+                        while let Some(byte_pos) = seg_lower.get(search_start..).and_then(|s| s.find(&query_lower)) {
+                            let match_byte_start = search_start + byte_pos;
+                            let match_char_start = seg_lower.get(..match_byte_start).map(|s| s.chars().count()).unwrap_or(0);
+                            let match_char_end = match_char_start + query_lower.chars().count();
 
-                        if !query_lower.is_empty() {
-                            let seg_lower = segment.to_lowercase();
-                            let seg_chars: Vec<char> = segment.chars().collect();
-                            let seg_chars_len = seg_chars.len();
-                            let mut last_end = 0;
+                            // Bounds check before slicing
+                            let safe_char_start = match_char_start.min(seg_chars_len);
+                            let safe_char_end = match_char_end.min(seg_chars_len);
 
-                            let mut search_start = 0;
-                            while let Some(byte_pos) = seg_lower.get(search_start..).and_then(|s| s.find(&query_lower)) {
-                                let match_byte_start = search_start + byte_pos;
-                                let match_char_start = seg_lower.get(..match_byte_start).map(|s| s.chars().count()).unwrap_or(0);
-                                let match_char_end = match_char_start + query_lower.chars().count();
-
-                                // Bounds check before slicing
-                                let safe_char_start = match_char_start.min(seg_chars_len);
-                                let safe_char_end = match_char_end.min(seg_chars_len);
-
-                                if safe_char_start > last_end && last_end < seg_chars_len {
-                                    let before: String = seg_chars[last_end..safe_char_start.min(seg_chars_len)].iter().collect();
-                                    spans.push(Span::styled(before, normal_style));
-                                }
-
-                                if safe_char_start < seg_chars_len {
-                                    let matched: String = seg_chars[safe_char_start..safe_char_end].iter().collect();
-                                    spans.push(Span::styled(matched, highlight_style));
-                                }
-
-                                last_end = safe_char_end;
-                                search_start = match_byte_start.saturating_add(query_lower.len());
-                                if search_start >= seg_lower.len() {
-                                    break;
-                                }
+                            if safe_char_start > last_end && last_end < seg_chars_len {
+                                let before: String = seg_chars[last_end..safe_char_start.min(seg_chars_len)].iter().collect();
+                                spans.push(Span::styled(before, normal_style));
                             }
 
-                            if last_end < seg_chars_len {
-                                let after: String = seg_chars[last_end..].iter().collect();
-                                spans.push(Span::styled(after, normal_style));
+                            if safe_char_start < seg_chars_len {
+                                let matched: String = seg_chars[safe_char_start..safe_char_end].iter().collect();
+                                spans.push(Span::styled(matched, highlight_style));
                             }
-                        } else {
-                            spans.push(Span::styled(segment.clone(), normal_style));
+
+                            last_end = safe_char_end;
+                            search_start = match_byte_start.saturating_add(query_lower.len());
+                            if search_start >= seg_lower.len() {
+                                break;
+                            }
                         }
 
-                        content_lines.push(Line::from(spans));
+                        if last_end < seg_chars_len {
+                            let after: String = seg_chars[last_end..].iter().collect();
+                            spans.push(Span::styled(after, normal_style));
+                        }
+                    } else {
+                        spans.push(Span::styled(segment.clone(), normal_style));
                     }
+
+                    content_lines.push(Line::from(spans));
                 }
             }
         }

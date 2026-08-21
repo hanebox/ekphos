@@ -143,8 +143,8 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEv
                             .sidebar_items
                             .get(clicked_index)
                             .map(|item| match &item.kind {
-                                SidebarItemKind::Folder { path, .. } => Some((true, path.clone(), 0)),
-                                SidebarItemKind::Note { note_index } => Some((false, std::path::PathBuf::new(), *note_index)),
+                                SidebarItemKind::Folder(folder) => Some((true, folder.path.clone(), 0)),
+                                SidebarItemKind::Note { note_id } => Some((false, std::path::PathBuf::new(), app.note_index_for_id(*note_id)?)),
                             })
                             .flatten();
 

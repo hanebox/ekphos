@@ -4,16 +4,25 @@ impl App {
     pub fn start_graph_index_build(&mut self) {
         self.graph_index_generation = self.graph_index_generation.wrapping_add(1);
         let generation = self.graph_index_generation;
-        let sources: Vec<GraphSourceNote> = self
+        let sources: Vec<(GraphSourceMetadata, PathBuf)> = self
             .notes
             .iter()
             .enumerate()
-            .map(|(note_index, note)| GraphSourceNote {
-                note_id: note.id,
-                title: note.title.clone(),
-                path: self.get_wiki_path_for_note(note_index).unwrap_or_else(|| note.title.clone()),
-                tags: note.frontmatter.as_ref().map(|frontmatter| frontmatter.tags.clone()).unwrap_or_default(),
-                content: note.content.clone(),
+            .filter_map(|(note_index, note)| {
+                let path = note.file_path.clone()?;
+                Some((
+                    GraphSourceMetadata {
+                        note_id: note.id,
+                        title: note.title.clone(),
+                        path: self.get_wiki_path_for_note(note_index).unwrap_or_else(|| note.title.clone()),
+                        tags: note
+                            .frontmatter
+                            .as_ref()
+                            .map(|frontmatter| frontmatter.tags.iter().map(|tag| tag.to_string()).collect())
+                            .unwrap_or_default(),
+                    },
+                    path,
+                ))
             })
             .collect();
         let (sender, receiver) = mpsc::channel();
@@ -26,7 +35,12 @@ impl App {
         self.graph_indexing = true;
         self.graph_view.index_pending = true;
         std::thread::spawn(move || {
-            let index = std::panic::catch_unwind(|| GraphIndex::build(sources)).unwrap_or_default();
+            let paths: HashMap<NoteId, PathBuf> = sources.iter().map(|(source, path)| (source.note_id, path.clone())).collect();
+            let metadata = sources.into_iter().map(|(source, _)| source).collect();
+            let index = std::panic::catch_unwind(|| {
+                GraphIndex::build_from_loader(metadata, |note_id| paths.get(&note_id).and_then(|path| fs::read_to_string(path).ok()))
+            })
+            .unwrap_or_default();
             let _ = sender.send((generation, index));
         });
     }
@@ -185,10 +199,6 @@ impl App {
         self.graph_view.edges = projection.edges;
         self.graph_view.dirty = refit;
         self.graph_view.needs_center = false;
-    }
-
-    pub(crate) fn note_index_for_id(&self, note_id: NoteId) -> Option<usize> {
-        self.notes.iter().position(|note| note.id == note_id)
     }
 
     pub fn toggle_graph_mode(&mut self) {

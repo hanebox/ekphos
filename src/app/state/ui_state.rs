@@ -55,14 +55,14 @@ impl App {
 
     pub fn handle_sidebar_enter(&mut self) {
         let item_info = self.sidebar_items.get(self.selected_sidebar_index).map(|item| match &item.kind {
-            SidebarItemKind::Folder { path, .. } => (true, path.clone(), 0),
-            SidebarItemKind::Note { note_index } => (false, PathBuf::new(), *note_index),
+            SidebarItemKind::Folder(folder) => (true, folder.path.clone(), None),
+            SidebarItemKind::Note { note_id } => (false, PathBuf::new(), self.note_index_for_id(*note_id)),
         });
 
         if let Some((is_folder, path, note_index)) = item_info {
             if is_folder {
                 self.toggle_folder(path);
-            } else {
+            } else if let Some(note_index) = note_index {
                 self.toggle_focus(false);
                 self.push_navigation_history(note_index);
             }
@@ -86,12 +86,12 @@ impl App {
 
     pub(super) fn update_folder_in_tree(items: &mut [FileTreeItem], target_path: &PathBuf, new_state: bool) {
         for item in items {
-            if let FileTreeItem::Folder { path, expanded, children, .. } = item {
-                if path == target_path {
-                    *expanded = new_state;
+            if let FileTreeItem::Folder(folder) = item {
+                if &folder.path == target_path {
+                    folder.expanded = new_state;
                     return;
                 }
-                Self::update_folder_in_tree(children, target_path, new_state);
+                Self::update_folder_in_tree(&mut folder.children, target_path, new_state);
             }
         }
     }
@@ -237,8 +237,8 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, item)| {
-                if let SidebarItemKind::Note { note_index } = &item.kind {
-                    self.search_matched_notes.contains(note_index)
+                if let SidebarItemKind::Note { note_id } = &item.kind {
+                    self.note_index_for_id(*note_id).is_some_and(|index| self.search_matched_notes.contains(&index))
                 } else {
                     false
                 }
@@ -256,11 +256,11 @@ impl App {
 
     pub(super) fn update_tree_expanded_states(items: &mut [FileTreeItem], folder_states: &HashMap<PathBuf, bool>) {
         for item in items {
-            if let FileTreeItem::Folder { path, expanded, children, .. } = item {
-                if let Some(&state) = folder_states.get(path) {
-                    *expanded = state;
+            if let FileTreeItem::Folder(folder) = item {
+                if let Some(&state) = folder_states.get(&folder.path) {
+                    folder.expanded = state;
                 }
-                Self::update_tree_expanded_states(children, folder_states);
+                Self::update_tree_expanded_states(&mut folder.children, folder_states);
             }
         }
     }
@@ -324,8 +324,8 @@ impl App {
 
         let lines: Vec<String> = if self.mode == Mode::Edit {
             self.editor.lines().iter().map(|s| s.to_string()).collect()
-        } else if let Some(note) = self.notes.get(self.selected_note) {
-            note.content.lines().map(|s| s.to_string()).collect()
+        } else if let Some(body) = self.current_body() {
+            body.lines().map(|s| s.to_string()).collect()
         } else {
             return;
         };
