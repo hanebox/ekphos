@@ -68,11 +68,11 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
     let mut needs_render = true;
 
     loop {
-        let pending_before = app.pending_images.len();
-        let highlighter_was_loading = app.highlighter_loading;
+        let pending_before = app.pending_image_count();
+        let syntax_before = app.syntax_service_status();
         let indexing_was_in_progress = app.indexing_in_progress;
-        app.poll_pending_images();
-        app.poll_highlighter();
+        let images_changed = app.poll_pending_images();
+        let syntax_changed = app.poll_highlighter();
         app.poll_content_search();
         app.poll_index_build();
 
@@ -84,8 +84,10 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
             needs_render = true;
         }
 
-        if app.pending_images.len() < pending_before
-            || (highlighter_was_loading && !app.highlighter_loading)
+        if images_changed
+            || app.pending_image_count() < pending_before
+            || syntax_changed
+            || app.syntax_service_status() != syntax_before
             || (indexing_was_in_progress && !app.indexing_in_progress)
         {
             needs_render = true;
@@ -106,8 +108,8 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
             needs_render = false;
         }
 
-        let has_background_work = !app.pending_images.is_empty()
-            || app.highlighter_loading
+        let has_background_work = app.image_has_background_work()
+            || app.syntax_service_status() == crate::syntax_service::SyntaxServiceStatus::Loading
             || app.mouse_button_held
             || app.is_content_search_in_progress()
             || app.indexing_in_progress

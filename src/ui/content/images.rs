@@ -15,50 +15,34 @@ pub(super) fn ensure_image_state(
     resolved_path_str: &str,
     normalized_path: &str,
     is_remote: bool,
-    is_pending: bool,
     size: Size,
 ) {
-    let needs_rebuild = app.image_states.get(state_key).is_none_or(|state| state.size != size);
-    if !needs_rebuild || size.width == 0 || size.height == 0 {
+    if app.touch_image_state(state_key, size) || size.width == 0 || size.height == 0 {
         return;
     }
 
-    app.image_states.remove(state_key);
-
-    let img = if let Some(img) = app.get_cached_image(resolved_path_str) {
-        Some(img)
-    } else if is_remote {
-        if !is_pending {
-            app.start_remote_image_fetch(normalized_path);
-        }
-        None
-    } else if let Some(resolved) = resolved_path {
-        if let Ok(img) = image::open(resolved) {
-            app.cache_image(resolved_path_str, img);
-            app.get_cached_image(resolved_path_str)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let (Some(img), Some(picker)) = (img, app.picker.as_ref()) else {
+    app.remove_image_state(state_key);
+    let image = app.decoded_image(resolved_path_str);
+    let Some(image) = image else {
+        app.request_image_load(resolved_path_str, resolved_path, is_remote.then_some(normalized_path));
         return;
     };
-    let Ok(image) = SlicedProtocol::new_with_resize(picker, img, size, Resize::Fit(None)) else {
+    let Some(picker) = app.picker.as_ref() else {
+        return;
+    };
+    let source_bytes = crate::image_service::decoded_image_bytes(image.as_ref());
+    let Ok(protocol) = SlicedProtocol::new_with_resize(picker, image.as_ref().clone(), size, Resize::Fit(None)) else {
         return;
     };
 
-    app.image_states.insert(state_key.to_string(), ImageState { image, size });
+    app.insert_image_state(state_key.to_string(), protocol, size, source_bytes);
 }
 
 pub(super) fn inline_thumbnail_width(area_width: u16, image_height: u16) -> u16 {
     let available_width = area_width.saturating_sub(INLINE_THUMBNAIL_HORIZONTAL_PADDING * 2);
     image_height
         .saturating_mul(2)
-        .max(INLINE_THUMBNAIL_MIN_WIDTH)
-        .min(INLINE_THUMBNAIL_MAX_WIDTH)
+        .clamp(INLINE_THUMBNAIL_MIN_WIDTH, INLINE_THUMBNAIL_MAX_WIDTH)
         .min(available_width.max(1))
 }
 

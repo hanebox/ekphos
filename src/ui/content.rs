@@ -11,9 +11,7 @@ use ratatui_image::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{
-    normalize_image_destination, App, ContentItem, DialogState, DocumentRange, DocumentSnapshot, Focus, ImageState, InlineImageRect, LinkInfo, Mode,
-};
+use crate::app::{normalize_image_destination, App, ContentItem, DialogState, DocumentRange, DocumentSnapshot, Focus, InlineImageRect, LinkInfo, Mode};
 use crate::config::Theme;
 
 mod blocks;

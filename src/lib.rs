@@ -4,5 +4,7 @@ pub mod config;
 pub mod event;
 pub mod highlight;
 pub mod highlight_worker;
+mod image_service;
 pub mod keybindings;
+pub mod syntax_service;
 pub mod ui;

@@ -358,13 +358,10 @@ pub(super) fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::Key
         KeyCode::Enter | KeyCode::Tab => {
             if mode == WikiAutocompleteMode::Alias {
                 let (row, col) = app.editor.cursor();
-                let lines = app.editor.lines();
-                let already_closed = if let Some(line) = lines.get(row) {
-                    let chars: Vec<char> = line.chars().collect();
-                    chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
-                } else {
-                    false
-                };
+                let already_closed = app
+                    .editor
+                    .line(row)
+                    .is_some_and(|line| line.chars().nth(col) == Some(']') && line.chars().nth(col + 1) == Some(']'));
 
                 if !already_closed {
                     app.editor.insert_str("]]");
@@ -400,13 +397,9 @@ pub(super) fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::Key
                     app.editor.insert_str(&suggestion.insert_text);
                     let already_closed = {
                         let (row, col) = app.editor.cursor();
-                        let lines = app.editor.lines();
-                        if let Some(line) = lines.get(row) {
-                            let chars: Vec<char> = line.chars().collect();
-                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
-                        } else {
-                            false
-                        }
+                        app.editor
+                            .line(row)
+                            .is_some_and(|line| line.chars().nth(col) == Some(']') && line.chars().nth(col + 1) == Some(']'))
                     };
                     if !already_closed {
                         app.editor.insert_str("]]");
@@ -429,13 +422,9 @@ pub(super) fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::Key
                     app.editor.insert_str(&suggestion.insert_text);
                     let already_closed = {
                         let (row, col) = app.editor.cursor();
-                        let lines = app.editor.lines();
-                        if let Some(line) = lines.get(row) {
-                            let chars: Vec<char> = line.chars().collect();
-                            chars.get(col) == Some(&']') && chars.get(col + 1) == Some(&']')
-                        } else {
-                            false
-                        }
+                        app.editor
+                            .line(row)
+                            .is_some_and(|line| line.chars().nth(col) == Some(']') && line.chars().nth(col + 1) == Some(']'))
                     };
                     if !already_closed {
                         app.editor.insert_str("]]");
@@ -491,9 +480,7 @@ pub(super) fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::Key
                         app.editor.delete_newline();
                         if let Some(ref target) = target_note {
                             if target.contains('#') {
-                                let parts: Vec<&str> = target.splitn(2, '#').collect();
-                                let note_part = parts[0];
-                                let heading_part = parts.get(1).unwrap_or(&"");
+                                let (note_part, heading_part) = target.split_once('#').unwrap_or((target, ""));
                                 let heading_suggestions = app.build_heading_suggestions(note_part, heading_part);
                                 app.wiki_autocomplete = WikiAutocompleteState::Open {
                                     trigger_pos: (0, 0),
@@ -554,12 +541,10 @@ pub(super) fn handle_wiki_autocomplete(app: &mut App, key: crossterm::event::Key
 
             // Get the current line to check if we have ]]
             let (row, col) = app.editor.cursor();
-            let lines = app.editor.lines();
-            if let Some(line) = lines.get(row) {
-                let chars: Vec<char> = line.chars().collect();
+            if let Some(line) = app.editor.line(row) {
                 // Check for ]] pattern (current char should be ])
                 if col >= 2 {
-                    if chars.get(col.saturating_sub(2)) == Some(&']') && chars.get(col.saturating_sub(1)) == Some(&']') {
+                    if line.chars().nth(col.saturating_sub(2)) == Some(']') && line.chars().nth(col.saturating_sub(1)) == Some(']') {
                         // User typed ]], close autocomplete
                         app.wiki_autocomplete = WikiAutocompleteState::None;
                         app.update_editor_highlights();

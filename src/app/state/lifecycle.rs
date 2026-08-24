@@ -97,7 +97,9 @@ impl App {
         self.editor
             .set_selection_style(Style::default().fg(self.theme.foreground).bg(self.theme.selection));
 
-        self.highlighter = None;
+        self.syntax_service.configure_theme(&self.config.syntax_theme);
+        self.syntax_service.clear_results();
+        self.syntax_service.retry();
         self.load_notes_from_dir();
         self.update_content_items();
         self.update_outline();

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 use ekphos_core::NoteId;
@@ -18,7 +18,9 @@ use ratatui_image::{picker::Picker, sliced::SlicedProtocol};
 use crate::config::{Config, Theme, ThemeEntry, ThemeFile};
 use crate::highlight::Highlighter;
 use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker};
+use crate::image_service::ImageService;
 use crate::keybindings::{KeybindingFallback, KeybindingWarning, Keymap};
+use crate::syntax_service::SyntaxService;
 use ekphos_editor::{Editor, Position};
 use ekphos_graph as graph;
 use ekphos_graph::{
@@ -259,8 +261,7 @@ impl AppBuilder {
         let sidebar_collapsed = config.sidebar_collapsed;
         let outline_collapsed = config.outline_collapsed;
         let frontmatter_hidden = config.frontmatter_hidden;
-        let (image_sender, image_receiver) = mpsc::channel();
-        let (highlighter_sender, highlighter_receiver) = mpsc::channel();
+        let syntax_theme = config.syntax_theme.clone();
         let (_, index_receiver) = mpsc::channel();
 
         let mut app = App {
@@ -280,11 +281,10 @@ impl AppBuilder {
             mode: Mode::Normal,
             editor,
             picker: Picker::from_query_stdio().ok(),
-            image_cache_dir: get_image_cache_dir(&dependencies.cache_dir),
+            image_service: ImageService::new(get_image_cache_dir(&dependencies.cache_dir), Arc::clone(&dependencies.network_images)),
             image_states: HashMap::new(),
-            pending_images: HashSet::new(),
-            image_sender,
-            image_receiver,
+            image_render_epoch: 0,
+            image_protocol_bytes: 0,
             show_welcome,
             outline: Vec::new(),
             outline_state: ListState::default(),
@@ -333,10 +333,7 @@ impl AppBuilder {
             selected_link_index: 0,
             details_open_states: HashMap::new(),
             heading_fold_states: HashMap::new(),
-            highlighter: None,
-            highlighter_loading: false,
-            highlighter_sender,
-            highlighter_receiver,
+            syntax_service: SyntaxService::new(syntax_theme),
             sidebar_collapsed,
             outline_collapsed,
             zen_mode: false,
@@ -347,6 +344,8 @@ impl AppBuilder {
             context_menu_state: ContextMenuState::None,
             wiki_autocomplete: WikiAutocompleteState::None,
             pending_wiki_target: None,
+            wiki_target_cache_generation: u64::MAX,
+            wiki_target_cache: HashSet::new(),
             needs_full_clear: false,
             keymap,
             keybinding_warning,
@@ -384,6 +383,7 @@ impl AppBuilder {
             cut_buffer: None,
             highlight_worker: Some(HighlightWorker::new()),
             highlight_version: 0,
+            highlight_requested_rows: None,
             highlight_pending: false,
             dependencies,
         };
@@ -415,7 +415,11 @@ mod vault;
 fn fetch_remote_image_blocking(url: &str) -> Option<DynamicImage> {
     use std::io::Read;
 
-    let response = ureq::get(url).set("User-Agent", "ekphos/0.4").call().ok()?;
+    let response = ureq::get(url)
+        .set("User-Agent", "ekphos/0.4")
+        .timeout(std::time::Duration::from_secs(15))
+        .call()
+        .ok()?;
 
     let content_type = response.header("Content-Type").unwrap_or("").to_lowercase();
 
@@ -423,42 +427,31 @@ fn fetch_remote_image_blocking(url: &str) -> Option<DynamicImage> {
         return None;
     }
 
-    let mut bytes = Vec::new();
-    response.into_reader().take(10 * 1024 * 1024).read_to_end(&mut bytes).ok()?;
+    if response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > crate::image_service::MAX_IMAGE_DOWNLOAD_BYTES)
+    {
+        return None;
+    }
 
-    image::load_from_memory(&bytes).ok()
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take((crate::image_service::MAX_IMAGE_DOWNLOAD_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > crate::image_service::MAX_IMAGE_DOWNLOAD_BYTES {
+        return None;
+    }
+
+    crate::image_service::decode_memory(&bytes).ok()
 }
 fn get_image_cache_dir(cache_dir: &std::path::Path) -> PathBuf {
     let dir = cache_dir.join("images");
     let _ = fs::create_dir_all(&dir);
     dir
 }
-fn cache_key_to_filename(key: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    format!("{:x}.png", hasher.finish())
-}
-fn resize_for_cache(img: DynamicImage) -> DynamicImage {
-    const MAX_DIMENSION: u32 = 300;
-    let (width, height) = (img.width(), img.height());
-    if width <= MAX_DIMENSION && height <= MAX_DIMENSION {
-        return img;
-    }
-
-    let scale = if width > height {
-        MAX_DIMENSION as f32 / width as f32
-    } else {
-        MAX_DIMENSION as f32 / height as f32
-    };
-
-    let new_width = (width as f32 * scale) as u32;
-    let new_height = (height as f32 * scale) as u32;
-
-    img.resize(new_width, new_height, image::imageops::FilterType::Triangle)
-}
-
 impl Default for App {
     fn default() -> Self {
         Self::new()

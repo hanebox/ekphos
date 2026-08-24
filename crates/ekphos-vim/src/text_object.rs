@@ -1,6 +1,35 @@
 //! Vim text objects (iw, aw, i", a(, etc.)
 
-use ekphos_editor::Position;
+use ekphos_editor::{EditorSnapshot, Position};
+
+use crate::char_to_byte_index;
+
+trait LineSource {
+    fn line(&self, row: usize) -> Option<&str>;
+    fn line_count(&self) -> usize;
+}
+
+struct BorrowedLines<'a>(&'a [&'a str]);
+
+impl LineSource for BorrowedLines<'_> {
+    fn line(&self, row: usize) -> Option<&str> {
+        self.0.get(row).copied()
+    }
+
+    fn line_count(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl LineSource for EditorSnapshot {
+    fn line(&self, row: usize) -> Option<&str> {
+        self.line(row)
+    }
+
+    fn line_count(&self) -> usize {
+        self.line_count()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObject {
@@ -61,6 +90,14 @@ impl TextObject {
     }
 
     pub fn find_bounds(&self, scope: TextObjectScope, lines: &[&str], pos: Position) -> Option<(Position, Position)> {
+        self.find_bounds_from(scope, &BorrowedLines(lines), pos)
+    }
+
+    pub fn find_bounds_snapshot(&self, scope: TextObjectScope, snapshot: &EditorSnapshot, pos: Position) -> Option<(Position, Position)> {
+        self.find_bounds_from(scope, snapshot, pos)
+    }
+
+    fn find_bounds_from(&self, scope: TextObjectScope, lines: &impl LineSource, pos: Position) -> Option<(Position, Position)> {
         match self {
             TextObject::Word => find_word_bounds(lines, pos, scope, false),
             TextObject::BigWord => find_word_bounds(lines, pos, scope, true),
@@ -81,26 +118,26 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn find_word_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, big_word: bool) -> Option<(Position, Position)> {
-    let line = lines.get(pos.row)?;
-    let chars: Vec<char> = line.chars().collect();
+fn find_word_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, big_word: bool) -> Option<(Position, Position)> {
+    let line = lines.line(pos.row)?;
+    let line_len = line.chars().count();
 
-    if chars.is_empty() {
+    if line_len == 0 {
         return Some((pos, pos));
     }
 
-    let col = pos.col.min(chars.len().saturating_sub(1));
-    let current_char = chars.get(col)?;
+    let col = pos.col.min(line_len.saturating_sub(1));
+    let current_char = line.chars().nth(col)?;
 
     let is_word = if big_word {
         !current_char.is_whitespace()
     } else {
-        is_word_char(*current_char)
+        is_word_char(current_char)
     };
 
     let mut start = col;
-    while start > 0 {
-        let c = chars[start - 1];
+    let start_byte = char_to_byte_index(line, col);
+    for c in line[..start_byte].chars().rev() {
         let c_is_word = if big_word { !c.is_whitespace() } else { is_word_char(c) };
         if c_is_word != is_word {
             break;
@@ -109,8 +146,7 @@ fn find_word_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, big_w
     }
 
     let mut end = col;
-    while end < chars.len() {
-        let c = chars[end];
+    for c in line.chars().skip(col) {
         let c_is_word = if big_word { !c.is_whitespace() } else { is_word_char(c) };
         if c_is_word != is_word {
             break;
@@ -120,12 +156,19 @@ fn find_word_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, big_w
 
     if scope == TextObjectScope::Around {
         let mut has_trailing = false;
-        while end < chars.len() && chars[end].is_whitespace() {
+        for c in line.chars().skip(end) {
+            if !c.is_whitespace() {
+                break;
+            }
             end += 1;
             has_trailing = true;
         }
         if !has_trailing {
-            while start > 0 && chars[start - 1].is_whitespace() {
+            let start_byte = char_to_byte_index(line, start);
+            for c in line[..start_byte].chars().rev() {
+                if !c.is_whitespace() {
+                    break;
+                }
                 start -= 1;
             }
         }
@@ -134,32 +177,32 @@ fn find_word_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, big_w
     Some((Position::new(pos.row, start), Position::new(pos.row, end)))
 }
 
-fn find_paragraph_bounds(lines: &[&str], pos: Position, scope: TextObjectScope) -> Option<(Position, Position)> {
+fn find_paragraph_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope) -> Option<(Position, Position)> {
     let mut start_row = pos.row;
     let mut end_row = pos.row;
 
     while start_row > 0 {
-        if lines.get(start_row.saturating_sub(1)).map_or(true, |l| l.trim().is_empty()) {
+        if lines.line(start_row.saturating_sub(1)).map_or(true, |line| line.trim().is_empty()) {
             break;
         }
         start_row -= 1;
     }
 
-    while end_row < lines.len() {
-        if lines.get(end_row).map_or(true, |l| l.trim().is_empty()) {
+    while end_row < lines.line_count() {
+        if lines.line(end_row).map_or(true, |line| line.trim().is_empty()) {
             break;
         }
         end_row += 1;
     }
 
     if scope == TextObjectScope::Around {
-        while end_row < lines.len() && lines.get(end_row).map_or(false, |l| l.trim().is_empty()) {
+        while end_row < lines.line_count() && lines.line(end_row).is_some_and(|line| line.trim().is_empty()) {
             end_row += 1;
         }
     }
 
-    let end_col = if end_row > 0 && end_row <= lines.len() {
-        lines.get(end_row.saturating_sub(1)).map_or(0, |l| l.chars().count())
+    let end_col = if end_row > 0 && end_row <= lines.line_count() {
+        lines.line(end_row.saturating_sub(1)).map_or(0, |line| line.chars().count())
     } else {
         0
     };
@@ -167,23 +210,22 @@ fn find_paragraph_bounds(lines: &[&str], pos: Position, scope: TextObjectScope) 
     Some((Position::new(start_row, 0), Position::new(end_row.saturating_sub(1).max(start_row), end_col)))
 }
 
-fn find_quote_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, open: char, _close: char) -> Option<(Position, Position)> {
-    let line = lines.get(pos.row)?;
-    let chars: Vec<char> = line.chars().collect();
+fn find_quote_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, open: char, _close: char) -> Option<(Position, Position)> {
+    let line = lines.line(pos.row)?;
 
     let mut in_quote = false;
     let mut quote_start = None;
     let mut found_pair = None;
     let mut seek_pair = None;
 
-    for (i, &c) in chars.iter().enumerate() {
+    for (i, c) in line.chars().enumerate() {
         if c == open {
             if in_quote {
-                if quote_start.map_or(false, |start| start <= pos.col && i >= pos.col) {
+                if quote_start.is_some_and(|start| start <= pos.col && i >= pos.col) {
                     found_pair = Some((quote_start.unwrap(), i));
                     break;
                 }
-                if seek_pair.is_none() && quote_start.map_or(false, |start| start >= pos.col) {
+                if seek_pair.is_none() && quote_start.is_some_and(|start| start >= pos.col) {
                     seek_pair = Some((quote_start.unwrap(), i));
                 }
                 in_quote = false;
@@ -203,15 +245,19 @@ fn find_quote_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, open
     }
 }
 
-fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, open: char, close: char) -> Option<(Position, Position)> {
+fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, open: char, close: char) -> Option<(Position, Position)> {
     let mut open_pos = None;
     let row = pos.row;
     let col = pos.col;
 
-    let current_line: Vec<char> = lines.get(row)?.chars().collect();
+    let current_line = lines.line(row)?;
+    let current_line_len = current_line.chars().count();
+    if col > current_line_len {
+        return None;
+    }
 
     // Step 1: Check if cursor is directly on an opening bracket
-    if current_line.get(col) == Some(&open) {
+    if current_line.chars().nth(col) == Some(open) {
         open_pos = Some(Position::new(row, col));
     }
 
@@ -219,11 +265,13 @@ fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, op
     // This prevents unmatched brackets from previous lines from interfering
     if open_pos.is_none() {
         let mut depth = 0;
-        for c in (0..col).rev() {
-            let ch = current_line.get(c)?;
-            if *ch == close {
+        let byte_end = char_to_byte_index(current_line, col);
+        let mut c = col;
+        for ch in current_line[..byte_end].chars().rev() {
+            c -= 1;
+            if ch == close {
                 depth += 1;
-            } else if *ch == open {
+            } else if ch == open {
                 if depth == 0 {
                     open_pos = Some(Position::new(row, c));
                     break;
@@ -235,8 +283,8 @@ fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, op
 
     // Step 3: Seek forward on current line for an open bracket
     if open_pos.is_none() {
-        for c in col..current_line.len() {
-            if current_line.get(c) == Some(&open) {
+        for (c, ch) in current_line.chars().enumerate().skip(col) {
+            if ch == open {
                 open_pos = Some(Position::new(pos.row, c));
                 break;
             }
@@ -250,13 +298,14 @@ fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, op
         let mut search_row = row;
         while search_row > 0 {
             search_row -= 1;
-            let line: Vec<char> = lines.get(search_row)?.chars().collect();
+            let line = lines.line(search_row)?;
+            let mut c = line.chars().count();
 
-            for c in (0..line.len()).rev() {
-                let ch = line.get(c)?;
-                if *ch == close {
+            for ch in line.chars().rev() {
+                c -= 1;
+                if ch == close {
                     depth += 1;
-                } else if *ch == open {
+                } else if ch == open {
                     if depth == 0 {
                         open_pos = Some(Position::new(search_row, c));
                         break;
@@ -281,14 +330,13 @@ fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, op
     let search_col = open_pos.col + 1;
 
     loop {
-        let line: Vec<char> = lines.get(search_row)?.chars().collect();
+        let line = lines.line(search_row)?;
         let start_col = if search_row == open_pos.row { search_col } else { 0 };
 
-        for c in start_col..line.len() {
-            let ch = line.get(c)?;
-            if *ch == open {
+        for (c, ch) in line.chars().enumerate().skip(start_col) {
+            if ch == open {
                 depth += 1;
-            } else if *ch == close {
+            } else if ch == close {
                 depth -= 1;
                 if depth == 0 {
                     let close_pos = Position::new(search_row, c);
@@ -301,7 +349,7 @@ fn find_bracket_bounds(lines: &[&str], pos: Position, scope: TextObjectScope, op
         }
 
         search_row += 1;
-        if search_row >= lines.len() {
+        if search_row >= lines.line_count() {
             return None;
         }
     }

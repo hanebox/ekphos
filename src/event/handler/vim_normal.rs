@@ -149,7 +149,7 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
                     match op {
                         'd' => {
                             app.editor.cut();
-                            if start_row < app.editor.lines().len() {
+                            if start_row < app.editor.line_count() {
                                 app.editor.set_cursor(start_row, 0);
                             }
                         }
@@ -387,7 +387,7 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
                 let target_line = if let Some(count) = app.vim.count.take() {
                     count.saturating_sub(1) // Convert to 0-indexed
                 } else {
-                    app.editor.lines().len().saturating_sub(1)
+                    app.editor.line_count().saturating_sub(1)
                 };
 
                 // Select from current line to target line (linewise)
@@ -407,7 +407,7 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
                     'd' => {
                         app.editor.cut();
                         // Delete from start line to end line (inclusive)
-                        if start_row < app.editor.lines().len() {
+                        if start_row < app.editor.line_count() {
                             app.editor.set_cursor(start_row, 0);
                         }
                     }
@@ -578,7 +578,7 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
                     app.editor.move_cursor(CursorMove::Head);
                     for _ in 0..4 {
                         let pos = app.editor.cursor();
-                        if let Some(line) = app.editor.lines().get(pos.0) {
+                        if let Some(line) = app.editor.line(pos.0) {
                             if line.starts_with(' ') || line.starts_with('\t') {
                                 app.editor.delete_char();
                             }
@@ -597,7 +597,7 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
             let mut deleted = 0;
             for _ in 0..count {
                 let (row, col) = app.editor.cursor();
-                let line_len = app.editor.lines().get(row).map_or(0, |l| l.chars().count());
+                let line_len = app.editor.line(row).map_or(0, |line| line.chars().count());
                 if col < line_len {
                     app.editor.delete_char();
                     deleted += 1;
@@ -668,15 +668,12 @@ pub(super) fn handle_vim_normal_mode(app: &mut App, key: crossterm::event::KeyEv
         KeyCode::Char('~') => {
             // Toggle case
             let pos = app.editor.cursor();
-            if let Some(line) = app.editor.lines().get(pos.0) {
-                let chars: Vec<char> = line.chars().collect();
-                if let Some(&c) = chars.get(pos.1) {
-                    app.editor.delete_char();
-                    if c.is_uppercase() {
-                        app.editor.insert_char(c.to_lowercase().next().unwrap_or(c));
-                    } else {
-                        app.editor.insert_char(c.to_uppercase().next().unwrap_or(c));
-                    }
+            if let Some(c) = app.editor.line(pos.0).and_then(|line| line.chars().nth(pos.1)) {
+                app.editor.delete_char();
+                if c.is_uppercase() {
+                    app.editor.insert_char(c.to_lowercase().next().unwrap_or(c));
+                } else {
+                    app.editor.insert_char(c.to_uppercase().next().unwrap_or(c));
                 }
             }
             app.vim.reset_pending();
@@ -871,7 +868,7 @@ pub(super) fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
             // 2. cw should behave like ce (change to end of word, not including trailing space)
             for _ in 0..count {
                 let (row, _) = app.editor.cursor();
-                let line = app.editor.lines().get(row).map(|s| s.to_string());
+                let line = app.editor.line(row).map(str::to_owned);
                 let line_len = line.as_ref().map_or(0, |l| l.chars().count());
                 app.editor.move_cursor(movement);
 
@@ -885,11 +882,10 @@ pub(super) fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
             if op == 'c' {
                 let (end_row, end_col) = app.editor.cursor();
                 if end_row == start_row {
-                    if let Some(line) = app.editor.lines().get(end_row) {
-                        let chars: Vec<char> = line.chars().collect();
+                    if let Some(line) = app.editor.line(end_row) {
                         let mut adjusted_col = end_col;
                         while adjusted_col > start_pos.1 && adjusted_col > 0 {
-                            if let Some(&c) = chars.get(adjusted_col.saturating_sub(1)) {
+                            if let Some(c) = line.chars().nth(adjusted_col.saturating_sub(1)) {
                                 if c.is_whitespace() {
                                     adjusted_col -= 1;
                                 } else {
@@ -951,7 +947,7 @@ pub(super) fn execute_motion_or_operator(app: &mut App, movement: CursorMove) {
                     app.editor.set_cursor(start.row, 0);
                     for _ in 0..4 {
                         let pos = app.editor.cursor();
-                        if let Some(line) = app.editor.lines().get(pos.0) {
+                        if let Some(line) = app.editor.line(pos.0) {
                             if line.starts_with(' ') || line.starts_with('\t') {
                                 app.editor.delete_char();
                             }
@@ -977,10 +973,9 @@ pub(super) fn execute_find(app: &mut App, find: FindState) {
     // Resolve the motion endpoint and line length in one scoped borrow so the
     // immutable borrow of the buffer ends before the mutable edits below.
     let resolved = {
-        let lines = app.editor.lines();
-        lines
-            .get(pos.0)
-            .and_then(|line| find.find_in_line(line, pos.1).map(|t| (t, line.chars().count())))
+        app.editor
+            .line(pos.0)
+            .and_then(|line| find.find_in_line(line, pos.1).map(|target| (target, line.chars().count())))
     };
     let (target_col, line_len) = match resolved {
         Some(v) => v,
@@ -1027,11 +1022,10 @@ pub(super) fn execute_find(app: &mut App, find: FindState) {
 
 pub(super) fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: TextObject) {
     let pos = app.editor.cursor();
-    let lines_owned = app.editor.lines();
-    let lines: Vec<&str> = lines_owned.iter().map(|s| &**s).collect();
+    let lines = app.editor.snapshot();
     let cursor_pos = ekphos_editor::Position::new(pos.0, pos.1);
 
-    if let Some((start, end)) = obj.find_bounds(scope, &lines, cursor_pos) {
+    if let Some((start, end)) = obj.find_bounds_snapshot(scope, &lines, cursor_pos) {
         if let Some(op) = app.pending_operator.take() {
             app.editor.set_cursor(start.row, start.col);
             app.editor.start_selection();
@@ -1061,21 +1055,19 @@ pub(super) fn execute_text_object(app: &mut App, scope: TextObjectScope, obj: Te
 /// apply block insert/append text to all lines in the visual block selection
 pub(super) fn apply_block_insert(app: &mut App, state: BlockInsertState) {
     let (current_row, current_col) = app.editor.cursor();
-    let lines = app.editor.lines();
-    if let Some(line) = lines.get(state.active_row) {
-        let chars: Vec<char> = line.chars().collect();
+    if let Some(line) = app.editor.line(state.active_row) {
         let insert_start = state.start_col;
         let insert_end = current_col;
 
         if insert_end > insert_start {
-            let inserted_text: String = chars.iter().skip(insert_start).take(insert_end - insert_start).collect();
+            let inserted_text: String = line.chars().skip(insert_start).take(insert_end - insert_start).collect();
             let (start_row, end_row) = state.rows;
             for row in start_row..=end_row {
                 if row == state.active_row {
                     continue;
                 }
 
-                let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                let line_len = app.editor.line(row).map(|line| line.chars().count()).unwrap_or(0);
                 let insert_pos = match state.mode {
                     BlockInsertMode::Insert => state.insert_col.min(line_len),
                     BlockInsertMode::Append => state.insert_col,

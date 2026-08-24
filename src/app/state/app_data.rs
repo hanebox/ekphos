@@ -20,13 +20,12 @@ pub struct App {
     pub mode: Mode,
     pub editor: Editor,
     pub picker: Option<Picker>,
-    pub image_cache_dir: PathBuf,
+    pub(crate) image_service: ImageService,
     /// Persistent terminal protocol state for each rendered image placement.
     /// Keeping this across frames prevents protocol IDs from changing on scroll.
     pub image_states: HashMap<String, ImageState>,
-    pub pending_images: HashSet<String>,
-    pub image_sender: Sender<(String, DynamicImage)>,
-    pub image_receiver: Receiver<(String, DynamicImage)>,
+    pub(crate) image_render_epoch: u64,
+    pub(crate) image_protocol_bytes: usize,
     pub show_welcome: bool,
     pub outline: Vec<OutlineItem>,
     pub outline_state: ListState,
@@ -75,10 +74,7 @@ pub struct App {
     pub selected_link_index: usize,
     pub details_open_states: HashMap<usize, bool>,
     pub heading_fold_states: HashMap<usize, bool>, // content_item index -> is_folded
-    pub highlighter: Option<Highlighter>,
-    pub highlighter_loading: bool,
-    pub highlighter_sender: Sender<Highlighter>,
-    pub highlighter_receiver: Receiver<Highlighter>,
+    pub(crate) syntax_service: SyntaxService,
     pub sidebar_collapsed: bool,
     pub outline_collapsed: bool,
     pub zen_mode: bool,
@@ -91,6 +87,8 @@ pub struct App {
     // Wiki link support
     pub wiki_autocomplete: WikiAutocompleteState,
     pub pending_wiki_target: Option<String>,
+    pub(crate) wiki_target_cache_generation: u64,
+    pub(crate) wiki_target_cache: HashSet<String>,
     pub needs_full_clear: bool,
     pub keymap: Keymap,
     pub keybinding_warning: Option<KeybindingWarning>,
@@ -144,6 +142,7 @@ pub struct App {
     pub highlight_worker: Option<HighlightWorker>,
     /// Current document version for highlight requests (incremented on edits)
     pub highlight_version: u64,
+    pub(crate) highlight_requested_rows: Option<(usize, usize)>,
     /// Whether there's a pending highlight request waiting for results
     pub highlight_pending: bool,
 }

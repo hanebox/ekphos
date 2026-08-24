@@ -452,7 +452,7 @@ impl App {
                 return;
             }
             self.selected_note = new_note_idx;
-            self.image_states.clear();
+            self.evict_document_services();
         }
     }
 

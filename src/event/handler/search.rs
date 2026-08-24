@@ -192,10 +192,14 @@ pub(super) fn handle_buffer_search_input(app: &mut App, key: crossterm::event::K
 
 pub(super) fn update_editor_search_highlights(app: &mut App) {
     if app.mode == Mode::Edit {
-        let matches: Vec<(usize, usize, usize)> = app.buffer_search.matches.iter().map(|m| (m.row, m.start_col, m.end_col)).collect();
         let current_idx = app.buffer_search.current_match_index;
         let match_color = app.theme.search.match_highlight;
         let current_color = app.theme.search.match_current;
-        app.editor.set_search_highlights(&matches, current_idx, match_color, current_color);
+        app.editor.set_search_highlights(
+            app.buffer_search.matches.iter().map(|m| (m.row, m.start_col, m.end_col)),
+            current_idx,
+            match_color,
+            current_color,
+        );
     }
 }

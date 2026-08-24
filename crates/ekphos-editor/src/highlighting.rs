@@ -35,13 +35,14 @@ impl Editor {
     {
         self.wiki_link_ranges.clear();
         let mut in_code_block = false;
+        let active_rows = self.active_highlight_rows();
 
-        for (row, line) in self.buffer.lines().iter().enumerate() {
+        for (row, line) in self.buffer.iter_lines().take(active_rows.end).enumerate() {
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
                 continue;
             }
-            if in_code_block {
+            if in_code_block || !active_rows.contains(&row) {
                 continue;
             }
 
@@ -137,9 +138,7 @@ impl Editor {
         {
             let cache = self.row_style_cache.borrow();
             if let Some(styles) = cache.get_row_styles(row) {
-                if !cache.is_dirty(row) {
-                    return styles.to_vec();
-                }
+                return styles.to_vec();
             }
         }
         let styles = self.compute_row_styles_readonly(row);
@@ -197,57 +196,66 @@ impl Editor {
 
     pub fn update_markdown_highlights(&mut self) {
         self.highlight_index.retain(|h| h.highlight_type == HighlightType::WikiLink);
-        self.code_block_rows.clear();
         self.row_style_cache.borrow_mut().invalidate_all();
 
-        let line_count = self.buffer.line_count();
+        let active_rows = self.active_highlight_rows();
+        self.code_block_rows.retain(|row| active_rows.contains(row));
         let mut in_code_block = false;
         self.frontmatter_end = self.detect_frontmatter_end();
 
-        for row in 0..line_count {
-            let line = self.buffer.line(row).unwrap_or("").to_string();
+        for row in 0..active_rows.end {
+            let line = self.buffer.line(row).unwrap_or("");
 
             if let Some(fm_end) = self.frontmatter_end {
                 if row <= fm_end {
-                    self.highlight_index.insert(HighlightRange::new(
-                        row,
-                        0,
-                        line.chars().count(),
-                        Style::default().fg(self.frontmatter_color),
-                        HighlightType::Frontmatter,
-                    ));
+                    if active_rows.contains(&row) {
+                        self.highlight_index.insert(HighlightRange::new(
+                            row,
+                            0,
+                            line.chars().count(),
+                            Style::default().fg(self.frontmatter_color),
+                            HighlightType::Frontmatter,
+                        ));
+                    }
                     continue;
                 }
             }
 
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
-                self.code_block_rows.insert(row);
-                let byte_start = line.find("```").unwrap_or(0);
-                let start = line[..byte_start].chars().count();
-                self.highlight_index.insert(HighlightRange::new(
-                    row,
-                    start,
-                    line.chars().count(),
-                    Style::default().fg(self.code_color),
-                    HighlightType::CodeBlock,
-                ));
+                if active_rows.contains(&row) {
+                    self.code_block_rows.insert(row);
+                    let byte_start = line.find("```").unwrap_or(0);
+                    let start = line[..byte_start].chars().count();
+                    self.highlight_index.insert(HighlightRange::new(
+                        row,
+                        start,
+                        line.chars().count(),
+                        Style::default().fg(self.code_color),
+                        HighlightType::CodeBlock,
+                    ));
+                }
                 continue;
             }
 
             if in_code_block {
-                self.code_block_rows.insert(row);
-                self.highlight_index.insert(HighlightRange::new(
-                    row,
-                    0,
-                    line.chars().count(),
-                    Style::default().fg(self.code_color),
-                    HighlightType::CodeBlock,
-                ));
+                if active_rows.contains(&row) {
+                    self.code_block_rows.insert(row);
+                    self.highlight_index.insert(HighlightRange::new(
+                        row,
+                        0,
+                        line.chars().count(),
+                        Style::default().fg(self.code_color),
+                        HighlightType::CodeBlock,
+                    ));
+                }
                 continue;
             }
 
-            self.highlight_line_markdown(row, &line);
+            if active_rows.contains(&row) {
+                let line = line.to_owned();
+                self.highlight_line_markdown(row, &line);
+            }
         }
     }
 
@@ -331,10 +339,15 @@ impl Editor {
     }
 
     pub(super) fn recalc_code_blocks_from(&mut self, start_row: usize) {
-        let line_count = self.buffer.line_count();
+        let active_rows = self.active_highlight_rows();
+        self.code_block_rows.retain(|row| active_rows.contains(row));
+        let start_row = start_row.max(active_rows.start);
+        if start_row >= active_rows.end {
+            return;
+        }
         let mut in_code_block = if start_row > 0 { self.is_in_code_block(start_row - 1) } else { false };
 
-        for row in start_row..line_count {
+        for row in start_row..active_rows.end {
             let line = match self.buffer.line(row) {
                 Some(l) => l.to_string(),
                 None => continue,
@@ -402,12 +415,18 @@ impl Editor {
 
     /// detect the line index where frontmatter ends, returns None if no valid frontmatter is found.
     pub(super) fn detect_frontmatter_end(&self) -> Option<usize> {
-        ekphos_core::markdown::frontmatter_end_in_lines(self.buffer.lines())
+        ekphos_core::markdown::frontmatter_end_in_lines(self.buffer.iter_lines())
+    }
+
+    pub(super) fn active_highlight_rows(&self) -> std::ops::Range<usize> {
+        let active_rows = self.view_height.max(40);
+        let start = self.scroll_offset.saturating_sub(active_rows);
+        let end = self.scroll_offset.saturating_add(active_rows.saturating_mul(2)).min(self.buffer.line_count());
+        start..end
     }
 
     pub(super) fn highlight_line_markdown(&mut self, row: usize, line: &str) {
-        let chars: Vec<char> = line.chars().collect();
-        let line_len = chars.len();
+        let line_len = line.chars().count();
 
         if line_len == 0 {
             return;
@@ -490,20 +509,22 @@ impl Editor {
     }
 
     pub(super) fn highlight_inline_code(&mut self, row: usize, line: &str) {
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            if chars[i] == '`' && (i + 1 >= chars.len() || chars[i + 1] != '`') {
-                if let Some(end) = chars[i + 1..].iter().position(|&c| c == '`') {
-                    let end_pos = i + 1 + end;
-                    self.highlight_index
-                        .insert(HighlightRange::new(row, i, end_pos + 1, Style::default().fg(self.code_color), HighlightType::InlineCode).with_priority(2));
-                    i = end_pos + 1;
-                    continue;
-                }
+        let mut chars = line.chars().enumerate().peekable();
+        let mut open = None;
+        while let Some((col, ch)) = chars.next() {
+            if ch != '`' {
+                continue;
             }
-            i += 1;
+            if open.is_none() && chars.peek().is_some_and(|(_, next)| *next == '`') {
+                chars.next();
+                continue;
+            }
+            if let Some(start) = open.take() {
+                self.highlight_index
+                    .insert(HighlightRange::new(row, start, col + 1, Style::default().fg(self.code_color), HighlightType::InlineCode).with_priority(2));
+            } else {
+                open = Some(col);
+            }
         }
     }
 
@@ -532,77 +553,63 @@ impl Editor {
     }
 
     pub(super) fn highlight_bold(&mut self, row: usize, line: &str) {
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len().saturating_sub(1) {
-            if (chars[i] == '*' && chars[i + 1] == '*') || (chars[i] == '_' && chars[i + 1] == '_') {
-                let marker = chars[i];
-                let mut j = i + 2;
-                while j < chars.len().saturating_sub(1) {
-                    if chars[j] == marker && chars[j + 1] == marker {
-                        if !self.is_position_highlighted(row, i) {
-                            let mut style = Style::default().add_modifier(Modifier::BOLD);
-                            if let Some(color) = self.bold_color {
-                                style = style.fg(color);
-                            }
-                            self.highlight_index.insert(HighlightRange::new(row, i, j + 2, style, HighlightType::Bold));
-                        }
-                        i = j + 2;
-                        break;
+        let mut chars = line.chars().enumerate().peekable();
+        let mut star_open = None;
+        let mut underscore_open = None;
+        while let Some((col, marker)) = chars.next() {
+            if !matches!(marker, '*' | '_') || !chars.peek().is_some_and(|(_, next)| *next == marker) {
+                continue;
+            }
+            chars.next();
+            let open = if marker == '*' { &mut star_open } else { &mut underscore_open };
+            if let Some(start) = open.take() {
+                if !self.is_position_highlighted(row, start) {
+                    let mut style = Style::default().add_modifier(Modifier::BOLD);
+                    if let Some(color) = self.bold_color {
+                        style = style.fg(color);
                     }
-                    j += 1;
-                }
-                if j >= chars.len().saturating_sub(1) {
-                    i += 1;
+                    self.highlight_index
+                        .insert(HighlightRange::new(row, start, col + 2, style, HighlightType::Bold));
                 }
             } else {
-                i += 1;
+                *open = Some(col);
             }
         }
     }
 
     pub(super) fn highlight_italic(&mut self, row: usize, line: &str) {
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            if chars[i] == '*' || chars[i] == '_' {
-                let marker = chars[i];
-                if i + 1 < chars.len() && chars[i + 1] == marker {
-                    i += 2;
-                    continue;
-                }
-                if i > 0 && chars[i - 1] == marker {
-                    i += 1;
-                    continue;
-                }
-
-                let mut j = i + 1;
-                while j < chars.len() {
-                    if chars[j] == marker {
-                        if j + 1 < chars.len() && chars[j + 1] == marker {
-                            j += 2;
-                            continue;
-                        }
-                        if !self.is_position_highlighted(row, i) {
-                            let mut style = Style::default().add_modifier(Modifier::ITALIC);
-                            if let Some(color) = self.italic_color {
-                                style = style.fg(color);
-                            }
-                            self.highlight_index.insert(HighlightRange::new(row, i, j + 1, style, HighlightType::Italic));
-                        }
-                        i = j + 1;
-                        break;
+        let mut chars = line.chars().enumerate().peekable();
+        let mut star_open = None;
+        let mut underscore_open = None;
+        let mut previous = None;
+        while let Some((col, marker)) = chars.next() {
+            if !matches!(marker, '*' | '_') {
+                previous = Some(marker);
+                continue;
+            }
+            if chars.peek().is_some_and(|(_, next)| *next == marker) {
+                chars.next();
+                previous = Some(marker);
+                continue;
+            }
+            if previous == Some(marker) {
+                previous = Some(marker);
+                continue;
+            }
+            let open = if marker == '*' { &mut star_open } else { &mut underscore_open };
+            if let Some(start) = open.take() {
+                if !self.is_position_highlighted(row, start) {
+                    let mut style = Style::default().add_modifier(Modifier::ITALIC);
+                    if let Some(color) = self.italic_color {
+                        style = style.fg(color);
                     }
-                    j += 1;
-                }
-                if j >= chars.len() {
-                    i += 1;
+                    self.highlight_index
+                        .insert(HighlightRange::new(row, start, col + 1, style, HighlightType::Italic));
                 }
             } else {
-                i += 1;
+                *open = Some(col);
             }
+            previous = Some(marker);
         }
     }
 
@@ -619,10 +626,22 @@ impl Editor {
         self.row_style_cache.borrow_mut().invalidate_all();
     }
 
-    pub fn set_search_highlights(&mut self, matches: &[(usize, usize, usize)], current_idx: usize, match_color: Color, current_color: Color) {
+    pub fn set_search_highlights(
+        &mut self,
+        matches: impl IntoIterator<Item = (usize, usize, usize)>,
+        current_idx: usize,
+        match_color: Color,
+        current_color: Color,
+    ) {
         self.clear_search_highlights();
+        let active_rows = self.view_height.max(40);
+        let active_start = self.scroll_offset.saturating_sub(active_rows);
+        let active_end = self.scroll_offset.saturating_add(active_rows.saturating_mul(2));
 
-        for (idx, (row, start_col, end_col)) in matches.iter().enumerate() {
+        for (idx, (row, start_col, end_col)) in matches.into_iter().enumerate() {
+            if row < active_start || row >= active_end {
+                continue;
+            }
             let is_current = idx == current_idx;
             let (color, highlight_type) = if is_current {
                 (current_color, HighlightType::SearchMatchCurrent)
@@ -631,14 +650,14 @@ impl Editor {
             };
 
             self.highlight_index.insert(HighlightRange {
-                row: *row,
-                start_col: *start_col,
-                end_col: *end_col,
+                row,
+                start_col,
+                end_col,
                 style: Style::default().bg(color).fg(Color::Black),
                 highlight_type,
                 priority: 200,
             });
-            self.row_style_cache.borrow_mut().invalidate_row(*row);
+            self.row_style_cache.borrow_mut().invalidate_row(row);
         }
     }
 }

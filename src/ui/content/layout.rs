@@ -1,50 +1,11 @@
 use super::*;
 
 pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
-    // pre-compute code block highlights for proper syntax state tracking.
-    // computed up front (before the layout/height pass) so code-line heights can
-    // be measured from the exact same spans the renderer wraps, see the
-    // CodeLine arm of get_item_height.
-    let code_block_highlights: std::collections::HashMap<usize, Vec<Span<'static>>> = {
-        app.ensure_highlighter();
-        let highlighter = app.get_highlighter();
-        let mut highlights = std::collections::HashMap::new();
-
-        if let Some(hl) = highlighter {
-            let mut block_start: Option<(usize, String)> = None;
-
-            for (i, item) in app.content_items.iter().enumerate() {
-                match item {
-                    ContentItem::CodeFence { language, .. } => {
-                        if let Some((start_idx, block_lang)) = block_start.take() {
-                            let mut lines: Vec<(usize, String)> = Vec::new();
-                            for j in (start_idx + 1)..i {
-                                if let ContentItem::CodeLine { range, .. } = &app.content_items[j] {
-                                    lines.push((j, expand_tabs(app.document_slice(*range))));
-                                }
-                            }
-
-                            if !lines.is_empty() && !block_lang.is_empty() {
-                                let block_content: String = lines.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join("\n");
-
-                                let highlighted = hl.highlight_block(&block_content, &block_lang);
-                                for (line_idx, (item_idx, _)) in lines.iter().enumerate() {
-                                    if let Some(spans) = highlighted.get(line_idx) {
-                                        highlights.insert(*item_idx, spans.clone());
-                                    }
-                                }
-                            }
-                        } else {
-                            block_start = Some((i, app.document_slice(*language).to_owned()));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        highlights
-    };
+    app.begin_image_frame();
+    // Syntax styling cannot change terminal cell widths, so layout is computed
+    // without Syntect. Only blocks intersecting the resulting viewport trigger
+    // lazy definition loading and result-cache work below.
+    let mut code_block_highlights = std::collections::HashMap::new();
 
     let is_focused = app.focus == Focus::Content && app.mode == Mode::Normal;
     // Skip rendering images when dialog is active to prevent terminal graphics artifacts
@@ -98,6 +59,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     app.inline_image_rects.clear();
 
     if app.content_items.is_empty() {
+        app.finish_image_frame();
         return;
     }
 
@@ -393,6 +355,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         app.content_area = inner_area;
         app.content_item_rects.clear();
         app.content_render_scratch = scratch;
+        app.finish_image_frame();
         return;
     }
 
@@ -401,6 +364,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints(scratch.constraints.clone())
         .split(inner_area);
     let visible_indices = &scratch.visible_indices;
+    code_block_highlights = visible_code_block_highlights(app, visible_indices);
 
     app.content_area = inner_area;
     app.content_item_rects.clear();
@@ -539,7 +503,63 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if app.buffer_search.active && !app.buffer_search.matches.is_empty() {
-        apply_content_search_highlights(f, app, &visible_indices, &chunks);
+        apply_content_search_highlights(f, app, visible_indices, &chunks);
     }
     app.content_render_scratch = scratch;
+    app.finish_image_frame();
+}
+
+fn visible_code_block_highlights(app: &mut App, visible_indices: &[usize]) -> std::collections::HashMap<usize, Vec<Span<'static>>> {
+    let mut blocks = Vec::new();
+    let mut block_start: Option<(usize, DocumentRange)> = None;
+    for (index, item) in app.content_items.iter().enumerate() {
+        if let ContentItem::CodeFence { language, .. } = item {
+            if let Some((start, language_range)) = block_start.take() {
+                let intersects_viewport = visible_indices.iter().any(|visible| *visible >= start && *visible <= index);
+                if intersects_viewport {
+                    let language = app.document_slice(language_range);
+                    if !language.is_empty() {
+                        blocks.push((start, index, language.to_owned()));
+                    }
+                }
+            } else {
+                block_start = Some((index, *language));
+            }
+        }
+    }
+
+    if blocks.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    app.ensure_highlighter();
+    let Some(highlighter) = app.get_highlighter() else {
+        return std::collections::HashMap::new();
+    };
+
+    let mut highlights = std::collections::HashMap::new();
+    for (start, end, language) in blocks {
+        let lines: Vec<(usize, String)> = ((start + 1)..end)
+            .filter_map(|index| match app.content_items.get(index) {
+                Some(ContentItem::CodeLine { range, .. }) => Some((index, expand_tabs(app.document_slice(*range)))),
+                _ => None,
+            })
+            .collect();
+        if lines.is_empty() {
+            continue;
+        }
+        let mut content = String::new();
+        for (line_index, (_, line)) in lines.iter().enumerate() {
+            if line_index > 0 {
+                content.push('\n');
+            }
+            content.push_str(line);
+        }
+        let block = highlighter.highlight_block(&content, &language);
+        for (line_index, (item_index, _)) in lines.iter().enumerate() {
+            if let Some(spans) = block.get(line_index) {
+                highlights.insert(*item_index, spans.clone());
+            }
+        }
+    }
+    highlights
 }

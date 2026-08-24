@@ -333,7 +333,7 @@ pub(super) fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::Mou
                 // Clamp to valid line count
                 let line_count = app.editor.line_count();
                 let row = row.min(line_count.saturating_sub(1));
-                let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                let line_len = app.editor.line(row).map(|line| line.chars().count()).unwrap_or(0);
                 let col = col.min(line_len);
 
                 if app.vim_mode == VimMode::Visual {
@@ -386,7 +386,7 @@ pub(super) fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::Mou
                 if let Some((row, col)) = app.screen_to_editor_coords(mouse_x, mouse_y) {
                     let line_count = app.editor.line_count();
                     let row = row.min(line_count.saturating_sub(1));
-                    let line_len = app.editor.lines().get(row).map(|l| l.chars().count()).unwrap_or(0);
+                    let line_len = app.editor.line(row).map(|line| line.chars().count()).unwrap_or(0);
                     let col = col.min(line_len);
 
                     // Extend selection to new position

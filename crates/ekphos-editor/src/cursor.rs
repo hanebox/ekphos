@@ -122,44 +122,47 @@ pub fn is_word_char(c: char) -> bool {
 }
 
 pub fn find_word_forward(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let len = line.chars().count();
 
     if col >= len {
         return len;
     }
 
     let mut pos = col;
-
-    while pos < len && is_word_char(chars[pos]) {
-        pos += 1;
+    let mut leaving_word = true;
+    for (index, ch) in line.chars().enumerate().skip(col) {
+        if leaving_word && is_word_char(ch) {
+            pos = index + 1;
+            continue;
+        }
+        leaving_word = false;
+        if !is_word_char(ch) {
+            pos = index + 1;
+        } else {
+            return index;
+        }
     }
-
-    while pos < len && !is_word_char(chars[pos]) {
-        pos += 1;
-    }
-
-    pos
+    pos.min(len)
 }
 
 pub fn find_word_back(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-
     if col == 0 {
         return 0;
     }
 
-    let mut pos = col.min(chars.len()).saturating_sub(1);
-
-    while pos > 0 && !is_word_char(chars[pos]) {
-        pos -= 1;
+    let mut word_start = 0;
+    let mut in_word = false;
+    for (index, ch) in line.chars().enumerate().take(col) {
+        if is_word_char(ch) {
+            if !in_word {
+                word_start = index;
+            }
+            in_word = true;
+        } else {
+            in_word = false;
+        }
     }
-
-    while pos > 0 && is_word_char(chars[pos - 1]) {
-        pos -= 1;
-    }
-
-    pos
+    word_start
 }
 
 #[cfg(test)]

@@ -82,7 +82,7 @@ impl Editor {
     pub(super) fn delete_selection_internal(&mut self) {
         if let Some((start, end)) = self.cursor.selection_range() {
             let lines_deleted = end.row - start.row;
-            self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
+            self.buffer.discard_text_range(start.row, start.col, end.row, end.col);
             self.wrap_cache.invalidate_from(start.row);
 
             if lines_deleted > 0 {

@@ -32,6 +32,10 @@ pub use text_object::{TextObject, TextObjectScope};
 
 use ekphos_editor::Position;
 
+pub(crate) fn char_to_byte_index(text: &str, char_index: usize) -> usize {
+    text.char_indices().nth(char_index).map_or(text.len(), |(byte_index, _)| byte_index)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingMark {
     Set,

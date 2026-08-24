@@ -56,19 +56,18 @@ impl Editor {
         self.buffer.retained_bytes()
             + self.history.retained_bytes()
             + self.clipboard.as_ref().map_or(0, String::capacity)
-            + self
-                .highlight_index
-                .by_row
-                .values()
-                .map(|ranges| ranges.capacity() * std::mem::size_of::<HighlightRange>())
-                .sum::<usize>()
-            + self
-                .row_style_cache
-                .borrow()
-                .rows
-                .values()
-                .map(|styles| styles.capacity() * std::mem::size_of::<Style>())
-                .sum::<usize>()
+            + self.highlight_index.retained_bytes
+            + self.row_style_cache.borrow().retained_bytes
+            + self.wiki_link_ranges.capacity() * std::mem::size_of::<WikiLinkRange>()
+            + self.code_block_rows.capacity() * std::mem::size_of::<usize>()
+    }
+
+    pub fn history_stats(&self) -> HistoryStats {
+        self.history.stats()
+    }
+
+    pub fn set_history_limits(&mut self, max_entries: usize, max_payload_bytes: usize) {
+        self.history.set_limits(max_entries, max_payload_bytes);
     }
 
     pub fn set_line_number_mode(&mut self, mode: LineNumberMode) {
@@ -263,14 +262,12 @@ impl Editor {
         let mut result = Vec::new();
         for row in start_row..=end_row {
             if let Some(line) = self.buffer.line(row) {
-                let chars: Vec<char> = line.chars().collect();
-                let line_len = chars.len();
+                let line_len = line.chars().count();
                 // Extract only the columns within the block
                 let actual_start = start_col.min(line_len);
                 let actual_end = (end_col + 1).min(line_len);
                 if actual_start < actual_end {
-                    let block_text: String = chars[actual_start..actual_end].iter().collect();
-                    result.push(block_text);
+                    result.push(buffer::char_slice(line, actual_start, actual_end).to_owned());
                 } else {
                     result.push(String::new());
                 }
@@ -304,13 +301,11 @@ impl Editor {
             let mut deleted_lines = Vec::new();
             for row in start_row..=end_row {
                 if let Some(line) = self.buffer.line(row) {
-                    let chars: Vec<char> = line.chars().collect();
-                    let line_len = chars.len();
+                    let line_len = line.chars().count();
                     let actual_start = start_col.min(line_len);
                     let actual_end = (end_col + 1).min(line_len);
                     if actual_start < actual_end {
-                        let block_text: String = chars[actual_start..actual_end].iter().collect();
-                        deleted_lines.push(block_text);
+                        deleted_lines.push(buffer::char_slice(line, actual_start, actual_end).to_owned());
                     } else {
                         deleted_lines.push(String::new());
                     }
@@ -328,16 +323,11 @@ impl Editor {
             // Delete block from each line (process from end to preserve indices)
             for row in (start_row..=end_row).rev() {
                 if let Some(line) = self.buffer.line(row) {
-                    let chars: Vec<char> = line.chars().collect();
-                    let line_len = chars.len();
+                    let line_len = line.chars().count();
                     let actual_start = start_col.min(line_len);
                     let actual_end = (end_col + 1).min(line_len);
                     if actual_start < actual_end {
-                        // Build new line without the block
-                        let new_line: String = chars[..actual_start].iter().chain(chars[actual_end..].iter()).collect();
-                        if let Some(line_ref) = self.buffer.line_mut(row) {
-                            *line_ref = new_line;
-                        }
+                        self.buffer.delete_range(row, actual_start, actual_end);
                     }
                 }
             }

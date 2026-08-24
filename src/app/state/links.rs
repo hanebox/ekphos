@@ -52,21 +52,16 @@ impl App {
 
     /// Check if cursor position is inside code (inline code or code block)
     pub fn is_cursor_in_code(&self, row: usize, col: usize) -> bool {
-        let lines = self.editor.lines();
-
         // Check if we're inside a code block by counting ``` fences before this row
         let mut in_code_block = false;
-        for (i, line) in lines.iter().enumerate() {
-            if i >= row {
-                break;
-            }
+        for line in self.editor.iter_lines().take(row) {
             if line.trim_start().starts_with("```") {
                 in_code_block = !in_code_block;
             }
         }
 
         // If current line starts with ```, we're on the fence line
-        if let Some(current_line) = lines.get(row) {
+        if let Some(current_line) = self.editor.line(row) {
             if current_line.trim_start().starts_with("```") {
                 return true;
             }
@@ -77,42 +72,31 @@ impl App {
         }
 
         // Check for inline code on the current line
-        if let Some(line) = lines.get(row) {
-            let chars: Vec<char> = line.chars().collect();
-
-            let mut i = 0;
-            while i < col {
-                if chars.get(i) == Some(&'`') {
-                    let mut count = 0;
-                    while i < col && chars.get(i) == Some(&'`') {
-                        count += 1;
-                        i += 1;
-                    }
-
-                    let mut found_closing = false;
-                    let mut j = i;
-                    while j < col {
-                        if chars.get(j) == Some(&'`') {
-                            let mut close_count = 0;
-                            while j < chars.len() && chars.get(j) == Some(&'`') {
-                                close_count += 1;
-                                j += 1;
-                            }
-                            if close_count == count {
-                                found_closing = true;
-                                i = j;
-                                break;
-                            }
-                        } else {
-                            j += 1;
-                        }
-                    }
-                    if !found_closing {
-                        return true;
-                    }
-                } else {
-                    i += 1;
+        if let Some(line) = self.editor.line(row) {
+            let mut chars = line.chars().peekable();
+            let mut open_ticks = None;
+            let mut current_col = 0;
+            while current_col < col {
+                let Some(ch) = chars.next() else {
+                    break;
+                };
+                current_col += 1;
+                if ch != '`' {
+                    continue;
                 }
+                let mut count = 1;
+                while chars.next_if_eq(&'`').is_some() {
+                    count += 1;
+                    current_col += 1;
+                }
+                if open_ticks == Some(count) {
+                    open_ticks = None;
+                } else if open_ticks.is_none() {
+                    open_ticks = Some(count);
+                }
+            }
+            if open_ticks.is_some() {
+                return true;
             }
         }
 
@@ -126,40 +110,20 @@ impl App {
     /// - alias_query: the part after | (if present)
     /// - mode: WikiAutocompleteMode indicating current position
     pub fn detect_unclosed_wikilink(&self, row: usize, col: usize) -> Option<(String, Option<String>, Option<String>, WikiAutocompleteMode)> {
-        let lines = self.editor.lines();
-        let line = lines.get(row)?;
-        let chars: Vec<char> = line.chars().collect();
-        let mut open_pos = None;
-        let mut i = col.saturating_sub(1);
-        while i > 0 {
-            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&'[') && chars.get(i) == Some(&'[') {
-                open_pos = Some(i.saturating_sub(1));
-                break;
-            }
-            if i >= 1 && chars.get(i.saturating_sub(1)) == Some(&']') && chars.get(i) == Some(&']') {
-                return None;
-            }
-            i = i.saturating_sub(1);
+        let line = self.editor.line(row)?;
+        let cursor_byte = line.char_indices().nth(col).map_or(line.len(), |(index, _)| index);
+        let prefix = &line[..cursor_byte];
+        let open_byte = prefix.rfind("[[")?;
+        if prefix.rfind("]]").is_some_and(|close| close > open_byte) {
+            return None;
         }
-        if open_pos.is_none() && i == 0 && col >= 2 {
-            if chars.get(0) == Some(&'[') && chars.get(1) == Some(&'[') {
-                open_pos = Some(0);
-            }
-        }
-
-        let start = open_pos? + 2;
+        let start = line[..open_byte].chars().count() + 2;
 
         if self.is_cursor_in_code(row, start) {
             return None;
         }
 
-        for j in start..col.saturating_sub(1) {
-            if chars.get(j) == Some(&']') && chars.get(j + 1) == Some(&']') {
-                return None;
-            }
-        }
-
-        let content: String = chars[start..col].iter().collect();
+        let content = &prefix[open_byte + 2..];
 
         if let Some(pipe_pos) = content.find('|') {
             let before_pipe = &content[..pipe_pos];
@@ -177,7 +141,7 @@ impl App {
             let heading_query = content[hash_pos + 1..].to_string();
             Some((note_query, Some(heading_query), None, WikiAutocompleteMode::Heading))
         } else {
-            Some((content, None, None, WikiAutocompleteMode::Note))
+            Some((content.to_string(), None, None, WikiAutocompleteMode::Note))
         }
     }
 

@@ -100,7 +100,7 @@ impl Editor {
 
             let line = self.buffer.line(row).unwrap_or("");
             let is_cursor_line = row == cursor_pos.row;
-            let chars: Vec<char> = line.chars().collect();
+            let line_len = line.chars().count();
 
             // Render line numbers if enabled (only for first visual line of a row)
             if let Some(ln_str) = self.get_line_number_str(row, cursor_pos.row) {
@@ -117,7 +117,7 @@ impl Editor {
                 }
             }
 
-            if chars.is_empty() {
+            if line_len == 0 {
                 if is_cursor_line {
                     self.render_cursor_at(buf, content_start_x, screen_y, ' ', Style::default());
                 }
@@ -129,21 +129,22 @@ impl Editor {
             let row_styles = self.get_row_styles_cached(row);
 
             // Render line with wrapping
-            let mut col = 0;
+            let mut chars = line.chars().enumerate().peekable();
             let mut is_wrapped_continuation = false;
-            while col < chars.len() {
+            while chars.peek().is_some() {
                 if screen_y >= area.y + area.height {
                     return;
                 }
 
                 let mut x = content_start_x;
 
-                if is_wrapped_continuation && col < chars.len() && chars[col] == ' ' {
+                if is_wrapped_continuation && chars.peek().is_some_and(|(_, ch)| *ch == ' ') {
+                    let col = chars.peek().map_or(0, |(col, _)| *col);
                     let is_cursor_on_space = is_cursor_line && col == cursor_pos.col;
                     if !is_cursor_on_space {
-                        col += 1;
-                        if col >= chars.len() {
-                            if is_cursor_line && cursor_pos.col >= chars.len() {
+                        chars.next();
+                        if chars.peek().is_none() {
+                            if is_cursor_line && cursor_pos.col >= line_len {
                                 self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                             }
                             screen_y += 1;
@@ -152,8 +153,8 @@ impl Editor {
                     }
                 }
 
-                while col < chars.len() && x < content_end_x {
-                    let ch = chars[col];
+                while chars.peek().is_some() && x < content_end_x {
+                    let (col, ch) = chars.next().expect("peeked above");
                     let base_style = self.get_char_style_fast(&row_styles, col, row, selection, block_selection);
                     let is_cursor = is_cursor_line && col == cursor_pos.col;
 
@@ -180,12 +181,11 @@ impl Editor {
                         }
                         x += ch_width;
                     }
-                    col += 1;
                 }
 
                 // Render cursor at end of line if cursor is past last char
                 // Use full area width to allow cursor in right padding
-                if is_cursor_line && cursor_pos.col >= chars.len() && col == chars.len() {
+                if is_cursor_line && cursor_pos.col >= line_len && chars.peek().is_none() {
                     if x < area.x + area.width {
                         self.render_cursor_at(buf, x, screen_y, ' ', Style::default());
                     }
@@ -242,7 +242,7 @@ impl Editor {
 
             let line = self.buffer.line(row).unwrap_or("");
             let is_cursor_line = row == cursor_pos.row;
-            let chars: Vec<char> = line.chars().collect();
+            let line_len = line.chars().count();
             let line_h_scroll = if is_cursor_line { h_scroll } else { 0 };
 
             // Render line numbers if enabled
@@ -263,12 +263,11 @@ impl Editor {
             let row_styles = self.get_row_styles_cached(row);
 
             let mut x = content_start_x;
-            for col in line_h_scroll..chars.len() {
+            for (col, ch) in line.chars().enumerate().skip(line_h_scroll) {
                 if x >= content_end_x {
                     break;
                 }
 
-                let ch = chars[col];
                 let base_style = self.get_char_style_fast(&row_styles, col, row, selection, block_selection);
                 let is_cursor = is_cursor_line && col == cursor_pos.col;
 
@@ -297,7 +296,7 @@ impl Editor {
                 }
             }
 
-            if is_cursor_line && cursor_pos.col >= chars.len() {
+            if is_cursor_line && cursor_pos.col >= line_len {
                 if x < area.x + area.width {
                     self.render_cursor_at(buf, x, y, ' ', Style::default());
                 }

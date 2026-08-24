@@ -34,11 +34,9 @@ pub(super) fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEv
 
             let (row, col) = app.editor.cursor();
             if !app.is_cursor_in_code(row, col) {
-                let lines = app.editor.lines();
-                if let Some(line) = lines.get(row) {
-                    let chars: Vec<char> = line.chars().collect();
+                if let Some(line) = app.editor.line(row) {
                     if col >= 2 {
-                        if chars.get(col.saturating_sub(2)) == Some(&'[') && chars.get(col.saturating_sub(1)) == Some(&'[') {
+                        if line.chars().nth(col.saturating_sub(2)) == Some('[') && line.chars().nth(col.saturating_sub(1)) == Some('[') {
                             let trigger_pos = (row, col.saturating_sub(2));
                             let suggestions = app.build_wiki_suggestions("");
                             app.wiki_autocomplete = WikiAutocompleteState::Open {
@@ -144,7 +142,7 @@ pub(super) fn handle_vim_replace_mode(app: &mut App, key: crossterm::event::KeyE
         KeyCode::Char(c) => {
             // Overwrite: delete current char (if not at end of line) then insert new char
             let (row, col) = app.editor.cursor();
-            if let Some(line) = app.editor.lines().get(row) {
+            if let Some(line) = app.editor.line(row) {
                 if col < line.chars().count() {
                     app.editor.delete_char();
                 }
@@ -216,7 +214,7 @@ pub(super) fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEv
         KeyCode::Char('j') | KeyCode::Down => {
             if app.vim_mode == VimMode::VisualLine {
                 if let Some(current_row) = app.visual_line_current {
-                    let line_count = app.editor.lines().len();
+                    let line_count = app.editor.line_count();
                     if current_row + 1 < line_count {
                         let new_row = current_row + 1;
                         reselect_lines_at(app, new_row);
@@ -305,7 +303,7 @@ pub(super) fn handle_vim_visual_mode(app: &mut App, key: crossterm::event::KeyEv
         }
         KeyCode::Char('G') => {
             if app.vim_mode == VimMode::VisualLine {
-                let line_count = app.editor.lines().len();
+                let line_count = app.editor.line_count();
                 reselect_lines_at(app, line_count.saturating_sub(1));
             } else {
                 app.editor.move_cursor(CursorMove::Bottom);
@@ -631,7 +629,7 @@ pub(super) fn execute_vim_command(app: &mut App, command: Command) {
         Command::GoToLine(line) => {
             // Go to specific line (1-indexed in vim)
             let target_line = line.saturating_sub(1);
-            let total_lines = app.editor.lines().len();
+            let total_lines = app.editor.line_count();
             if target_line < total_lines {
                 app.editor.move_cursor(CursorMove::Top);
                 for _ in 0..target_line {
@@ -642,10 +640,10 @@ pub(super) fn execute_vim_command(app: &mut App, command: Command) {
         Command::Substitute { pattern, replacement, flags } => {
             // Simple substitute implementation
             // First, collect all changes to make
-            let lines: Vec<String> = app.editor.lines().iter().map(|s| s.to_string()).collect();
+            let lines = app.editor.snapshot();
             let mut changes: Vec<(usize, String)> = Vec::new();
 
-            for (row, line) in lines.iter().enumerate() {
+            for (row, line) in lines.iter_lines().enumerate() {
                 if line.contains(&pattern) {
                     let new_line = if flags.global {
                         line.replace(&pattern, &replacement)

@@ -376,7 +376,7 @@ impl App {
         self.document_links.clear();
         self.document_link_ranges.clear();
         self.outline.clear();
-        self.image_states.clear();
+        self.evict_document_services();
         self.inline_image_rects.clear();
         self.mouse_hover_inline_image = None;
         self.details_open_states.clear();

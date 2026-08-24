@@ -28,6 +28,7 @@ pub enum EditOperation {
         end_col: usize,
         deleted_lines: Vec<String>,
     },
+    #[cfg(test)]
     BlockInsert {
         start_row: usize,
         col: usize,
@@ -48,16 +49,16 @@ impl EditOperation {
         match self {
             Self::Insert { text, .. } => text.capacity(),
             Self::Delete { deleted_text, .. } => deleted_text.capacity(),
-            Self::BlockDelete { deleted_lines, .. }
-            | Self::BlockInsert { lines: deleted_lines, .. }
-            | Self::LineInsert { lines: deleted_lines, .. }
-            | Self::LineDelete { lines: deleted_lines, .. } => {
+            Self::BlockDelete { deleted_lines, .. } | Self::LineInsert { lines: deleted_lines, .. } | Self::LineDelete { lines: deleted_lines, .. } => {
                 deleted_lines.capacity() * std::mem::size_of::<String>() + deleted_lines.iter().map(String::capacity).sum::<usize>()
             }
+            #[cfg(test)]
+            Self::BlockInsert { lines, .. } => lines.capacity() * std::mem::size_of::<String>() + lines.iter().map(String::capacity).sum::<usize>(),
             Self::SplitLine { .. } | Self::JoinLine { .. } => 0,
         }
     }
 
+    #[cfg(test)]
     pub fn inverse(&self) -> EditOperation {
         match self {
             EditOperation::Insert { pos, text } => {
@@ -111,16 +112,16 @@ impl EditOperation {
     }
 }
 
-fn calculate_end_position(start: Position, text: &str) -> Position {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
+pub(super) fn calculate_end_position(start: Position, text: &str) -> Position {
+    if text.is_empty() {
         return start;
     }
 
-    if lines.len() == 1 {
+    let newline_count = text.bytes().filter(|byte| *byte == b'\n').count();
+    if newline_count == 0 {
         Position::new(start.row, start.col + text.chars().count())
     } else {
-        Position::new(start.row + lines.len() - 1, lines.last().map_or(0, |l| l.chars().count()))
+        Position::new(start.row + newline_count, text.rsplit_once('\n').map_or(0, |(_, line)| line.chars().count()))
     }
 }
 
@@ -166,9 +167,35 @@ impl HistoryEntry {
     }
 
     pub fn merge(&mut self, op: EditOperation, cursor_after: Position) {
-        self.operations.push(op);
+        match (self.operations.last_mut(), op) {
+            (Some(EditOperation::Insert { text: previous, .. }), EditOperation::Insert { text, .. }) => previous.push_str(&text),
+            (_, op) => self.operations.push(op),
+        }
         self.cursor_after = cursor_after;
         self.timestamp = Instant::now();
+    }
+
+    fn payload_bytes(&self) -> usize {
+        self.operations.capacity() * std::mem::size_of::<EditOperation>() + self.operations.iter().map(EditOperation::retained_bytes).sum::<usize>()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryStats {
+    pub undo_entries: usize,
+    pub redo_entries: usize,
+    pub undo_payload_bytes: usize,
+    pub redo_payload_bytes: usize,
+    pub payload_limit_bytes: usize,
+}
+
+impl HistoryStats {
+    pub fn total_entries(self) -> usize {
+        self.undo_entries + self.redo_entries
+    }
+
+    pub fn total_payload_bytes(self) -> usize {
+        self.undo_payload_bytes + self.redo_payload_bytes
     }
 }
 
@@ -176,7 +203,10 @@ pub struct History {
     undo_stack: VecDeque<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
     max_entries: usize,
+    max_payload_bytes: usize,
     merge_timeout_ms: u64,
+    undo_payload_bytes: usize,
+    redo_payload_bytes: usize,
 }
 
 impl Default for History {
@@ -187,50 +217,93 @@ impl Default for History {
 
 impl History {
     const DEFAULT_MAX_ENTRIES: usize = 1000;
+    pub const DEFAULT_MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
     const DEFAULT_MERGE_TIMEOUT_MS: u64 = 500;
 
     pub fn new() -> Self {
+        Self::with_limits(Self::DEFAULT_MAX_ENTRIES, Self::DEFAULT_MAX_PAYLOAD_BYTES)
+    }
+
+    pub fn with_limits(max_entries: usize, max_payload_bytes: usize) -> Self {
         Self {
-            undo_stack: VecDeque::with_capacity(Self::DEFAULT_MAX_ENTRIES),
+            undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
-            max_entries: Self::DEFAULT_MAX_ENTRIES,
+            max_entries: max_entries.max(1),
+            max_payload_bytes,
             merge_timeout_ms: Self::DEFAULT_MERGE_TIMEOUT_MS,
+            undo_payload_bytes: 0,
+            redo_payload_bytes: 0,
         }
     }
 
     pub fn record(&mut self, op: EditOperation, cursor_before: Position, cursor_after: Position) {
         self.redo_stack.clear();
+        self.redo_payload_bytes = 0;
 
         if let Some(last) = self.undo_stack.back_mut() {
-            if last.can_merge(&op, self.merge_timeout_ms) {
+            let merge_estimate = last
+                .payload_bytes()
+                .saturating_add(op.retained_bytes())
+                .saturating_add(std::mem::size_of::<EditOperation>());
+            if last.can_merge(&op, self.merge_timeout_ms) && merge_estimate <= self.max_payload_bytes {
+                let old_bytes = last.payload_bytes();
                 last.merge(op, cursor_after);
+                self.undo_payload_bytes = self.undo_payload_bytes.saturating_sub(old_bytes) + last.payload_bytes();
+                self.enforce_limits();
                 return;
             }
         }
 
-        self.undo_stack.push_back(HistoryEntry::new(op, cursor_before, cursor_after));
+        let entry = HistoryEntry::new(op, cursor_before, cursor_after);
+        self.undo_payload_bytes += entry.payload_bytes();
+        self.undo_stack.push_back(entry);
+        self.enforce_limits();
+    }
 
-        while self.undo_stack.len() > self.max_entries {
-            self.undo_stack.pop_front();
+    fn enforce_limits(&mut self) {
+        while self.undo_stack.len() > 1
+            && (self.undo_stack.len() + self.redo_stack.len() > self.max_entries || self.undo_payload_bytes + self.redo_payload_bytes > self.max_payload_bytes)
+        {
+            if let Some(entry) = self.undo_stack.pop_front() {
+                self.undo_payload_bytes = self.undo_payload_bytes.saturating_sub(entry.payload_bytes());
+            }
         }
     }
 
-    pub fn pop_undo(&mut self) -> Option<HistoryEntry> {
-        if let Some(entry) = self.undo_stack.pop_back() {
-            self.redo_stack.push(entry.clone());
-            Some(entry)
-        } else {
-            None
+    /// Move one entry from undo to redo without cloning its payload.
+    pub fn pop_undo(&mut self) -> Option<&HistoryEntry> {
+        let entry = self.undo_stack.pop_back()?;
+        let payload_bytes = entry.payload_bytes();
+        self.undo_payload_bytes = self.undo_payload_bytes.saturating_sub(payload_bytes);
+        self.redo_payload_bytes += payload_bytes;
+        self.redo_stack.push(entry);
+        self.redo_stack.last()
+    }
+
+    /// Move one entry from redo to undo without cloning its payload.
+    pub fn pop_redo(&mut self) -> Option<&HistoryEntry> {
+        let entry = self.redo_stack.pop()?;
+        let payload_bytes = entry.payload_bytes();
+        self.redo_payload_bytes = self.redo_payload_bytes.saturating_sub(payload_bytes);
+        self.undo_payload_bytes += payload_bytes;
+        self.undo_stack.push_back(entry);
+        self.undo_stack.back()
+    }
+
+    pub fn stats(&self) -> HistoryStats {
+        HistoryStats {
+            undo_entries: self.undo_stack.len(),
+            redo_entries: self.redo_stack.len(),
+            undo_payload_bytes: self.undo_payload_bytes,
+            redo_payload_bytes: self.redo_payload_bytes,
+            payload_limit_bytes: self.max_payload_bytes,
         }
     }
 
-    pub fn pop_redo(&mut self) -> Option<HistoryEntry> {
-        if let Some(entry) = self.redo_stack.pop() {
-            self.undo_stack.push_back(entry.clone());
-            Some(entry)
-        } else {
-            None
-        }
+    pub fn set_limits(&mut self, max_entries: usize, max_payload_bytes: usize) {
+        self.max_entries = max_entries.max(1);
+        self.max_payload_bytes = max_payload_bytes;
+        self.enforce_limits();
     }
 
     pub fn retained_bytes(&self) -> usize {
@@ -691,5 +764,88 @@ mod tests {
 
         // Should be capped at max_entries (1000)
         assert!(count <= History::DEFAULT_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn payload_budget_evicts_old_entries_and_keeps_oversized_newest() {
+        let mut history = History::with_limits(10, 8);
+        for row in 0..3 {
+            history.record(
+                EditOperation::Insert {
+                    pos: Position::new(row, 0),
+                    text: "123456".into(),
+                },
+                Position::new(row, 0),
+                Position::new(row, 6),
+            );
+        }
+        assert_eq!(history.stats().undo_entries, 1);
+        assert!(history.stats().total_payload_bytes() >= 6);
+
+        history.record(
+            EditOperation::Delete {
+                start: Position::new(0, 0),
+                end: Position::new(0, 32),
+                deleted_text: "x".repeat(32),
+            },
+            Position::new(0, 32),
+            Position::new(0, 0),
+        );
+        let stats = history.stats();
+        assert_eq!(stats.undo_entries, 1);
+        assert!(stats.total_payload_bytes() >= 32);
+        assert_eq!(stats.payload_limit_bytes, 8);
+    }
+
+    #[test]
+    fn undo_redo_moves_the_same_payload_allocation() {
+        let mut history = History::new();
+        history.record(
+            EditOperation::Insert {
+                pos: Position::new(0, 0),
+                text: "move me without cloning".repeat(1024),
+            },
+            Position::new(0, 0),
+            Position::new(0, 21 * 1024),
+        );
+        let original_ptr = match &history.undo_stack.back().unwrap().operations[0] {
+            EditOperation::Insert { text, .. } => text.as_ptr(),
+            _ => unreachable!(),
+        };
+        let payload_bytes = history.stats().total_payload_bytes();
+
+        let undone = history.pop_undo().unwrap();
+        let undo_ptr = match &undone.operations[0] {
+            EditOperation::Insert { text, .. } => text.as_ptr(),
+            _ => unreachable!(),
+        };
+        assert_eq!(undo_ptr, original_ptr);
+        assert_eq!(history.stats().total_payload_bytes(), payload_bytes);
+
+        let redone = history.pop_redo().unwrap();
+        let redo_ptr = match &redone.operations[0] {
+            EditOperation::Insert { text, .. } => text.as_ptr(),
+            _ => unreachable!(),
+        };
+        assert_eq!(redo_ptr, original_ptr);
+        assert_eq!(history.stats().total_payload_bytes(), payload_bytes);
+    }
+
+    #[test]
+    fn consecutive_typing_merges_into_one_string_payload() {
+        let mut history = History::new();
+        for col in 0..10_000 {
+            history.record(
+                EditOperation::Insert {
+                    pos: Position::new(0, col),
+                    text: "x".into(),
+                },
+                Position::new(0, col),
+                Position::new(0, col + 1),
+            );
+        }
+        let entry = history.undo_stack.back().unwrap();
+        assert_eq!(entry.operations.len(), 1);
+        assert!(history.stats().total_payload_bytes() < 32 * 1024);
     }
 }

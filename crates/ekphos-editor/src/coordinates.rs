@@ -50,32 +50,28 @@ impl Editor {
             Some(l) => l,
             None => return 1,
         };
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
+        if line.is_empty() {
             return 1;
         }
 
-        let mut col = 0;
+        let mut chars = line.chars().peekable();
         let mut visual_lines = 1;
 
-        while col < chars.len() {
+        while chars.peek().is_some() {
             let mut x: usize = 0;
-            let is_wrapped = visual_lines > 1;
-            if is_wrapped && col < chars.len() && chars[col] == ' ' {
-                col += 1;
-                if col >= chars.len() {
+            if visual_lines > 1 && chars.next_if_eq(&' ').is_some() {
+                if chars.peek().is_none() {
                     break;
                 }
             }
 
-            while col < chars.len() && x < content_width {
-                let ch = chars[col];
+            while chars.peek().is_some() && x < content_width {
+                let ch = chars.next().expect("peeked above");
                 let ch_width = char_display_width(ch, self.tab_width) as usize;
                 x += ch_width;
-                col += 1;
             }
 
-            if col < chars.len() {
+            if chars.peek().is_some() {
                 visual_lines += 1;
             }
         }
@@ -126,16 +122,10 @@ impl Editor {
 
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
-        let chars: Vec<char> = line.chars().collect();
-
-        let mut display_offset: usize = 0;
-        for (i, ch) in chars.iter().enumerate() {
-            if i >= self.h_scroll_offset {
-                break;
-            }
-            display_offset += char_display_width(*ch, self.tab_width) as usize;
-        }
-        display_offset
+        line.chars()
+            .take(self.h_scroll_offset)
+            .map(|ch| char_display_width(ch, self.tab_width) as usize)
+            .sum()
     }
 
     pub fn line_number_gutter_width(&self) -> u16 {
@@ -153,36 +143,27 @@ impl Editor {
     pub fn cursor_display_col(&self) -> usize {
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
-        let chars: Vec<char> = line.chars().collect();
-
-        let mut display_col: usize = 0;
-        for (i, ch) in chars.iter().enumerate() {
-            if i >= pos.col {
-                break;
-            }
-            display_col += char_display_width(*ch, self.tab_width) as usize;
-        }
-        display_col
+        line.chars().take(pos.col).map(|ch| char_display_width(ch, self.tab_width) as usize).sum()
     }
 
     /// Returns the cursor screen position info for native cursor positioning.
     pub fn cursor_screen_info(&self) -> (usize, bool, usize) {
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
-        let chars: Vec<char> = line.chars().collect();
-
         let mut display_col: usize = 0;
         let mut line_display_width: usize = 0;
+        let mut line_len = 0;
 
-        for (i, ch) in chars.iter().enumerate() {
-            let ch_width = char_display_width(*ch, self.tab_width) as usize;
+        for (i, ch) in line.chars().enumerate() {
+            let ch_width = char_display_width(ch, self.tab_width) as usize;
             if i < pos.col {
                 display_col += ch_width;
             }
             line_display_width += ch_width;
+            line_len = i + 1;
         }
 
-        let is_at_line_end = pos.col >= chars.len();
+        let is_at_line_end = pos.col >= line_len;
         (display_col, is_at_line_end, line_display_width)
     }
 
@@ -200,49 +181,49 @@ impl Editor {
     /// navigation stays display-width-correct for wide chars and tabs.
     pub(super) fn col_at_visual_pos(&self, row: usize, target_visual_line: usize, target_x: usize, content_width: usize) -> usize {
         let line = self.buffer.line(row).unwrap_or("");
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() || content_width == 0 {
+        if line.is_empty() || content_width == 0 {
             return 0;
         }
 
-        let mut col = 0;
+        let mut chars = line.chars().enumerate().peekable();
         let mut visual_line = 0;
         let mut is_wrapped_continuation = false;
 
-        while col < chars.len() {
-            if is_wrapped_continuation && chars[col] == ' ' {
-                col += 1;
-                if col >= chars.len() {
+        while chars.peek().is_some() {
+            if is_wrapped_continuation && chars.next_if(|(_, ch)| *ch == ' ').is_some() {
+                if chars.peek().is_none() {
                     break;
                 }
             }
 
             if visual_line == target_visual_line {
                 let mut x = 0;
-                while col < chars.len() && x < content_width {
-                    let w = char_display_width(chars[col], self.tab_width) as usize;
+                let mut last_col = 0;
+                while chars.peek().is_some() && x < content_width {
+                    let (col, ch) = chars.next().expect("peeked above");
+                    let w = char_display_width(ch, self.tab_width) as usize;
                     if x + w > target_x {
                         return col;
                     }
                     x += w;
-                    col += 1;
+                    last_col = col + 1;
                 }
-                if col < chars.len() {
-                    return col.saturating_sub(1);
+                if chars.peek().is_some() {
+                    return last_col.saturating_sub(1);
                 }
-                return col;
+                return last_col;
             }
 
             let mut x = 0;
-            while col < chars.len() && x < content_width {
-                x += char_display_width(chars[col], self.tab_width) as usize;
-                col += 1;
+            while chars.peek().is_some() && x < content_width {
+                let (_, ch) = chars.next().expect("peeked above");
+                x += char_display_width(ch, self.tab_width) as usize;
             }
             is_wrapped_continuation = true;
             visual_line += 1;
         }
 
-        chars.len()
+        line.chars().count()
     }
 
     /// Returns the cursor's screen position accounting for line wrapping.
@@ -259,23 +240,24 @@ impl Editor {
 
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
-        let chars: Vec<char> = line.chars().collect();
-        if chars.is_empty() {
+        let line_len = line.chars().count();
+        if line_len == 0 {
             return (0, 0);
         }
 
-        let mut col = 0;
+        let mut chars = line.chars().enumerate().peekable();
         let mut visual_line: usize = 0;
         let mut is_wrapped_continuation = false;
 
-        while col < chars.len() {
+        while chars.peek().is_some() {
             let mut x: usize = 0;
-            if is_wrapped_continuation && col < chars.len() && chars[col] == ' ' {
+            if is_wrapped_continuation && chars.peek().is_some_and(|(_, ch)| *ch == ' ') {
+                let col = chars.peek().map_or(0, |(col, _)| *col);
                 let is_cursor_on_space = col == pos.col;
                 if !is_cursor_on_space {
-                    col += 1;
-                    if col >= chars.len() {
-                        if pos.col >= chars.len() {
+                    chars.next();
+                    if chars.peek().is_none() {
+                        if pos.col >= line_len {
                             return (visual_line, 0);
                         }
                         visual_line += 1;
@@ -284,8 +266,8 @@ impl Editor {
                 }
             }
 
-            while col < chars.len() && x < content_width {
-                let ch = chars[col];
+            while chars.peek().is_some() && x < content_width {
+                let (col, ch) = chars.next().expect("peeked above");
                 let ch_width = char_display_width(ch, self.tab_width) as usize;
 
                 if col == pos.col {
@@ -293,10 +275,9 @@ impl Editor {
                 }
 
                 x += ch_width;
-                col += 1;
             }
 
-            if pos.col >= chars.len() && col == chars.len() {
+            if pos.col >= line_len && chars.peek().is_none() {
                 return (visual_line, x);
             }
 
@@ -383,61 +364,14 @@ impl Editor {
         let mut row = self.scroll_offset;
 
         while row < line_count {
-            let line = self.buffer.line(row).unwrap_or("");
-            let chars: Vec<char> = line.chars().collect();
-
-            if chars.is_empty() {
-                if visual_lines_consumed == visual_y {
-                    return (row, 0);
-                }
-                visual_lines_consumed += 1;
-                row += 1;
-                continue;
+            let row_height = self.visual_lines_for_row(row, content_width);
+            if visual_y < visual_lines_consumed + row_height {
+                return (
+                    row,
+                    self.col_at_visual_pos(row, visual_y.saturating_sub(visual_lines_consumed), visual_x, content_width),
+                );
             }
-
-            let mut col_idx = 0;
-            let mut visual_line_of_row = 0;
-
-            while col_idx < chars.len() {
-                let mut visual_line_start = col_idx;
-                let mut x: usize = 0;
-                let is_wrapped_continuation = visual_line_of_row > 0;
-                if is_wrapped_continuation && col_idx < chars.len() && chars[col_idx] == ' ' {
-                    col_idx += 1;
-                    visual_line_start = col_idx;
-                    if col_idx >= chars.len() {
-                        if visual_lines_consumed + visual_line_of_row == visual_y {
-                            return (row, col_idx);
-                        }
-                        visual_line_of_row += 1;
-                        continue;
-                    }
-                }
-
-                while col_idx < chars.len() && x < content_width {
-                    let ch = chars[col_idx];
-                    let ch_width = char_display_width(ch, self.tab_width) as usize;
-                    x += ch_width;
-                    col_idx += 1;
-                }
-
-                if visual_lines_consumed + visual_line_of_row == visual_y {
-                    let mut target_x: usize = 0;
-                    for i in visual_line_start..col_idx {
-                        let ch = chars[i];
-                        let ch_width = char_display_width(ch, self.tab_width) as usize;
-                        if target_x + ch_width > visual_x {
-                            return (row, i);
-                        }
-                        target_x += ch_width;
-                    }
-                    return (row, col_idx);
-                }
-
-                visual_line_of_row += 1;
-            }
-
-            visual_lines_consumed += visual_line_of_row.max(1);
+            visual_lines_consumed += row_height;
             row += 1;
         }
 

@@ -199,8 +199,7 @@ impl Editor {
         };
 
         let pos = self.cursor.pos();
-        let parts: Vec<&str> = s.split('\n').collect();
-        let newline_count = parts.len().saturating_sub(1);
+        let newline_count = s.bytes().filter(|byte| *byte == b'\n').count();
 
         if newline_count == 0 {
             self.buffer.insert_str(pos.row, pos.col, s);
@@ -208,21 +207,30 @@ impl Editor {
             self.update_row_highlights(pos.row);
             self.cursor.move_to(pos.row, pos.col + s.chars().count());
         } else {
-            if !parts[0].is_empty() {
-                self.buffer.insert_str(pos.row, pos.col, parts[0]);
+            let mut parts = s.split('\n');
+            let first_part = parts.next().unwrap_or_default();
+            if !first_part.is_empty() {
+                self.buffer.insert_str(pos.row, pos.col, first_part);
             }
 
-            let split_col = pos.col + parts[0].chars().count();
+            let split_col = pos.col + first_part.chars().count();
             self.buffer.split_line(pos.row, split_col);
             self.wrap_cache.insert_line(pos.row + 1);
 
-            for (i, part) in parts[1..parts.len() - 1].iter().enumerate() {
-                self.buffer.insert_line(pos.row + 1 + i, part.to_string());
-                self.wrap_cache.insert_line(pos.row + 1 + i);
+            let mut remaining = parts.peekable();
+            let mut inserted_rows = 0;
+            let mut last_part = "";
+            while let Some(part) = remaining.next() {
+                if remaining.peek().is_none() {
+                    last_part = part;
+                } else {
+                    self.buffer.insert_line(pos.row + 1 + inserted_rows, part.to_string());
+                    self.wrap_cache.insert_line(pos.row + 1 + inserted_rows);
+                    inserted_rows += 1;
+                }
             }
 
             let last_idx = pos.row + newline_count;
-            let last_part = parts[parts.len() - 1];
             if !last_part.is_empty() {
                 self.buffer.insert_str(last_idx, 0, last_part);
             }
@@ -437,9 +445,10 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> bool {
-        if let Some(entry) = self.history.pop_undo() {
+        let mut history = std::mem::take(&mut self.history);
+        let undone = if let Some(entry) = history.pop_undo() {
             for op in entry.operations.iter().rev() {
-                self.apply_operation(&op.inverse());
+                self.apply_inverse_operation(op);
             }
             self.cursor.move_to(entry.cursor_before.row, entry.cursor_before.col);
             self.cursor.cancel_selection();
@@ -447,11 +456,14 @@ impl Editor {
             true
         } else {
             false
-        }
+        };
+        self.history = history;
+        undone
     }
 
     pub fn redo(&mut self) -> bool {
-        if let Some(entry) = self.history.pop_redo() {
+        let mut history = std::mem::take(&mut self.history);
+        let redone = if let Some(entry) = history.pop_redo() {
             for op in &entry.operations {
                 self.apply_operation(op);
             }
@@ -461,42 +473,102 @@ impl Editor {
             true
         } else {
             false
+        };
+        self.history = history;
+        redone
+    }
+
+    fn apply_inverse_operation(&mut self, op: &EditOperation) {
+        match op {
+            EditOperation::Insert { pos, text } => {
+                let end = history::calculate_end_position(*pos, text);
+                self.buffer.discard_text_range(pos.row, pos.col, end.row, end.col);
+                self.wrap_cache.invalidate_from(pos.row);
+            }
+            EditOperation::Delete { start, deleted_text, .. } => self.apply_insert(*start, deleted_text),
+            EditOperation::SplitLine { pos } => {
+                self.buffer.join_with_previous(pos.row + 1);
+                self.wrap_cache.remove_line(pos.row + 1);
+                self.wrap_cache.invalidate_line(pos.row);
+            }
+            EditOperation::JoinLine { row, col } => {
+                self.buffer.split_line(row - 1, *col);
+                self.wrap_cache.insert_line(*row);
+                self.wrap_cache.invalidate_line(row - 1);
+            }
+            EditOperation::BlockDelete {
+                start_row,
+                start_col,
+                deleted_lines,
+                ..
+            } => {
+                for (index, text) in deleted_lines.iter().enumerate() {
+                    let row = start_row + index;
+                    if row < self.buffer.line_count() {
+                        self.buffer.insert_str(row, *start_col, text);
+                    }
+                }
+                self.wrap_cache.invalidate_from(*start_row);
+            }
+            #[cfg(test)]
+            EditOperation::BlockInsert { start_row, col, lines } => {
+                let width = lines.iter().map(|line| line.chars().count()).max().unwrap_or(0);
+                if width > 0 {
+                    self.delete_block(*start_row, start_row + lines.len().saturating_sub(1), *col, col + width - 1);
+                }
+            }
+            EditOperation::LineInsert { row, lines } => {
+                for _ in 0..lines.len() {
+                    if *row < self.buffer.line_count() {
+                        self.buffer.delete_line(*row);
+                        self.wrap_cache.remove_line(*row);
+                    }
+                }
+            }
+            EditOperation::LineDelete { row, lines } => {
+                for (index, line) in lines.iter().enumerate() {
+                    self.buffer.insert_line(row + index, line.clone());
+                    self.wrap_cache.insert_line(row + index);
+                }
+            }
         }
+    }
+
+    fn apply_insert(&mut self, pos: Position, text: &str) {
+        if text.contains('\n') {
+            let mut parts = text.split('\n');
+            let first = parts.next().unwrap_or_default();
+            self.buffer.insert_str(pos.row, pos.col, first);
+            let mut current_row = pos.row;
+            let mut split_col = pos.col + first.chars().count();
+            for part in parts {
+                self.buffer.split_line(current_row, split_col);
+                current_row += 1;
+                if !part.is_empty() {
+                    self.buffer.insert_str(current_row, 0, part);
+                }
+                split_col = part.chars().count();
+            }
+        } else {
+            self.buffer.insert_str(pos.row, pos.col, text);
+        }
+        self.wrap_cache.invalidate_from(pos.row);
+    }
+
+    fn delete_block(&mut self, start_row: usize, end_row: usize, start_col: usize, end_col: usize) {
+        for row in (start_row..=end_row).rev() {
+            self.buffer.delete_range(row, start_col, end_col.saturating_add(1));
+        }
+        self.wrap_cache.invalidate_from(start_row);
     }
 
     pub(super) fn apply_operation(&mut self, op: &EditOperation) {
         match op {
             EditOperation::Insert { pos, text } => {
-                if text.contains('\n') {
-                    // Use split instead of lines() to preserve trailing newlines
-                    // e.g., "hello\n".lines() returns ["hello"] but split returns ["hello", ""]
-                    let parts: Vec<&str> = text.split('\n').collect();
-                    if parts.is_empty() {
-                        return;
-                    }
-
-                    // Insert first part at position
-                    self.buffer.insert_str(pos.row, pos.col, parts[0]);
-
-                    // For each subsequent part, split line and insert
-                    let mut current_row = pos.row;
-                    let mut split_col = pos.col + parts[0].chars().count();
-
-                    for part in &parts[1..] {
-                        self.buffer.split_line(current_row, split_col);
-                        current_row += 1;
-                        if !part.is_empty() {
-                            self.buffer.insert_str(current_row, 0, part);
-                        }
-                        split_col = part.chars().count();
-                    }
-                } else {
-                    self.buffer.insert_str(pos.row, pos.col, text);
-                }
-                self.wrap_cache.invalidate_from(pos.row);
+                self.apply_insert(*pos, text);
             }
             EditOperation::Delete { start, end, .. } => {
-                self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
+                self.buffer.discard_text_range(start.row, start.col, end.row, end.col);
                 self.wrap_cache.invalidate_from(start.row);
             }
             EditOperation::SplitLine { pos } => {
@@ -516,22 +588,9 @@ impl Editor {
                 end_col,
                 ..
             } => {
-                for row in (*start_row..=*end_row).rev() {
-                    if let Some(line) = self.buffer.line(row) {
-                        let chars: Vec<char> = line.chars().collect();
-                        let line_len = chars.len();
-                        let actual_start = (*start_col).min(line_len);
-                        let actual_end = (*end_col + 1).min(line_len);
-                        if actual_start < actual_end {
-                            let new_line: String = chars[..actual_start].iter().chain(chars[actual_end..].iter()).collect();
-                            if let Some(line_ref) = self.buffer.line_mut(row) {
-                                *line_ref = new_line;
-                            }
-                        }
-                    }
-                }
-                self.wrap_cache.invalidate_from(*start_row);
+                self.delete_block(*start_row, *end_row, *start_col, *end_col);
             }
+            #[cfg(test)]
             EditOperation::BlockInsert { start_row, col, lines } => {
                 for (i, text) in lines.iter().enumerate() {
                     let row = start_row + i;
@@ -571,8 +630,16 @@ impl Editor {
     }
 
     // Query
-    pub fn lines(&self) -> Vec<&str> {
-        self.buffer.lines()
+    pub fn iter_lines(&self) -> impl Iterator<Item = &str> {
+        self.buffer.iter_lines()
+    }
+
+    pub fn snapshot(&self) -> EditorSnapshot {
+        self.buffer.snapshot()
+    }
+
+    pub fn text(&self) -> String {
+        self.snapshot().to_text()
     }
 
     pub fn line(&self, row: usize) -> Option<&str> {

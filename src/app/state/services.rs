@@ -43,47 +43,137 @@ impl App {
         None
     }
 
-    /// Find the content item index for a given source line.
-    /// Returns the index of the content item that starts at or before the given line.
-    pub fn poll_pending_images(&mut self) {
-        while let Ok((url, img)) = self.image_receiver.try_recv() {
-            self.pending_images.remove(&url);
-            self.cache_image(&url, img);
+    /// Poll the bounded image worker pool. Completed stale-document work is
+    /// discarded by the service before it reaches application state.
+    pub fn poll_pending_images(&mut self) -> bool {
+        let changed = self.image_service.poll();
+        if changed {
+            self.trim_image_memory();
         }
-    }
-    pub fn cache_image(&self, key: &str, img: DynamicImage) {
-        let resized = resize_for_cache(img);
-        let path = self.image_cache_dir.join(cache_key_to_filename(key));
-        let _ = resized.save(&path);
-    }
-    pub fn get_cached_image(&self, key: &str) -> Option<DynamicImage> {
-        let path = self.image_cache_dir.join(cache_key_to_filename(key));
-        image::open(&path).ok()
-    }
-    pub fn is_image_cached(&self, key: &str) -> bool {
-        let path = self.image_cache_dir.join(cache_key_to_filename(key));
-        path.exists()
+        changed
     }
 
-    pub fn is_image_pending(&self, url: &str) -> bool {
-        self.pending_images.contains(url)
+    pub fn cache_image(&mut self, key: &str, image: DynamicImage) {
+        let _ = self.image_service.insert_ready(key, image);
+        self.trim_image_memory();
+    }
+
+    pub fn get_cached_image(&mut self, key: &str) -> Option<DynamicImage> {
+        self.image_service.load_cached_now(key)
+    }
+
+    pub fn is_image_cached(&self, key: &str) -> bool {
+        self.image_service.is_cached_on_disk(key)
+    }
+
+    pub fn is_image_pending(&self, key: &str) -> bool {
+        self.image_service.is_pending(key)
+    }
+
+    pub fn pending_image_count(&self) -> usize {
+        self.image_service.stats().pending_requests
+    }
+
+    pub fn image_has_background_work(&self) -> bool {
+        self.pending_image_count() > 0
     }
 
     pub fn start_remote_image_fetch(&mut self, url: &str) {
-        if self.pending_images.contains(url) || self.is_image_cached(url) {
-            return;
+        self.image_service.request_remote(url, url);
+    }
+
+    pub(crate) fn request_image_load(&mut self, key: &str, resolved_path: Option<&std::path::Path>, remote_url: Option<&str>) {
+        if let Some(url) = remote_url {
+            self.image_service.request_remote(key, url);
+        } else if let Some(path) = resolved_path {
+            self.image_service.request_local(key, path.to_path_buf());
         }
+    }
 
-        self.pending_images.insert(url.to_string());
-        let url_owned = url.to_string();
-        let sender = self.image_sender.clone();
-        let service = Arc::clone(&self.dependencies.network_images);
+    pub(crate) fn decoded_image(&mut self, key: &str) -> Option<Arc<DynamicImage>> {
+        self.image_service.decoded(key)
+    }
 
-        std::thread::spawn(move || {
-            if let Some(img) = service.fetch(&url_owned) {
-                let _ = sender.send((url_owned, img));
-            }
-        });
+    pub fn image_load_failed(&self, key: &str) -> bool {
+        self.image_service.is_failed(key)
+    }
+
+    pub(crate) fn begin_image_frame(&mut self) {
+        self.image_render_epoch = self.image_render_epoch.wrapping_add(1);
+        if self.image_render_epoch == 0 {
+            self.image_render_epoch = 1;
+        }
+    }
+
+    pub(crate) fn finish_image_frame(&mut self) {
+        let epoch = self.image_render_epoch;
+        let generation = self.document_generation;
+        self.image_states
+            .retain(|_, state| state.last_visible_epoch == epoch && state.document_generation == generation);
+        self.image_protocol_bytes = self.image_states.values().map(|state| state.source_bytes).sum();
+        self.trim_image_memory();
+    }
+
+    pub(crate) fn touch_image_state(&mut self, key: &str, size: Size) -> bool {
+        let Some(state) = self.image_states.get_mut(key) else {
+            return false;
+        };
+        if state.size != size || state.document_generation != self.document_generation {
+            self.remove_image_state(key);
+            return false;
+        }
+        state.last_visible_epoch = self.image_render_epoch;
+        true
+    }
+
+    pub(crate) fn remove_image_state(&mut self, key: &str) {
+        if let Some(state) = self.image_states.remove(key) {
+            self.image_protocol_bytes = self.image_protocol_bytes.saturating_sub(state.source_bytes);
+        }
+    }
+
+    pub(crate) fn insert_image_state(&mut self, key: String, image: SlicedProtocol, size: Size, source_bytes: usize) {
+        self.remove_image_state(&key);
+        self.image_protocol_bytes = self.image_protocol_bytes.saturating_add(source_bytes);
+        self.image_states.insert(
+            key,
+            ImageState {
+                image,
+                size,
+                source_bytes,
+                document_generation: self.document_generation,
+                last_visible_epoch: self.image_render_epoch,
+            },
+        );
+        self.trim_image_memory();
+    }
+
+    pub(crate) fn evict_document_services(&mut self) {
+        self.image_states.clear();
+        self.image_protocol_bytes = 0;
+        self.image_service.begin_document(self.document_generation);
+        self.syntax_service.clear_results();
+    }
+
+    fn trim_image_memory(&mut self) {
+        const MAX_PROTOCOL_PLACEMENTS: usize = 64;
+        let decoded_budget = crate::image_service::DEFAULT_IMAGE_MEMORY_BUDGET.saturating_sub(self.image_protocol_bytes);
+        self.image_service.trim_to_budget(decoded_budget);
+
+        while (self.image_protocol_bytes + self.image_service.decoded_bytes() > crate::image_service::DEFAULT_IMAGE_MEMORY_BUDGET
+            || self.image_states.len() > MAX_PROTOCOL_PLACEMENTS)
+            && self.image_states.len() > 1
+        {
+            let Some(oldest_key) = self
+                .image_states
+                .iter()
+                .min_by_key(|(_, state)| state.last_visible_epoch)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.remove_image_state(&oldest_key);
+        }
     }
 
     // ==================== Highlighter Lazy Loading ====================
@@ -93,26 +183,12 @@ impl App {
     // but unfortunately still can't find a better syntax highlighter than syntect for now
     // I will enable this lazy load by default so markdown file without code syntax won't need to take extra 30mb of memory
 
-    pub fn poll_highlighter(&mut self) {
-        if let Ok(highlighter) = self.highlighter_receiver.try_recv() {
-            self.highlighter = Some(highlighter);
-            self.highlighter_loading = false;
-        }
+    pub fn poll_highlighter(&mut self) -> bool {
+        self.syntax_service.poll()
     }
 
     pub fn ensure_highlighter(&mut self) {
-        if self.highlighter.is_some() || self.highlighter_loading {
-            return;
-        }
-
-        self.highlighter_loading = true;
-        let syntax_theme = self.config.syntax_theme.clone();
-        let sender = self.highlighter_sender.clone();
-
-        std::thread::spawn(move || {
-            let highlighter = Highlighter::new(&syntax_theme);
-            let _ = sender.send(highlighter);
-        });
+        self.syntax_service.ensure_loaded();
     }
 
     // Background Highlight Worker
@@ -120,12 +196,25 @@ impl App {
     pub fn request_highlight_update(&mut self) {
         self.highlight_version += 1;
         self.highlight_pending = true;
+        let rows = self.highlight_row_window();
+        self.highlight_requested_rows = Some((rows.start, rows.end));
 
         if let Some(ref worker) = self.highlight_worker {
-            let content = self.editor.lines().join("\n");
+            let snapshot = self.editor.snapshot();
             let colors = self.get_highlight_colors();
-            worker.request(content, self.highlight_version, colors);
+            worker.request(snapshot, self.highlight_version, colors, rows);
         }
+    }
+
+    pub(super) fn highlight_row_window(&self) -> std::ops::Range<usize> {
+        let active_rows = self.editor_view_height.max(40);
+        let start = self.editor.scroll_offset().saturating_sub(active_rows);
+        let end = self
+            .editor
+            .scroll_offset()
+            .saturating_add(active_rows.saturating_mul(2))
+            .min(self.editor.line_count());
+        start..end
     }
 
     pub(super) fn get_highlight_colors(&self) -> HighlightColors {
@@ -181,27 +270,29 @@ impl App {
     }
 
     pub(super) fn update_editor_wiki_links_with_ranges(&mut self, ranges: &[ekphos_editor::WikiLinkRange]) {
-        let notes_path = self.config.notes_path();
-        let mut valid_targets: HashSet<String> = HashSet::new();
-
-        for note in &self.notes {
-            if let Some(file_path) = &note.file_path {
-                if let Ok(relative) = file_path.strip_prefix(&notes_path) {
-                    let path_str = relative.to_string_lossy();
-                    if let Some(stripped) = path_str.strip_suffix(".md") {
-                        valid_targets.insert(stripped.to_string());
-                        valid_targets.insert(note.title.clone());
-                        valid_targets.insert(note.title.to_lowercase());
+        if self.wiki_target_cache_generation != self.catalog_generation {
+            let notes_path = self.config.notes_path();
+            self.wiki_target_cache.clear();
+            for note in &self.notes {
+                if let Some(file_path) = &note.file_path {
+                    if let Ok(relative) = file_path.strip_prefix(&notes_path) {
+                        let path_str = relative.to_string_lossy();
+                        if let Some(stripped) = path_str.strip_suffix(".md") {
+                            self.wiki_target_cache.insert(stripped.to_string());
+                            self.wiki_target_cache.insert(note.title.clone());
+                            self.wiki_target_cache.insert(note.title.to_lowercase());
+                        }
                     }
                 }
             }
+            self.wiki_target_cache_generation = self.catalog_generation;
         }
 
         let validated_ranges: Vec<ekphos_editor::WikiLinkRange> = ranges
             .iter()
             .map(|range| {
                 // Extract target from the wiki link at this position
-                let is_valid = self.validate_wiki_link_at(range.row, range.start_col, &valid_targets);
+                let is_valid = self.validate_wiki_link_at(range.row, range.start_col, &self.wiki_target_cache);
                 ekphos_editor::WikiLinkRange {
                     row: range.row,
                     start_col: range.start_col,
@@ -215,39 +306,16 @@ impl App {
     }
 
     pub(super) fn validate_wiki_link_at(&self, row: usize, start_col: usize, valid_targets: &HashSet<String>) -> bool {
-        let line = match self.editor.lines().get(row) {
-            Some(l) => *l,
+        let line = match self.editor.line(row) {
+            Some(line) => line,
             None => return false,
         };
 
-        let chars: Vec<char> = line.chars().collect();
-        if start_col + 2 >= chars.len() {
+        let byte_start = line.char_indices().nth(start_col).map_or(line.len(), |(index, _)| index);
+        let Some(link) = ekphos_core::markdown::wiki_link_at(line, byte_start) else {
             return false;
-        }
-
-        let after_open: String = chars[start_col + 2..].iter().collect();
-        if let Some(end_pos) = after_open.find("]]") {
-            let raw_content = &after_open[..end_pos];
-
-            let content = if let Some(pipe_pos) = raw_content.find('|') {
-                &raw_content[..pipe_pos]
-            } else {
-                raw_content
-            };
-            let target = if let Some(hash_pos) = content.find('#') {
-                &content[..hash_pos]
-            } else {
-                content
-            };
-
-            if valid_targets.contains(target) {
-                return true;
-            }
-            if !target.contains('/') {
-                return valid_targets.contains(&target.to_lowercase());
-            }
-        }
-        false
+        };
+        valid_targets.contains(link.target) || (!link.target.contains('/') && valid_targets.contains(&link.target.to_lowercase()))
     }
 
     pub fn has_highlight_work(&self) -> bool {
@@ -255,7 +323,15 @@ impl App {
     }
 
     pub fn get_highlighter(&self) -> Option<&Highlighter> {
-        self.highlighter.as_ref()
+        self.syntax_service.highlighter()
+    }
+
+    pub fn syntax_service_status(&self) -> crate::syntax_service::SyntaxServiceStatus {
+        self.syntax_service.status()
+    }
+
+    pub fn syntax_service_failure(&self) -> Option<&str> {
+        self.syntax_service.failure()
     }
 
     // ==================== Search Index ====================

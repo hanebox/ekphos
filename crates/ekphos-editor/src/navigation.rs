@@ -266,8 +266,7 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let len = chars.len();
+        let len = line.chars().count();
 
         if len == 0 || pos.col >= len.saturating_sub(1) {
             if pos.row + 1 < self.buffer.line_count() {
@@ -277,24 +276,20 @@ impl Editor {
             return;
         }
 
-        let mut col = pos.col + 1;
-        while col < len && chars[col].is_whitespace() {
-            col += 1;
-        }
-        if col >= len {
+        let mut chars = line.chars().enumerate().skip(pos.col + 1);
+        let Some((mut col, first)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
             if pos.row + 1 < self.buffer.line_count() {
                 self.cursor.move_to(pos.row + 1, 0);
                 self.move_word_end_forward();
             }
             return;
-        }
-        let is_word = cursor::is_word_char(chars[col]);
-        while col < len.saturating_sub(1) {
-            let next_is_word = cursor::is_word_char(chars[col + 1]);
-            if chars[col + 1].is_whitespace() || next_is_word != is_word {
+        };
+        let is_word = cursor::is_word_char(first);
+        for (index, ch) in chars {
+            if ch.is_whitespace() || cursor::is_word_char(ch) != is_word {
                 break;
             }
-            col += 1;
+            col = index;
         }
         self.cursor.move_to(pos.row, col);
     }
@@ -311,16 +306,20 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let mut col = pos.col.saturating_sub(1);
-        while col > 0 && chars[col].is_whitespace() {
-            col -= 1;
+        let mut run = None;
+        let mut previous_run = None;
+        for (index, ch) in line.chars().enumerate().take(pos.col) {
+            if ch.is_whitespace() {
+                previous_run = run.take().or(previous_run);
+            } else {
+                let class = cursor::is_word_char(ch);
+                if run.is_none_or(|(_, current_class)| current_class != class) {
+                    previous_run = run.take().or(previous_run);
+                    run = Some((index, class));
+                }
+            }
         }
-        let is_word = cursor::is_word_char(chars[col]);
-        while col > 0 && cursor::is_word_char(chars[col - 1]) == is_word && !chars[col - 1].is_whitespace() {
-            col -= 1;
-        }
-        self.cursor.move_to(pos.row, col);
+        self.cursor.move_to(pos.row, run.or(previous_run).map_or(0, |(start, _)| start));
     }
 
     pub(super) fn move_big_word_forward(&mut self) {
@@ -328,15 +327,14 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let len = chars.len();
-        let mut col = pos.col;
-        while col < len && !chars[col].is_whitespace() {
-            col += 1;
-        }
-        while col < len && chars[col].is_whitespace() {
-            col += 1;
-        }
+        let len = line.chars().count();
+        let col = line
+            .chars()
+            .enumerate()
+            .skip(pos.col)
+            .skip_while(|(_, ch)| !ch.is_whitespace())
+            .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
+            .unwrap_or(len);
         if col >= len && pos.row + 1 < self.buffer.line_count() {
             self.cursor.move_to(pos.row + 1, 0);
             if let Some(next) = self.buffer.line(pos.row + 1) {
@@ -359,15 +357,16 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let mut col = pos.col.saturating_sub(1);
-        while col > 0 && chars[col].is_whitespace() {
-            col -= 1;
+        let mut run_start = None;
+        let mut previous_run_start = None;
+        for (index, ch) in line.chars().enumerate().take(pos.col) {
+            if ch.is_whitespace() {
+                previous_run_start = run_start.take().or(previous_run_start);
+            } else if run_start.is_none() {
+                run_start = Some(index);
+            }
         }
-        while col > 0 && !chars[col - 1].is_whitespace() {
-            col -= 1;
-        }
-        self.cursor.move_to(pos.row, col);
+        self.cursor.move_to(pos.row, run_start.or(previous_run_start).unwrap_or(0));
     }
 
     pub(super) fn move_big_word_end_forward(&mut self) {
@@ -375,8 +374,7 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let len = chars.len();
+        let len = line.chars().count();
         if len == 0 || pos.col >= len.saturating_sub(1) {
             if pos.row + 1 < self.buffer.line_count() {
                 self.cursor.move_to(pos.row + 1, 0);
@@ -384,19 +382,19 @@ impl Editor {
             }
             return;
         }
-        let mut col = pos.col + 1;
-        while col < len && chars[col].is_whitespace() {
-            col += 1;
-        }
-        if col >= len {
+        let mut chars = line.chars().enumerate().skip(pos.col + 1);
+        let Some((mut col, _)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
             if pos.row + 1 < self.buffer.line_count() {
                 self.cursor.move_to(pos.row + 1, 0);
                 self.move_big_word_end_forward();
             }
             return;
-        }
-        while col < len.saturating_sub(1) && !chars[col + 1].is_whitespace() {
-            col += 1;
+        };
+        for (index, ch) in chars {
+            if ch.is_whitespace() {
+                break;
+            }
+            col = index;
         }
         self.cursor.move_to(pos.row, col);
     }
@@ -413,22 +411,22 @@ impl Editor {
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-        let chars: Vec<char> = line.chars().collect();
-        let mut col = pos.col.saturating_sub(1);
-        while col > 0 && chars[col].is_whitespace() {
-            col -= 1;
+        let mut run_start = None;
+        let mut previous_run_start = None;
+        for (index, ch) in line.chars().enumerate().take(pos.col) {
+            if ch.is_whitespace() {
+                previous_run_start = run_start.take().or(previous_run_start);
+            } else if run_start.is_none() {
+                run_start = Some(index);
+            }
         }
-        while col > 0 && !chars[col - 1].is_whitespace() {
-            col -= 1;
-        }
-        self.cursor.move_to(pos.row, col);
+        self.cursor.move_to(pos.row, run_start.or(previous_run_start).unwrap_or(0));
     }
 
     pub(super) fn find_matching_bracket(&self) -> Option<Position> {
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row)?;
-        let chars: Vec<char> = line.chars().collect();
-        let current = *chars.get(pos.col)?;
+        let current = line.chars().nth(pos.col)?;
         let (open, close, forward) = match current {
             '(' => ('(', ')', true),
             ')' => ('(', ')', false),
@@ -445,23 +443,21 @@ impl Editor {
         let mut col = pos.col;
         let line_count = self.buffer.line_count();
         if forward {
-            col += 1;
+            let mut start_col = col + 1;
             loop {
                 let l = self.buffer.line(row)?;
-                let lc: Vec<char> = l.chars().collect();
-                while col < lc.len() {
-                    if lc[col] == open {
+                for (char_col, ch) in l.chars().enumerate().skip(start_col) {
+                    if ch == open {
                         depth += 1;
-                    } else if lc[col] == close {
+                    } else if ch == close {
                         depth -= 1;
                         if depth == 0 {
-                            return Some(Position::new(row, col));
+                            return Some(Position::new(row, char_col));
                         }
                     }
-                    col += 1;
                 }
                 row += 1;
-                col = 0;
+                start_col = 0;
                 if row >= line_count {
                     return None;
                 }
@@ -472,34 +468,30 @@ impl Editor {
                     return None;
                 }
                 row -= 1;
-                col = self.buffer.line_len(row);
+                col = self.buffer.line_len(row).saturating_sub(1);
             } else {
                 col -= 1;
             }
             loop {
                 let l = self.buffer.line(row)?;
-                let lc: Vec<char> = l.chars().collect();
-                loop {
-                    if col < lc.len() {
-                        if lc[col] == close {
-                            depth += 1;
-                        } else if lc[col] == open {
-                            depth -= 1;
-                            if depth == 0 {
-                                return Some(Position::new(row, col));
-                            }
+                let end_byte = buffer::char_to_byte_index(l, col.saturating_add(1));
+                let mut char_col = l[..end_byte].chars().count();
+                for (_, ch) in l[..end_byte].char_indices().rev() {
+                    char_col -= 1;
+                    if ch == close {
+                        depth += 1;
+                    } else if ch == open {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(Position::new(row, char_col));
                         }
                     }
-                    if col == 0 {
-                        break;
-                    }
-                    col -= 1;
                 }
                 if row == 0 {
                     return None;
                 }
                 row -= 1;
-                col = self.buffer.line_len(row);
+                col = self.buffer.line_len(row).saturating_sub(1);
             }
         }
     }

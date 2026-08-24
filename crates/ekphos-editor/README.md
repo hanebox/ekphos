@@ -83,7 +83,11 @@ set_selection_style(style: Style)
 set_cursor_line_style(style: Style)
 
 // Query
-lines() -> Vec<&str>
+iter_lines() -> impl Iterator<Item = &str>
+line(row: usize) -> Option<&str>
+line_count() -> usize
+snapshot() -> EditorSnapshot
+text() -> String
 is_empty() -> bool
 ```
 

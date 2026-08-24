@@ -322,45 +322,15 @@ impl App {
             self.buffer_search.query.to_lowercase()
         };
 
-        let lines: Vec<String> = if self.mode == Mode::Edit {
-            self.editor.lines().iter().map(|s| s.to_string()).collect()
+        let matches = if self.mode == Mode::Edit {
+            let snapshot = self.editor.snapshot();
+            find_buffer_matches(snapshot.iter_lines(), &query, self.buffer_search.case_sensitive)
         } else if let Some(body) = self.current_body() {
-            body.lines().map(|s| s.to_string()).collect()
+            find_buffer_matches(body.lines(), &query, self.buffer_search.case_sensitive)
         } else {
             return;
         };
-
-        for (row, line) in lines.iter().enumerate() {
-            let search_line = if self.buffer_search.case_sensitive {
-                line.clone()
-            } else {
-                line.to_lowercase()
-            };
-
-            let chars: Vec<char> = search_line.chars().collect();
-            let query_chars: Vec<char> = query.chars().collect();
-            let query_len = query_chars.len();
-
-            if query_len == 0 {
-                continue;
-            }
-
-            let mut col = 0;
-            while col + query_len <= chars.len() {
-                let matches = chars[col..col + query_len].iter().zip(query_chars.iter()).all(|(a, b)| a == b);
-
-                if matches {
-                    self.buffer_search.matches.push(BufferSearchMatch {
-                        row,
-                        start_col: col,
-                        end_col: col + query_len,
-                    });
-                    col += 1;
-                } else {
-                    col += 1;
-                }
-            }
-        }
+        self.buffer_search.matches = matches;
     }
 
     pub fn scroll_to_current_match(&mut self) {
@@ -505,4 +475,32 @@ impl App {
             }
         }
     }
+}
+
+fn find_buffer_matches<'a>(lines: impl Iterator<Item = &'a str>, query: &str, case_sensitive: bool) -> Vec<BufferSearchMatch> {
+    let query_len = query.chars().count();
+    if query_len == 0 {
+        return Vec::new();
+    }
+
+    let mut matches = Vec::new();
+    for (row, line) in lines.enumerate() {
+        let folded;
+        let search_line = if case_sensitive {
+            line
+        } else {
+            folded = line.to_lowercase();
+            &folded
+        };
+        for (col, (byte_start, _)) in search_line.char_indices().enumerate() {
+            if search_line[byte_start..].starts_with(query) {
+                matches.push(BufferSearchMatch {
+                    row,
+                    start_col: col,
+                    end_col: col + query_len,
+                });
+            }
+        }
+    }
+    matches
 }

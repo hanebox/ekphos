@@ -239,6 +239,9 @@ pub struct OutlineItem {
 pub struct ImageState {
     pub image: SlicedProtocol,
     pub size: Size,
+    pub source_bytes: usize,
+    pub document_generation: u64,
+    pub last_visible_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -2,6 +2,8 @@
 
 use ekphos_editor::Position;
 
+use crate::char_to_byte_index;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Motion {
@@ -74,34 +76,39 @@ pub fn is_word_char(c: char) -> bool {
 
 #[allow(dead_code)]
 pub fn find_word_forward(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let len = line.chars().count();
 
     if col >= len {
         return len;
     }
 
     let mut pos = col;
-    let start_char = chars[pos];
+    let mut chars = line.chars().skip(col).peekable();
+    let start_char = *chars.peek().expect("column is within the line");
     let is_word = is_word_char(start_char);
     let is_space = start_char.is_whitespace();
 
     if is_space {
-        while pos < len && chars[pos].is_whitespace() {
+        while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+            chars.next();
             pos += 1;
         }
     } else if is_word {
-        while pos < len && is_word_char(chars[pos]) {
+        while chars.peek().is_some_and(|ch| is_word_char(*ch)) {
+            chars.next();
             pos += 1;
         }
-        while pos < len && chars[pos].is_whitespace() {
+        while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+            chars.next();
             pos += 1;
         }
     } else {
-        while pos < len && !is_word_char(chars[pos]) && !chars[pos].is_whitespace() {
+        while chars.peek().is_some_and(|ch| !is_word_char(*ch) && !ch.is_whitespace()) {
+            chars.next();
             pos += 1;
         }
-        while pos < len && chars[pos].is_whitespace() {
+        while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+            chars.next();
             pos += 1;
         }
     }
@@ -111,30 +118,37 @@ pub fn find_word_forward(line: &str, col: usize) -> usize {
 
 #[allow(dead_code)]
 pub fn find_word_back(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
+    let len = line.chars().count();
 
-    if col == 0 || chars.is_empty() {
+    if col == 0 || len == 0 {
         return 0;
     }
 
-    let mut pos = col.min(chars.len()).saturating_sub(1);
+    let mut pos = col.min(len).saturating_sub(1);
+    let byte_end = char_to_byte_index(line, pos + 1);
+    let mut chars = line[..byte_end].chars().rev().peekable();
 
-    while pos > 0 && chars[pos].is_whitespace() {
+    while pos > 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+        chars.next();
         pos -= 1;
     }
 
-    if pos == 0 && chars[0].is_whitespace() {
+    if pos == 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
         return 0;
     }
 
-    let is_word = is_word_char(chars[pos]);
+    let is_word = chars.peek().is_some_and(|ch| is_word_char(*ch));
+    chars.next();
 
     while pos > 0 {
-        let prev = chars[pos - 1];
+        let Some(&prev) = chars.peek() else {
+            break;
+        };
         let prev_is_word = is_word_char(prev);
         if prev.is_whitespace() || prev_is_word != is_word {
             break;
         }
+        chars.next();
         pos -= 1;
     }
 
@@ -143,32 +157,24 @@ pub fn find_word_back(line: &str, col: usize) -> usize {
 
 #[allow(dead_code)]
 pub fn find_word_end_forward(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let len = line.chars().count();
 
     if col >= len.saturating_sub(1) {
         return len.saturating_sub(1);
     }
 
-    let mut pos = col + 1;
-
-    while pos < len && chars[pos].is_whitespace() {
-        pos += 1;
-    }
-
-    if pos >= len {
+    let mut chars = line.chars().enumerate().skip(col + 1);
+    let Some((mut pos, current)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
         return len.saturating_sub(1);
-    }
+    };
+    let is_word = is_word_char(current);
 
-    let is_word = is_word_char(chars[pos]);
-
-    while pos < len.saturating_sub(1) {
-        let next = chars[pos + 1];
+    for (next_pos, next) in chars {
         let next_is_word = is_word_char(next);
         if next.is_whitespace() || next_is_word != is_word {
             break;
         }
-        pos += 1;
+        pos = next_pos;
     }
 
     pos
@@ -176,20 +182,22 @@ pub fn find_word_end_forward(line: &str, col: usize) -> usize {
 
 #[allow(dead_code)]
 pub fn find_big_word_forward(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let len = line.chars().count();
 
     if col >= len {
         return len;
     }
 
     let mut pos = col;
+    let mut chars = line.chars().skip(col).peekable();
 
-    while pos < len && !chars[pos].is_whitespace() {
+    while chars.peek().is_some_and(|ch| !ch.is_whitespace()) {
+        chars.next();
         pos += 1;
     }
 
-    while pos < len && chars[pos].is_whitespace() {
+    while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+        chars.next();
         pos += 1;
     }
 
@@ -198,19 +206,24 @@ pub fn find_big_word_forward(line: &str, col: usize) -> usize {
 
 #[allow(dead_code)]
 pub fn find_big_word_back(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
+    let len = line.chars().count();
 
-    if col == 0 || chars.is_empty() {
+    if col == 0 || len == 0 {
         return 0;
     }
 
-    let mut pos = col.min(chars.len()).saturating_sub(1);
+    let mut pos = col.min(len).saturating_sub(1);
+    let byte_end = char_to_byte_index(line, pos + 1);
+    let mut chars = line[..byte_end].chars().rev().peekable();
 
-    while pos > 0 && chars[pos].is_whitespace() {
+    while pos > 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+        chars.next();
         pos -= 1;
     }
 
-    while pos > 0 && !chars[pos - 1].is_whitespace() {
+    chars.next();
+    while pos > 0 && chars.peek().is_some_and(|ch| !ch.is_whitespace()) {
+        chars.next();
         pos -= 1;
     }
 
@@ -219,21 +232,21 @@ pub fn find_big_word_back(line: &str, col: usize) -> usize {
 
 #[allow(dead_code)]
 pub fn find_big_word_end_forward(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    let len = line.chars().count();
 
     if col >= len.saturating_sub(1) {
         return len.saturating_sub(1);
     }
 
-    let mut pos = col + 1;
-
-    while pos < len && chars[pos].is_whitespace() {
-        pos += 1;
-    }
-
-    while pos < len.saturating_sub(1) && !chars[pos + 1].is_whitespace() {
-        pos += 1;
+    let mut chars = line.chars().enumerate().skip(col + 1);
+    let Some((mut pos, _)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
+        return len.saturating_sub(1);
+    };
+    for (next_pos, next) in chars {
+        if next.is_whitespace() {
+            break;
+        }
+        pos = next_pos;
     }
 
     pos.min(len.saturating_sub(1))
@@ -247,8 +260,7 @@ pub fn find_first_non_blank(line: &str) -> usize {
 #[allow(dead_code)]
 pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> {
     let line = lines.get(pos.row)?;
-    let chars: Vec<char> = line.chars().collect();
-    let current = *chars.get(pos.col)?;
+    let current = line.chars().nth(pos.col)?;
 
     let (open, close, forward) = match current {
         '(' => ('(', ')', true),
@@ -263,15 +275,10 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
     };
 
     let mut depth = 1;
-    let mut row = pos.row;
-    let mut col = pos.col;
-
     if forward {
-        col += 1;
-        loop {
-            let line_chars: Vec<char> = lines.get(row)?.chars().collect();
-            while col < line_chars.len() {
-                let c = line_chars[col];
+        for (row, line) in lines.iter().enumerate().skip(pos.row) {
+            let start_col = if row == pos.row { pos.col + 1 } else { 0 };
+            for (col, c) in line.chars().enumerate().skip(start_col) {
                 if c == open {
                     depth += 1;
                 } else if c == close {
@@ -280,28 +287,20 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
                         return Some(Position::new(row, col));
                     }
                 }
-                col += 1;
-            }
-            row += 1;
-            col = 0;
-            if row >= lines.len() {
-                return None;
             }
         }
+        None
     } else {
-        if col == 0 {
-            if row == 0 {
+        for row in (0..=pos.row).rev() {
+            let line = lines.get(row)?;
+            let end_col = if row == pos.row { pos.col } else { line.chars().count() };
+            if row != pos.row && end_col == 0 {
                 return None;
             }
-            row -= 1;
-            col = lines.get(row)?.chars().count();
-        } else {
-            col -= 1;
-        }
-        loop {
-            let line_chars: Vec<char> = lines.get(row)?.chars().collect();
-            loop {
-                let c = *line_chars.get(col)?;
+            let byte_end = char_to_byte_index(line, end_col);
+            let mut col = end_col;
+            for c in line[..byte_end].chars().rev() {
+                col -= 1;
                 if c == close {
                     depth += 1;
                 } else if c == open {
@@ -310,17 +309,9 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
                         return Some(Position::new(row, col));
                     }
                 }
-                if col == 0 {
-                    break;
-                }
-                col -= 1;
             }
-            if row == 0 {
-                return None;
-            }
-            row -= 1;
-            col = lines.get(row).map(|l| l.chars().count().saturating_sub(1)).unwrap_or(0);
         }
+        None
     }
 }
 

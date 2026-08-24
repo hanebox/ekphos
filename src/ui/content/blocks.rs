@@ -545,15 +545,16 @@ pub(super) fn render_inline_image_with_cursor(
         &resolved_path_str,
         &normalized_path,
         is_remote,
-        is_pending,
         image_size,
     );
+    let is_pending = app.is_image_pending(&resolved_path_str);
+    let load_failed = app.image_load_failed(&resolved_path_str);
 
     if inner_area.width == 0 || inner_area.height == 0 || image_size.height == 0 {
         return;
     }
 
-    if is_pending || (is_remote && !is_cached && !app.image_states.contains_key(&state_key)) {
+    if is_pending || (is_remote && !is_cached && !load_failed && !app.image_states.contains_key(&state_key)) {
         let loading = Paragraph::new("  Loading remote image...").style(Style::default().fg(secondary_color).add_modifier(Modifier::ITALIC));
         f.render_widget(loading, inner_area);
         return;
@@ -562,7 +563,7 @@ pub(super) fn render_inline_image_with_cursor(
     if let Some(state) = app.image_states.get(&state_key) {
         let image_widget = SlicedImage::new(&state.image, SignedPosition::from((0, 0)));
         f.render_widget(image_widget, inner_area);
-    } else if !is_remote {
+    } else if !is_remote || load_failed {
         let placeholder = Paragraph::new("  [Image not found]").style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
         f.render_widget(placeholder, inner_area);
     }
@@ -672,9 +673,10 @@ pub(super) fn render_inline_thumbnails(
             &resolved_path_str,
             &normalized_path,
             is_remote,
-            is_pending,
             image_size,
         );
+        let is_pending = app.is_image_pending(&resolved_path_str);
+        let load_failed = app.image_load_failed(&resolved_path_str);
 
         if image_area.width == 0 || image_area.height == 0 || image_size.height == 0 {
             continue;
@@ -686,7 +688,7 @@ pub(super) fn render_inline_thumbnails(
         } else if is_pending {
             let loading = Paragraph::new("  ⏳ Loading...").style(Style::default().fg(secondary_color).add_modifier(Modifier::ITALIC));
             f.render_widget(loading, image_area);
-        } else if !is_remote && resolved_path.is_none() {
+        } else if load_failed || (!is_remote && resolved_path.is_none()) {
             let not_found = Paragraph::new("  ❌ Not found").style(Style::default().fg(error_color).add_modifier(Modifier::ITALIC));
             f.render_widget(not_found, image_area);
         }

@@ -159,8 +159,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::{AppDependencies, DialogState};
+    use crate::syntax_service::SyntaxServiceStatus;
+    use image::{Rgba, RgbaImage};
     use ratatui::layout::Rect;
     use ratatui::{backend::TestBackend, Terminal};
+    use ratatui_image::picker::Picker;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -252,6 +255,101 @@ mod tests {
             "---\ntags: [golden, phase6]\ndate: 2026-08-21\n---\n# ASCII and\ttabs\n\nCombining e\u{301}, CJK 日本語, emoji 😀, and a [wide link 開く](https://example.test).\n\nA deliberately long wrapping line keeps ASCII, e\u{301}, 日本語, and 😀 coordinates stable across terminal rows.\n\n- [ ] task with [[fixture|wiki alias]]\n\n| left | centered 日本 | right 😀 |\n|:-----|:-------------:|---------:|\n| e\u{301} | [開く](https://example.test/table) | tabs\there |\n\nText before ![inline](missing.png) and after.\n",
         );
         assert_eq!(fixture.hash(100, 36), 1_420_924_652_973_427_897);
+    }
+
+    #[test]
+    fn syntect_loads_only_for_a_visible_language_block_and_document_eviction_clears_results() {
+        let mut content = String::from("# Lazy syntax\n\n");
+        for line in 0..80 {
+            content.push_str(&format!("plain line {line}\n"));
+        }
+        content.push_str("```rust\nfn main() { println!(\"visible\"); }\n```\n");
+        let mut fixture = GoldenApp::with_content(&content);
+
+        fixture.hash(70, 12);
+        assert_eq!(fixture.app.syntax_service_status(), SyntaxServiceStatus::Unloaded);
+        assert_eq!(fixture.app.memory_snapshot().syntax_definition_bytes, 0);
+
+        fixture.app.content_cursor = fixture
+            .app
+            .content_items
+            .iter()
+            .position(|item| matches!(item, crate::app::ContentItem::CodeLine { .. }))
+            .unwrap();
+        fixture.app.focus = crate::app::Focus::Content;
+        fixture.hash(70, 12);
+        assert_eq!(fixture.app.syntax_service_status(), SyntaxServiceStatus::Loading);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !fixture.app.poll_highlighter() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(fixture.app.syntax_service_status(), SyntaxServiceStatus::Ready);
+        fixture.hash(70, 12);
+        let loaded = fixture.app.memory_snapshot();
+        assert!(loaded.syntax_definition_bytes > 0);
+        assert!(loaded.syntax_result_cache_bytes > 0);
+
+        fixture.app.enter_edit_mode();
+        let evicted = fixture.app.memory_snapshot();
+        assert_eq!(evicted.syntax_definition_bytes, loaded.syntax_definition_bytes);
+        assert_eq!(evicted.syntax_result_cache_bytes, 0);
+    }
+
+    #[test]
+    fn image_protocols_are_viewport_scoped_and_missing_protocol_falls_back_safely() {
+        let id = NEXT_GOLDEN_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("ekphos-image-lifecycle-{}-{id}", std::process::id()));
+        let vault = root.join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let image_path = root.join("fixture.png");
+        RgbaImage::from_pixel(32, 24, Rgba([20, 80, 160, 255])).save(&image_path).unwrap();
+        let mut note = format!("# Images\n\n![fixture]({})\n", image_path.display());
+        for line in 0..80 {
+            note.push_str(&format!("plain line {line}\n"));
+        }
+        fs::write(vault.join("fixture.md"), note).unwrap();
+        let config = Config {
+            welcome_shown: false,
+            check_updates: false,
+            ..Config::default()
+        };
+        let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
+        let mut app = App::new_injected(config, vault, None, dependencies);
+        app.picker = Some(Picker::halfblocks());
+        app.focus = crate::app::Focus::Content;
+        app.content_cursor = app
+            .content_items
+            .iter()
+            .position(|item| matches!(item, crate::app::ContentItem::Image { .. }))
+            .unwrap();
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.image_has_background_work() && Instant::now() < deadline {
+            app.poll_pending_images();
+            std::thread::yield_now();
+        }
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert_eq!(app.image_states.len(), 1);
+        assert!(app.memory_snapshot().image_protocol_bytes > 0);
+
+        app.content_cursor = app.content_items.len() - 1;
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(app.image_states.is_empty());
+        assert_eq!(app.memory_snapshot().image_protocol_bytes, 0);
+
+        app.picker = None;
+        app.content_cursor = app
+            .content_items
+            .iter()
+            .position(|item| matches!(item, crate::app::ContentItem::Image { .. }))
+            .unwrap();
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        assert!(app.image_states.is_empty());
+        assert!(app.memory_snapshot().image_decoded_bytes > 0);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

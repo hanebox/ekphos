@@ -1,5 +1,7 @@
 //! Character find operations (f, F, t, T)
 
+use crate::char_to_byte_index;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FindState {
     pub char: char,
@@ -13,10 +15,8 @@ impl FindState {
     }
 
     pub fn find_in_line(&self, line: &str, col: usize) -> Option<usize> {
-        let chars: Vec<char> = line.chars().collect();
-
         if self.forward {
-            for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+            for (i, c) in line.chars().enumerate().skip(col + 1) {
                 if c == self.char {
                     // `t` stops on the char *before* the match; `f` stops on the
                     // match. `i >= col + 1`, so `i - 1` never underflows. (When the
@@ -30,8 +30,12 @@ impl FindState {
             if col == 0 {
                 return None;
             }
-            for i in (0..col).rev() {
-                if chars.get(i) == Some(&self.char) {
+            let end_col = col.min(line.chars().count());
+            let byte_end = char_to_byte_index(line, end_col);
+            let mut i = end_col;
+            for c in line[..byte_end].chars().rev() {
+                i -= 1;
+                if c == self.char {
                     // `T` stops on the char *after* the match; `F` stops on the
                     // match. `i < col`, so `i + 1 <= col` (never past the cursor).
                     return Some(if self.till { i + 1 } else { i });

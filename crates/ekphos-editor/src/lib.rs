@@ -10,8 +10,10 @@ pub use cursor::{CursorMove, Position};
 pub use input::{process_key, InputAction};
 // HighlightRange and HighlightType are defined in this module and automatically public
 
+pub use buffer::EditorSnapshot;
 use buffer::TextBuffer;
 use cursor::Cursor;
+pub use history::HistoryStats;
 use history::{EditOperation, History};
 use wrap::WrapCache;
 
@@ -24,7 +26,7 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;
 
@@ -101,15 +103,32 @@ impl HighlightRange {
 #[derive(Debug, Clone, Default)]
 struct HighlightIndex {
     by_row: BTreeMap<usize, Vec<HighlightRange>>,
+    recency: VecDeque<usize>,
+    retained_bytes: usize,
 }
 
 impl HighlightIndex {
+    const MAX_ROWS: usize = 512;
+    const MAX_BYTES: usize = 2 * 1024 * 1024;
+
     fn new() -> Self {
-        Self { by_row: BTreeMap::new() }
+        Self {
+            by_row: BTreeMap::new(),
+            recency: VecDeque::new(),
+            retained_bytes: 0,
+        }
     }
 
     fn insert(&mut self, highlight: HighlightRange) {
-        self.by_row.entry(highlight.row).or_default().push(highlight);
+        let row = highlight.row;
+        if !self.by_row.contains_key(&row) {
+            self.recency.push_back(row);
+        }
+        let ranges = self.by_row.entry(row).or_default();
+        let old_bytes = ranges.capacity() * std::mem::size_of::<HighlightRange>();
+        ranges.push(highlight);
+        self.retained_bytes += ranges.capacity() * std::mem::size_of::<HighlightRange>() - old_bytes;
+        self.enforce_limits();
     }
 
     fn get_row(&self, row: usize) -> &[HighlightRange] {
@@ -117,20 +136,22 @@ impl HighlightIndex {
     }
 
     fn clear_row(&mut self, row: usize) {
-        self.by_row.remove(&row);
+        self.remove_row(row);
     }
 
     fn clear_row_of_type(&mut self, row: usize, highlight_type: HighlightType) {
         if let Some(highlights) = self.by_row.get_mut(&row) {
             highlights.retain(|h| h.highlight_type != highlight_type);
             if highlights.is_empty() {
-                self.by_row.remove(&row);
+                self.remove_row(row);
             }
         }
     }
 
     fn clear(&mut self) {
         self.by_row.clear();
+        self.recency.clear();
+        self.retained_bytes = 0;
     }
 
     fn retain<F>(&mut self, mut f: F)
@@ -141,6 +162,8 @@ impl HighlightIndex {
             highlights.retain(|h| f(h));
         }
         self.by_row.retain(|_, v| !v.is_empty());
+        self.recency.retain(|row| self.by_row.contains_key(row));
+        self.recalculate_retained_bytes();
     }
 
     fn shift_rows_after(&mut self, row: usize, delta: isize) {
@@ -173,6 +196,20 @@ impl HighlightIndex {
         for (new_row, highlights) in shifted {
             self.by_row.insert(new_row, highlights);
         }
+        for cached_row in &mut self.recency {
+            if *cached_row >= row {
+                *cached_row = if delta > 0 {
+                    *cached_row + delta as usize
+                } else {
+                    cached_row.saturating_sub((-delta) as usize)
+                };
+            }
+        }
+        let mut seen = HashSet::new();
+        self.recency
+            .retain(|cached_row| self.by_row.contains_key(cached_row) && seen.insert(*cached_row));
+        self.recalculate_retained_bytes();
+        self.enforce_limits();
     }
 
     fn iter(&self) -> impl Iterator<Item = &HighlightRange> {
@@ -186,60 +223,96 @@ impl HighlightIndex {
     fn len(&self) -> usize {
         self.by_row.values().map(|v| v.len()).sum()
     }
+
+    fn remove_row(&mut self, row: usize) {
+        if let Some(ranges) = self.by_row.remove(&row) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(ranges.capacity() * std::mem::size_of::<HighlightRange>());
+        }
+        self.recency.retain(|cached_row| *cached_row != row);
+    }
+
+    fn recalculate_retained_bytes(&mut self) {
+        self.retained_bytes = self
+            .by_row
+            .values()
+            .map(|ranges| ranges.capacity() * std::mem::size_of::<HighlightRange>())
+            .sum();
+    }
+
+    fn enforce_limits(&mut self) {
+        while self.by_row.len() > 1 && (self.by_row.len() > Self::MAX_ROWS || self.retained_bytes > Self::MAX_BYTES) {
+            if let Some(oldest) = self.recency.pop_front() {
+                if let Some(ranges) = self.by_row.remove(&oldest) {
+                    self.retained_bytes = self.retained_bytes.saturating_sub(ranges.capacity() * std::mem::size_of::<HighlightRange>());
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 struct RowStyleCache {
     rows: BTreeMap<usize, Vec<Style>>,
-    dirty_rows: HashSet<usize>,
-    all_dirty: bool,
+    recency: VecDeque<usize>,
+    retained_bytes: usize,
 }
 
 impl RowStyleCache {
+    const MAX_ROWS: usize = 256;
+    const MAX_BYTES: usize = 512 * 1024;
+
     fn new() -> Self {
         Self {
             rows: BTreeMap::new(),
-            dirty_rows: HashSet::new(),
-            all_dirty: true,
+            recency: VecDeque::new(),
+            retained_bytes: 0,
         }
     }
 
     fn invalidate_row(&mut self, row: usize) {
-        self.dirty_rows.insert(row);
-        self.rows.remove(&row);
+        self.remove(row);
     }
 
     fn invalidate_from(&mut self, row: usize) {
         let rows_to_remove: Vec<usize> = self.rows.range(row..).map(|(r, _)| *r).collect();
         for r in rows_to_remove {
-            self.rows.remove(&r);
-            self.dirty_rows.insert(r);
+            self.remove(r);
         }
     }
 
     fn invalidate_all(&mut self) {
         self.rows.clear();
-        self.dirty_rows.clear();
-        self.all_dirty = true;
-    }
-
-    fn is_dirty(&self, row: usize) -> bool {
-        self.all_dirty || self.dirty_rows.contains(&row) || !self.rows.contains_key(&row)
+        self.recency.clear();
+        self.retained_bytes = 0;
     }
 
     fn set_row_styles(&mut self, row: usize, styles: Vec<Style>) {
+        self.remove(row);
+        self.retained_bytes += styles.capacity() * std::mem::size_of::<Style>();
         self.rows.insert(row, styles);
-        self.dirty_rows.remove(&row);
+        self.recency.push_back(row);
+        self.enforce_limits();
     }
 
     fn get_row_styles(&self, row: usize) -> Option<&[Style]> {
         self.rows.get(&row).map(|v| v.as_slice())
     }
 
-    #[allow(dead_code)]
-    fn mark_clean(&mut self) {
-        self.all_dirty = false;
-        self.dirty_rows.clear();
+    fn remove(&mut self, row: usize) {
+        if let Some(styles) = self.rows.remove(&row) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(styles.capacity() * std::mem::size_of::<Style>());
+        }
+        self.recency.retain(|cached_row| *cached_row != row);
+    }
+
+    fn enforce_limits(&mut self) {
+        while self.rows.len() > 1 && (self.rows.len() > Self::MAX_ROWS || self.retained_bytes > Self::MAX_BYTES) {
+            if let Some(oldest) = self.recency.pop_front() {
+                if let Some(styles) = self.rows.remove(&oldest) {
+                    self.retained_bytes = self.retained_bytes.saturating_sub(styles.capacity() * std::mem::size_of::<Style>());
+                }
+            }
+        }
     }
 
     fn shift_rows_after(&mut self, row: usize, delta: isize) {
@@ -268,16 +341,19 @@ impl RowStyleCache {
             self.rows.insert(new_row, styles);
         }
 
-        let dirty_to_shift: Vec<usize> = self.dirty_rows.iter().filter(|&&r| r >= row).cloned().collect();
-        for old_row in dirty_to_shift {
-            self.dirty_rows.remove(&old_row);
-            let new_row = if delta > 0 {
-                old_row + delta as usize
-            } else {
-                old_row.saturating_sub((-delta) as usize)
-            };
-            self.dirty_rows.insert(new_row);
+        for cached_row in &mut self.recency {
+            if *cached_row >= row {
+                *cached_row = if delta > 0 {
+                    *cached_row + delta as usize
+                } else {
+                    cached_row.saturating_sub((-delta) as usize)
+                };
+            }
         }
+        let mut seen = HashSet::new();
+        self.recency.retain(|cached_row| self.rows.contains_key(cached_row) && seen.insert(*cached_row));
+        self.retained_bytes = self.rows.values().map(|styles| styles.capacity() * std::mem::size_of::<Style>()).sum();
+        self.enforce_limits();
     }
 }
 
@@ -477,7 +553,7 @@ mod tests {
         ed.set_inclusive_selection(true);
         ed.set_cursor(0, 3);
         ed.cut();
-        assert_eq!(ed.lines().first().copied(), Some(" the door"));
+        assert_eq!(ed.line(0), Some(" the door"));
     }
 
     /// Without the inclusive flag the range stays exclusive — operator-pending
@@ -511,9 +587,9 @@ mod tests {
         let mut ed = Editor::new(vec!["first".to_string(), "second".to_string()]);
         ed.set_cursor(1, 0);
         ed.delete_current_line();
-        assert_eq!(ed.lines(), vec!["first"]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["first"]);
         ed.undo();
-        assert_eq!(ed.lines(), vec!["first", "second"]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["first", "second"]);
     }
 
     /// Regression: `dd` on a single-line buffer clears the line in place; undo
@@ -523,9 +599,9 @@ mod tests {
         let mut ed = editor_with("only line");
         ed.set_cursor(0, 0);
         ed.delete_current_line();
-        assert_eq!(ed.lines(), vec![""]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec![""]);
         ed.undo();
-        assert_eq!(ed.lines(), vec!["only line"]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["only line"]);
     }
 
     /// `dd` on a middle line stays undoable (the previously-working path).
@@ -534,9 +610,9 @@ mod tests {
         let mut ed = Editor::new(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
         ed.set_cursor(1, 0);
         ed.delete_current_line();
-        assert_eq!(ed.lines(), vec!["a", "c"]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["a", "c"]);
         ed.undo();
-        assert_eq!(ed.lines(), vec!["a", "b", "c"]);
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["a", "b", "c"]);
     }
 
     /// Regression: wrapped Up/Down must use display width, not char index. With a
@@ -567,5 +643,70 @@ mod tests {
         assert_eq!(ed.cursor(), (0, 5)); // 'f' (visual line 1, column 1)
         ed.move_cursor(CursorMove::Up);
         assert_eq!(ed.cursor(), (0, 1)); // back to 'b'
+    }
+
+    #[test]
+    fn large_paste_delete_undo_redo_stays_within_history_budget() {
+        let mut editor = editor_with("");
+        editor.set_history_limits(100, 64 * 1024);
+        let large = "日本語-and-ascii ".repeat(64 * 1024);
+
+        editor.insert_str(&large);
+        assert_eq!(editor.text(), large);
+        assert!(editor.history_stats().total_payload_bytes() > editor.history_stats().payload_limit_bytes);
+        assert_eq!(editor.history_stats().total_entries(), 1);
+
+        editor.set_cursor(0, 0);
+        editor.start_selection();
+        editor.set_cursor(0, large.chars().count());
+        editor.cut();
+        assert!(editor.is_empty());
+        assert_eq!(editor.history_stats().total_entries(), 1);
+
+        assert!(editor.undo());
+        assert_eq!(editor.text(), large);
+        assert!(editor.redo());
+        assert!(editor.is_empty());
+        assert_eq!(editor.history_stats().total_entries(), 1);
+    }
+
+    #[test]
+    fn highlight_and_style_caches_are_row_and_byte_bounded() {
+        let lines = (0..1_000).map(|row| format!("# highlighted row {row}")).collect();
+        let mut editor = Editor::new(lines);
+        editor.add_highlights((0..10_000).map(|row| HighlightRange::new(row, 0, 1, Style::default().fg(Color::Blue), HighlightType::Header)));
+        assert!(editor.highlight_index.by_row.len() <= HighlightIndex::MAX_ROWS);
+        assert!(editor.highlight_index.retained_bytes <= HighlightIndex::MAX_BYTES || editor.highlight_index.by_row.len() == 1);
+
+        for row in 0..1_000 {
+            editor.get_row_styles_cached(row);
+        }
+        let style_cache = editor.row_style_cache.borrow();
+        assert!(style_cache.rows.len() <= RowStyleCache::MAX_ROWS);
+        assert!(style_cache.retained_bytes <= RowStyleCache::MAX_BYTES || style_cache.rows.len() == 1);
+    }
+
+    #[test]
+    fn document_highlight_state_is_scoped_to_the_active_rows() {
+        let lines = (0..1_000).map(|row| format!("# row {row} [[target-{row}]]")).collect();
+        let mut editor = Editor::new(lines);
+        editor.set_view_size(100, 20);
+        editor.set_scroll_offset(500);
+        let active_rows = editor.active_highlight_rows();
+
+        editor.update_markdown_highlights();
+        editor.update_wiki_links(|_| true);
+        assert!(editor.highlight_index.iter().all(|highlight| active_rows.contains(&highlight.row)));
+        assert!(editor.wiki_link_ranges.iter().all(|link| active_rows.contains(&link.row)));
+
+        let mut fenced = vec!["```markdown".to_owned()];
+        fenced.extend((1..1_000).map(|row| format!("code row {row}")));
+        let mut editor = Editor::new(fenced);
+        editor.set_view_size(100, 20);
+        editor.set_scroll_offset(500);
+        let active_rows = editor.active_highlight_rows();
+        editor.update_markdown_highlights();
+        assert!(editor.code_block_rows.iter().all(|row| active_rows.contains(row)));
+        assert!(editor.code_block_rows.len() <= active_rows.len());
     }
 }

@@ -6,10 +6,11 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use std::panic;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-use ekphos_editor::{HighlightRange, HighlightType, WikiLinkRange};
+use ekphos_editor::{EditorSnapshot, HighlightRange, HighlightType, WikiLinkRange};
 
 #[derive(Debug, Clone)]
 pub struct HighlightColors {
@@ -44,9 +45,12 @@ impl Default for HighlightColors {
 
 #[derive(Debug)]
 pub struct HighlightRequest {
-    pub content: String,
+    ticket: u64,
+    pub snapshot: EditorSnapshot,
     pub version: u64,
     pub colors: HighlightColors,
+    row_start: usize,
+    row_end: usize,
 }
 
 #[derive(Debug)]
@@ -56,51 +60,108 @@ pub struct HighlightResult {
     pub wiki_links: Vec<WikiLinkRange>,
 }
 
-/// Handle to the background highlight worker
+#[derive(Default)]
+struct RequestState {
+    request: Option<HighlightRequest>,
+    stop: bool,
+}
+
+struct Shared {
+    request: Mutex<RequestState>,
+    request_ready: Condvar,
+    result: Mutex<Option<HighlightResult>>,
+    current_ticket: AtomicU64,
+    pending: AtomicBool,
+    queued_snapshot_bytes: AtomicUsize,
+    active_snapshot_bytes: AtomicUsize,
+}
+
+/// Handle to one managed background highlight worker. Both request and result
+/// storage are single replaceable slots, so rapid edits cannot queue document
+/// snapshots or completed highlight vectors without bound.
 pub struct HighlightWorker {
-    request_sender: Sender<HighlightRequest>,
-    result_receiver: Receiver<HighlightResult>,
-    #[allow(dead_code)]
-    thread_handle: JoinHandle<()>,
+    shared: Arc<Shared>,
+    thread_handle: Option<JoinHandle<()>>,
 }
 
 impl HighlightWorker {
     pub fn new() -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<HighlightRequest>();
-        let (result_tx, result_rx) = mpsc::channel::<HighlightResult>();
-
+        let shared = Arc::new(Shared {
+            request: Mutex::new(RequestState::default()),
+            request_ready: Condvar::new(),
+            result: Mutex::new(None),
+            current_ticket: AtomicU64::new(0),
+            pending: AtomicBool::new(false),
+            queued_snapshot_bytes: AtomicUsize::new(0),
+            active_snapshot_bytes: AtomicUsize::new(0),
+        });
+        let worker_shared = Arc::clone(&shared);
         let thread_handle = thread::Builder::new()
             .name("highlight-worker".into())
-            .spawn(move || {
-                worker_thread_loop(request_rx, result_tx);
-            })
+            .spawn(move || worker_thread_loop(worker_shared))
             .expect("Failed to spawn highlight worker thread");
 
         Self {
-            request_sender: request_tx,
-            result_receiver: result_rx,
-            thread_handle,
+            shared,
+            thread_handle: Some(thread_handle),
         }
     }
 
     #[inline]
-    pub fn request(&self, content: String, version: u64, colors: HighlightColors) {
-        let request = HighlightRequest { content, version, colors };
-        let _ = self.request_sender.send(request);
+    pub fn request(&self, snapshot: EditorSnapshot, version: u64, colors: HighlightColors, rows: std::ops::Range<usize>) {
+        let ticket = self.shared.current_ticket.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        let snapshot_bytes = snapshot.reference_bytes();
+        self.shared.pending.store(true, Ordering::Release);
+        if let Ok(mut result) = self.shared.result.lock() {
+            *result = None;
+        }
+        if let Ok(mut state) = self.shared.request.lock() {
+            state.request = Some(HighlightRequest {
+                ticket,
+                snapshot,
+                version,
+                colors,
+                row_start: rows.start,
+                row_end: rows.end,
+            });
+            self.shared.queued_snapshot_bytes.store(snapshot_bytes, Ordering::Release);
+            self.shared.request_ready.notify_one();
+        }
     }
 
     #[inline]
     pub fn try_recv(&self) -> Option<HighlightResult> {
-        match self.result_receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => None,
-        }
+        self.shared.result.lock().ok()?.take()
     }
 
     #[inline]
     pub fn drain_results(&self) {
-        while self.result_receiver.try_recv().is_ok() {}
+        if let Ok(mut result) = self.shared.result.lock() {
+            *result = None;
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.shared.current_ticket.fetch_add(1, Ordering::AcqRel);
+        self.shared.pending.store(false, Ordering::Release);
+        self.shared.queued_snapshot_bytes.store(0, Ordering::Release);
+        if let Ok(mut state) = self.shared.request.lock() {
+            state.request = None;
+        }
+        self.drain_results();
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.shared.pending.load(Ordering::Acquire)
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        let result_bytes = self.shared.result.lock().ok().and_then(|result| {
+            result.as_ref().map(|result| {
+                result.highlights.capacity() * std::mem::size_of::<HighlightRange>() + result.wiki_links.capacity() * std::mem::size_of::<WikiLinkRange>()
+            })
+        });
+        self.shared.queued_snapshot_bytes.load(Ordering::Acquire) + self.shared.active_snapshot_bytes.load(Ordering::Acquire) + result_bytes.unwrap_or(0)
     }
 }
 
@@ -110,64 +171,105 @@ impl Default for HighlightWorker {
     }
 }
 
-/// Main loop for the worker thread
-fn worker_thread_loop(receiver: Receiver<HighlightRequest>, sender: Sender<HighlightResult>) {
-    while let Ok(request) = receiver.recv() {
-        let mut latest_request = request;
-        while let Ok(newer) = receiver.try_recv() {
-            latest_request = newer;
+impl Drop for HighlightWorker {
+    fn drop(&mut self) {
+        self.shared.current_ticket.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut state) = self.shared.request.lock() {
+            state.stop = true;
+            state.request = None;
+            self.shared.request_ready.notify_one();
         }
-
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            let (highlights, frontmatter_end) = compute_all_highlights(&latest_request.content, &latest_request.colors);
-            let wiki_links = compute_all_wiki_links(&latest_request.content, frontmatter_end);
-
-            HighlightResult {
-                version: latest_request.version,
-                highlights,
-                wiki_links,
-            }
-        }));
-
-        match result {
-            Ok(highlight_result) => {
-                if sender.send(highlight_result).is_err() {
-                    break;
-                }
-            }
-            Err(_) => {
-                let empty_result = HighlightResult {
-                    version: latest_request.version,
-                    highlights: Vec::new(),
-                    wiki_links: Vec::new(),
-                };
-                if sender.send(empty_result).is_err() {
-                    break;
-                }
-            }
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
         }
     }
 }
 
-fn compute_all_highlights(content: &str, colors: &HighlightColors) -> (Vec<HighlightRange>, Option<usize>) {
-    let line_count = content.lines().count();
-    let mut highlights = Vec::with_capacity(line_count * 2);
-    let lines: Vec<&str> = content.lines().collect();
-    let frontmatter_end = ekphos_core::markdown::frontmatter_end(content);
+/// Main loop for the worker thread.
+fn worker_thread_loop(shared: Arc<Shared>) {
+    loop {
+        let request = {
+            let mut state = match shared.request.lock() {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+            while state.request.is_none() && !state.stop {
+                state = match shared.request_ready.wait(state) {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+            }
+            if state.stop {
+                return;
+            }
+            let request = state.request.take().expect("request checked above");
+            shared.queued_snapshot_bytes.store(0, Ordering::Release);
+            shared.active_snapshot_bytes.store(request.snapshot.reference_bytes(), Ordering::Release);
+            request
+        };
+        let cancelled = || shared.current_ticket.load(Ordering::Acquire) != request.ticket;
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let rows = request.row_start..request.row_end;
+            let (highlights, frontmatter_end) = compute_snapshot_highlights(&request.snapshot, &request.colors, rows.clone(), cancelled)?;
+            let wiki_links = compute_snapshot_wiki_links(&request.snapshot, frontmatter_end, rows, cancelled)?;
+            Some(HighlightResult {
+                version: request.version,
+                highlights,
+                wiki_links,
+            })
+        }));
+        shared.active_snapshot_bytes.store(0, Ordering::Release);
+
+        if cancelled() {
+            continue;
+        }
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => Some(HighlightResult {
+                version: request.version,
+                highlights: Vec::new(),
+                wiki_links: Vec::new(),
+            }),
+        };
+        if let Some(result) = result {
+            if let Ok(mut slot) = shared.result.lock() {
+                *slot = Some(result);
+            }
+        }
+        if !cancelled() {
+            shared.pending.store(false, Ordering::Release);
+        }
+    }
+}
+
+fn compute_snapshot_highlights(
+    snapshot: &EditorSnapshot,
+    colors: &HighlightColors,
+    rows: std::ops::Range<usize>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Option<(Vec<HighlightRange>, Option<usize>)> {
+    let row_end = rows.end.min(snapshot.line_count());
+    let mut highlights = Vec::with_capacity(row_end.saturating_sub(rows.start).saturating_mul(2));
+    let frontmatter_end = ekphos_core::markdown::frontmatter_end_in_lines(snapshot.iter_lines());
 
     let mut in_code_block = false;
 
-    for (row, line) in lines.iter().enumerate() {
+    for (row, line) in snapshot.iter_lines().take(row_end).enumerate() {
+        if is_cancelled() {
+            return None;
+        }
         if let Some(fm_end) = frontmatter_end {
             if row <= fm_end {
-                let char_count = bytecount_chars(line);
-                highlights.push(HighlightRange::new(
-                    row,
-                    0,
-                    char_count,
-                    Style::default().fg(colors.frontmatter_color),
-                    HighlightType::Frontmatter,
-                ));
+                if rows.contains(&row) {
+                    let char_count = bytecount_chars(line);
+                    highlights.push(HighlightRange::new(
+                        row,
+                        0,
+                        char_count,
+                        Style::default().fg(colors.frontmatter_color),
+                        HighlightType::Frontmatter,
+                    ));
+                }
                 continue;
             }
         }
@@ -177,32 +279,38 @@ fn compute_all_highlights(content: &str, colors: &HighlightColors) -> (Vec<Highl
             in_code_block = !in_code_block;
             let start = line.len() - trimmed.len();
             let char_start = bytecount_chars(&line[..start]);
-            highlights.push(HighlightRange::new(
-                row,
-                char_start,
-                char_start + bytecount_chars(trimmed),
-                Style::default().fg(colors.code_color),
-                HighlightType::CodeBlock,
-            ));
+            if rows.contains(&row) {
+                highlights.push(HighlightRange::new(
+                    row,
+                    char_start,
+                    char_start + bytecount_chars(trimmed),
+                    Style::default().fg(colors.code_color),
+                    HighlightType::CodeBlock,
+                ));
+            }
             continue;
         }
 
         if in_code_block {
-            highlights.push(HighlightRange::new(
-                row,
-                0,
-                bytecount_chars(line),
-                Style::default().fg(colors.code_color),
-                HighlightType::CodeBlock,
-            ));
+            if rows.contains(&row) {
+                highlights.push(HighlightRange::new(
+                    row,
+                    0,
+                    bytecount_chars(line),
+                    Style::default().fg(colors.code_color),
+                    HighlightType::CodeBlock,
+                ));
+            }
             continue;
         }
 
         // Normal markdown highlighting
-        highlight_markdown_line(row, line, colors, &mut highlights);
+        if rows.contains(&row) {
+            highlight_markdown_line(row, line, colors, &mut highlights);
+        }
     }
 
-    (highlights, frontmatter_end)
+    Some((highlights, frontmatter_end))
 }
 
 #[inline]
@@ -215,11 +323,10 @@ fn highlight_markdown_line(row: usize, line: &str, colors: &HighlightColors, hig
         return;
     }
 
-    let chars: Vec<char> = line.chars().collect();
-    let line_len = chars.len();
+    let line_len = line.chars().count();
 
-    if let Some(header_end) = detect_header_fast(line, &chars) {
-        let level = chars.iter().take_while(|&&c| c == '#').count();
+    if let Some(header_end) = detect_header_fast(line) {
+        let level = line.chars().take_while(|&ch| ch == '#').count();
         let color = colors.heading_colors[level.saturating_sub(1).min(5)];
         highlights.push(HighlightRange::new(
             row,
@@ -256,16 +363,16 @@ fn highlight_markdown_line(row: usize, line: &str, colors: &HighlightColors, hig
 
     highlight_details_tags_fast(row, line, colors, highlights);
     highlight_list_marker_fast(row, line, trimmed, colors, highlights);
-    highlight_inline_code_fast(row, &chars, colors, highlights);
+    highlight_inline_code_fast(row, line, colors, highlights);
     highlight_links_fast(row, line, colors, highlights);
     let highlight_start = highlights.len();
-    highlight_bold_fast(row, &chars, colors, highlights, highlight_start);
-    highlight_italic_fast(row, &chars, colors, highlights, highlight_start);
+    highlight_bold_fast(row, line, colors, highlights, highlight_start);
+    highlight_italic_fast(row, line, colors, highlights, highlight_start);
 }
 
 #[inline]
-fn detect_header_fast(line: &str, chars: &[char]) -> Option<usize> {
-    ekphos_core::markdown::heading(line.trim_start()).map(|_| chars.len())
+fn detect_header_fast(line: &str) -> Option<usize> {
+    ekphos_core::markdown::heading(line.trim_start()).map(|_| line.chars().count())
 }
 
 #[inline]
@@ -377,31 +484,21 @@ fn highlight_list_marker_fast(row: usize, line: &str, trimmed: &str, colors: &Hi
 }
 
 #[inline]
-fn highlight_inline_code_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '`' {
-            if i + 1 < len && chars[i + 1] == '`' {
-                i += 2;
-                continue;
-            }
-
-            let mut j = i + 1;
-            while j < len {
-                if chars[j] == '`' {
-                    highlights.push(HighlightRange::new(row, i, j + 1, Style::default().fg(colors.code_color), HighlightType::InlineCode).with_priority(2));
-                    i = j + 1;
-                    break;
-                }
-                j += 1;
-            }
-            if j >= len {
-                i += 1;
-            }
+fn highlight_inline_code_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
+    let mut chars = line.chars().enumerate().peekable();
+    let mut open = None;
+    while let Some((col, ch)) = chars.next() {
+        if ch != '`' {
+            continue;
+        }
+        if open.is_none() && chars.peek().is_some_and(|(_, next)| *next == '`') {
+            chars.next();
+            continue;
+        }
+        if let Some(start) = open.take() {
+            highlights.push(HighlightRange::new(row, start, col + 1, Style::default().fg(colors.code_color), HighlightType::InlineCode).with_priority(2));
         } else {
-            i += 1;
+            open = Some(col);
         }
     }
 }
@@ -440,105 +537,123 @@ fn is_position_highlighted_fast(highlights: &[HighlightRange], row: usize, col: 
     highlights[..start_idx].iter().any(|h| h.row == row && col >= h.start_col && col < h.end_col)
 }
 
-fn highlight_bold_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
-    let len = chars.len();
-    if len < 4 {
-        return;
-    }
-
-    let mut i = 0;
-    while i + 3 < len {
-        let c = chars[i];
-        if (c == '*' || c == '_') && chars[i + 1] == c {
-            let mut j = i + 2;
-            while j + 1 < len {
-                if chars[j] == c && chars[j + 1] == c {
-                    if !is_position_highlighted_fast(highlights, row, i, check_from) {
-                        let mut style = Style::default().add_modifier(Modifier::BOLD);
-                        if let Some(color) = colors.bold_color {
-                            style = style.fg(color);
-                        }
-                        highlights.push(HighlightRange::new(row, i, j + 2, style, HighlightType::Bold));
-                    }
-                    i = j + 2;
-                    break;
+fn highlight_bold_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
+    let mut chars = line.chars().enumerate().peekable();
+    let mut star_open = None;
+    let mut underscore_open = None;
+    while let Some((col, marker)) = chars.next() {
+        if !matches!(marker, '*' | '_') || !chars.peek().is_some_and(|(_, next)| *next == marker) {
+            continue;
+        }
+        chars.next();
+        let open = if marker == '*' { &mut star_open } else { &mut underscore_open };
+        if let Some(start) = open.take() {
+            if !is_position_highlighted_fast(highlights, row, start, check_from) {
+                let mut style = Style::default().add_modifier(Modifier::BOLD);
+                if let Some(color) = colors.bold_color {
+                    style = style.fg(color);
                 }
-                j += 1;
-            }
-            if j + 1 >= len {
-                i += 1;
+                highlights.push(HighlightRange::new(row, start, col + 2, style, HighlightType::Bold));
             }
         } else {
-            i += 1;
+            *open = Some(col);
         }
     }
 }
 
-fn highlight_italic_fast(row: usize, chars: &[char], colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
-    let len = chars.len();
-    if len < 2 {
-        return;
-    }
-
-    let mut i = 0;
-    while i < len {
-        let c = chars[i];
-        if c == '*' || c == '_' {
-            if i + 1 < len && chars[i + 1] == c {
-                i += 2;
-                continue;
-            }
-            if i > 0 && chars[i - 1] == c {
-                i += 1;
-                continue;
-            }
-
-            let mut j = i + 1;
-            while j < len {
-                if chars[j] == c {
-                    if j + 1 < len && chars[j + 1] == c {
-                        j += 2;
-                        continue;
-                    }
-                    if !is_position_highlighted_fast(highlights, row, i, check_from) {
-                        let mut style = Style::default().add_modifier(Modifier::ITALIC);
-                        if let Some(color) = colors.italic_color {
-                            style = style.fg(color);
-                        }
-                        highlights.push(HighlightRange::new(row, i, j + 1, style, HighlightType::Italic));
-                    }
-                    i = j + 1;
-                    break;
+fn highlight_italic_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>, check_from: usize) {
+    let mut chars = line.chars().enumerate().peekable();
+    let mut star_open = None;
+    let mut underscore_open = None;
+    let mut previous = None;
+    while let Some((col, marker)) = chars.next() {
+        if !matches!(marker, '*' | '_') {
+            previous = Some(marker);
+            continue;
+        }
+        if chars.peek().is_some_and(|(_, next)| *next == marker) {
+            chars.next();
+            previous = Some(marker);
+            continue;
+        }
+        if previous == Some(marker) {
+            previous = Some(marker);
+            continue;
+        }
+        let open = if marker == '*' { &mut star_open } else { &mut underscore_open };
+        if let Some(start) = open.take() {
+            if !is_position_highlighted_fast(highlights, row, start, check_from) {
+                let mut style = Style::default().add_modifier(Modifier::ITALIC);
+                if let Some(color) = colors.italic_color {
+                    style = style.fg(color);
                 }
-                j += 1;
-            }
-            if j >= len {
-                i += 1;
+                highlights.push(HighlightRange::new(row, start, col + 1, style, HighlightType::Italic));
             }
         } else {
-            i += 1;
+            *open = Some(col);
         }
+        previous = Some(marker);
     }
 }
 
-fn compute_all_wiki_links(content: &str, frontmatter_end: Option<usize>) -> Vec<WikiLinkRange> {
-    ekphos_core::markdown::document_wiki_links_with_tilde_fences(content, frontmatter_end, false)
-        .into_iter()
-        .map(|located| {
-            let columns = located.link.char_range(located.source);
-            WikiLinkRange {
-                row: located.row,
-                start_col: columns.start,
-                end_col: columns.end,
-                is_valid: false,
+fn compute_snapshot_wiki_links(
+    snapshot: &EditorSnapshot,
+    frontmatter_end: Option<usize>,
+    rows: std::ops::Range<usize>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Option<Vec<WikiLinkRange>> {
+    let mut links = Vec::new();
+    let mut in_code_block = false;
+    for (row, line) in snapshot.iter_lines().take(rows.end).enumerate() {
+        if is_cancelled() {
+            return None;
+        }
+        if frontmatter_end.is_some_and(|end| row <= end) {
+            continue;
+        }
+        match ekphos_core::markdown::fence_marker(line) {
+            Some(ekphos_core::markdown::FenceMarker::Backtick) => {
+                in_code_block = !in_code_block;
+                continue;
             }
-        })
-        .collect()
+            Some(ekphos_core::markdown::FenceMarker::Tilde) => {}
+            None if in_code_block => continue,
+            None => {}
+        }
+        if rows.contains(&row) {
+            ekphos_core::markdown::visit_wiki_links(line, |link| {
+                let columns = link.char_range(line);
+                links.push(WikiLinkRange {
+                    row,
+                    start_col: columns.start,
+                    end_col: columns.end,
+                    is_valid: false,
+                });
+            });
+        }
+    }
+    Some(links)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ekphos_editor::Editor;
+    use std::time::{Duration, Instant};
+
+    fn snapshot(content: &str) -> EditorSnapshot {
+        Editor::from_text(content).snapshot()
+    }
+
+    fn compute_all_highlights(content: &str, colors: &HighlightColors) -> (Vec<HighlightRange>, Option<usize>) {
+        let snapshot = snapshot(content);
+        compute_snapshot_highlights(&snapshot, colors, 0..snapshot.line_count(), || false).expect("test computation is not cancelled")
+    }
+
+    fn compute_all_wiki_links(content: &str, frontmatter_end: Option<usize>) -> Vec<WikiLinkRange> {
+        let snapshot = snapshot(content);
+        compute_snapshot_wiki_links(&snapshot, frontmatter_end, 0..snapshot.line_count(), || false).expect("test computation is not cancelled")
+    }
 
     #[test]
     fn test_detect_frontmatter() {
@@ -551,17 +666,10 @@ mod tests {
 
     #[test]
     fn test_detect_header() {
-        let chars1: Vec<char> = "# Header 1".chars().collect();
-        assert!(detect_header_fast("# Header 1", &chars1).is_some());
-
-        let chars2: Vec<char> = "## Header 2".chars().collect();
-        assert!(detect_header_fast("## Header 2", &chars2).is_some());
-
-        let chars3: Vec<char> = "Not a header".chars().collect();
-        assert!(detect_header_fast("Not a header", &chars3).is_none());
-
-        let chars4: Vec<char> = "#NoSpace".chars().collect();
-        assert!(detect_header_fast("#NoSpace", &chars4).is_none());
+        assert!(detect_header_fast("# Header 1").is_some());
+        assert!(detect_header_fast("## Header 2").is_some());
+        assert!(detect_header_fast("Not a header").is_none());
+        assert!(detect_header_fast("#NoSpace").is_none());
     }
 
     #[test]
@@ -996,5 +1104,58 @@ mod tests {
         assert!(bq.is_some(), "Should find blockquote highlight");
         assert_eq!(bq.unwrap().start_col, 0);
         assert_eq!(bq.unwrap().end_col, 1);
+    }
+
+    #[test]
+    fn rapid_requests_keep_only_the_latest_snapshot_and_result() {
+        let worker = HighlightWorker::new();
+        let large_text = "# old revision\n".repeat(100_000);
+        let large_snapshot = snapshot(&large_text);
+        let small_snapshot = snapshot("# latest\n\n[[target]]");
+        worker.request(large_snapshot.clone(), 1, HighlightColors::default(), 0..large_snapshot.line_count());
+        for version in 2..=500 {
+            worker.request(small_snapshot.clone(), version, HighlightColors::default(), 0..small_snapshot.line_count());
+        }
+
+        assert!(
+            worker.retained_bytes() <= large_snapshot.reference_bytes() + small_snapshot.reference_bytes(),
+            "the worker retained more than one active and one replaceable snapshot"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            if let Some(result) = worker.try_recv() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "latest highlight result timed out");
+            std::thread::yield_now();
+        };
+        assert_eq!(result.version, 500);
+        assert_eq!(result.wiki_links.len(), 1);
+        assert!(!worker.is_pending());
+        assert!(worker.try_recv().is_none());
+    }
+
+    #[test]
+    fn highlight_results_are_scoped_to_the_active_row_window() {
+        let content = (0..1_000).map(|row| format!("# heading {row} [[target-{row}]]")).collect::<Vec<_>>().join("\n");
+        let snapshot = snapshot(&content);
+        let (highlights, frontmatter) = compute_snapshot_highlights(&snapshot, &HighlightColors::default(), 400..420, || false).unwrap();
+        let wiki_links = compute_snapshot_wiki_links(&snapshot, frontmatter, 400..420, || false).unwrap();
+
+        assert!(!highlights.is_empty());
+        assert!(highlights.iter().all(|highlight| (400..420).contains(&highlight.row)));
+        assert_eq!(wiki_links.len(), 20);
+        assert!(wiki_links.iter().all(|link| (400..420).contains(&link.row)));
+    }
+
+    #[test]
+    fn worker_shutdown_cancels_large_stale_work_and_joins() {
+        let worker = HighlightWorker::new();
+        let snapshot = snapshot(&"# heading **bold** [[target]]\n".repeat(200_000));
+        worker.request(snapshot.clone(), 1, HighlightColors::default(), 0..snapshot.line_count());
+        let started = Instant::now();
+        drop(worker);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

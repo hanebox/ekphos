@@ -14,11 +14,12 @@ impl App {
     }
 
     pub fn enter_edit_mode(&mut self) {
-        // Drain any old highlight results before starting fresh
+        // Cancel old document work before starting a fresh editor revision.
         if let Some(ref worker) = self.highlight_worker {
-            worker.drain_results();
+            worker.cancel();
         }
         self.highlight_pending = false;
+        self.highlight_requested_rows = None;
 
         let content_start_line = self.current_note().map_or(0, |note| note.content_start_line);
         if let Some(document) = self.active_document.take() {
@@ -45,7 +46,7 @@ impl App {
             self.outline.shrink_to_fit();
             self.content_item_rects.clear();
             self.inline_image_rects.clear();
-            self.image_states.clear();
+            self.evict_document_services();
             drop(document);
 
             self.editor = Editor::new_with_clipboard(lines, Arc::clone(&self.dependencies.clipboard));
@@ -147,6 +148,10 @@ impl App {
         self.editor_view_height = view_height;
         self.editor.update_scroll(view_height);
         self.editor_scroll_top = self.editor.scroll_offset();
+        let rows = self.highlight_row_window();
+        if self.mode == Mode::Edit && self.highlight_requested_rows != Some((rows.start, rows.end)) {
+            self.request_highlight_update();
+        }
     }
 
     pub fn update_editor_block(&mut self) {
@@ -224,13 +229,17 @@ impl App {
         self.vim.mode = ekphos_vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
         self.highlight_pending = false;
+        self.highlight_requested_rows = None;
+        if let Some(ref worker) = self.highlight_worker {
+            worker.cancel();
+        }
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
 
         let cursor_offset_from_top = cursor_row.saturating_sub(editor_scroll);
 
-        let content = self.editor.lines().join("\n");
+        let content = self.editor.text();
         if !self.persist_active_body(content) {
             return;
         }
@@ -259,6 +268,10 @@ impl App {
         self.vim.mode = ekphos_vim::VimMode::Normal;
         self.vim_mode = VimMode::Normal;
         self.highlight_pending = false;
+        self.highlight_requested_rows = None;
+        if let Some(ref worker) = self.highlight_worker {
+            worker.cancel();
+        }
 
         let (cursor_row, _) = self.editor.cursor();
         let editor_scroll = self.editor.scroll_offset();
