@@ -35,6 +35,146 @@ struct OverviewBin {
     connected: bool,
 }
 
+const EDGE_NORTH: u8 = 1 << 0;
+const EDGE_EAST: u8 = 1 << 1;
+const EDGE_SOUTH: u8 = 1 << 2;
+const EDGE_WEST: u8 = 1 << 3;
+const EDGE_HORIZONTAL: u8 = EDGE_EAST | EDGE_WEST;
+const EDGE_VERTICAL: u8 = EDGE_NORTH | EDGE_SOUTH;
+const EDGE_DOWN_RIGHT: u8 = EDGE_EAST | EDGE_SOUTH;
+const EDGE_DOWN_LEFT: u8 = EDGE_SOUTH | EDGE_WEST;
+const EDGE_UP_RIGHT: u8 = EDGE_NORTH | EDGE_EAST;
+const EDGE_UP_LEFT: u8 = EDGE_NORTH | EDGE_WEST;
+const EDGE_T_RIGHT: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH;
+const EDGE_T_DOWN: u8 = EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
+const EDGE_T_LEFT: u8 = EDGE_NORTH | EDGE_SOUTH | EDGE_WEST;
+const EDGE_T_UP: u8 = EDGE_NORTH | EDGE_EAST | EDGE_WEST;
+const EDGE_CROSS: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct EdgeCell {
+    normal: u8,
+    selected: u8,
+}
+
+/// A viewport-sized edge layer. Each cell stores the directions in which an
+/// edge leaves it, allowing intersecting paths to become proper joins instead
+/// of piles of independently painted dots.
+struct EdgeLayer {
+    area: Rect,
+    cells: Vec<EdgeCell>,
+}
+
+impl EdgeLayer {
+    fn new(area: Rect) -> Self {
+        let len = (area.width as usize).saturating_mul(area.height as usize);
+        Self { area, cells: vec![EdgeCell::default(); len] }
+    }
+
+    fn add_line(&mut self, from: (i32, i32), to: (i32, i32), selected: bool) {
+        // Canonical traversal makes the same screen-space edge produce the
+        // same staircase regardless of its link direction.
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
+        let Some(((mut x, mut y), (x1, y1))) = clip_line(from, to, self.area) else {
+            return;
+        };
+        let dx = (x1 - x).abs();
+        let dy = (y1 - y).abs();
+        let sx = if x < x1 { 1 } else { -1 };
+        let sy = if y < y1 { 1 } else { -1 };
+        let mut error = dx - dy;
+
+        while x != x1 || y != y1 {
+            let twice = 2 * error;
+            let mut next_x = x;
+            let mut next_y = y;
+            if twice > -dy {
+                error -= dy;
+                next_x += sx;
+            }
+            if twice < dx {
+                error += dx;
+                next_y += sy;
+            }
+
+            // Box-drawing glyphs connect on cardinal cell boundaries. Split a
+            // diagonal Bresenham step at one deterministic elbow, retaining a
+            // one-cell-wide path without the repeated-dot bands of the old
+            // renderer.
+            if next_x != x && next_y != y {
+                let elbow = if dx >= dy { (next_x, y) } else { (x, next_y) };
+                self.connect((x, y), elbow, selected);
+                self.connect(elbow, (next_x, next_y), selected);
+            } else {
+                self.connect((x, y), (next_x, next_y), selected);
+            }
+            x = next_x;
+            y = next_y;
+        }
+    }
+
+    fn connect(&mut self, from: (i32, i32), to: (i32, i32), selected: bool) {
+        let (from_direction, to_direction) = match (to.0 - from.0, to.1 - from.1) {
+            (1, 0) => (EDGE_EAST, EDGE_WEST),
+            (-1, 0) => (EDGE_WEST, EDGE_EAST),
+            (0, 1) => (EDGE_SOUTH, EDGE_NORTH),
+            (0, -1) => (EDGE_NORTH, EDGE_SOUTH),
+            _ => return,
+        };
+        self.add_direction(from, from_direction, selected);
+        self.add_direction(to, to_direction, selected);
+    }
+
+    fn add_direction(&mut self, point: (i32, i32), direction: u8, selected: bool) {
+        if !contains(self.area, point.0, point.1) {
+            return;
+        }
+        let x = point.0 as usize - self.area.x as usize;
+        let y = point.1 as usize - self.area.y as usize;
+        let index = y * self.area.width as usize + x;
+        if let Some(cell) = self.cells.get_mut(index) {
+            if selected {
+                cell.selected |= direction;
+            } else {
+                cell.normal |= direction;
+            }
+        }
+    }
+
+    fn render_normal(&self, buffer: &mut Buffer, color: Color) {
+        self.render(buffer, color, false);
+    }
+
+    fn render_selected(&self, buffer: &mut Buffer, color: Color) {
+        self.render(buffer, color, true);
+    }
+
+    fn render(&self, buffer: &mut Buffer, color: Color, selected: bool) {
+        for (index, edge) in self.cells.iter().enumerate() {
+            let directions = if selected { edge.selected } else { edge.normal };
+            if directions == 0 {
+                continue;
+            }
+            let x = self.area.x + (index % self.area.width as usize) as u16;
+            let y = self.area.y + (index / self.area.width as usize) as u16;
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                if selected || cell.symbol() == " " || is_edge_glyph(cell.symbol()) {
+                    cell.set_char(edge_glyph(directions));
+                    cell.set_fg(color);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdgeArrow {
+    from: (i32, i32),
+    to: (i32, i32),
+    color: Color,
+    bidirectional: bool,
+}
+
 pub struct GraphRenderAction {
     pub area: Rect,
     pub view_width: f32,
@@ -245,6 +385,12 @@ fn connected_nodes(app: &App, selected: Option<usize>) -> HashSet<usize> {
 fn screen_position(app: &App, area: Rect, node: &GraphNode) -> (i32, i32) {
     (((node.x - app.graph.graph_view.viewport_x) * app.graph.graph_view.zoom + area.x as f32).round() as i32, ((node.y - app.graph.graph_view.viewport_y) * app.graph.graph_view.zoom + area.y as f32).round() as i32)
 }
+fn edge_anchor(position: (i32, i32), level: DetailLevel) -> (i32, i32) {
+    match level {
+        DetailLevel::Overview | DetailLevel::Compact => position,
+        DetailLevel::Detail => (position.0 + NODE_WIDTH as i32 / 2, position.1 + NODE_HEIGHT as i32 / 2),
+    }
+}
 fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, selected: Option<usize>) {
     let screen_cells = (area.width as usize).saturating_mul(area.height as usize).max(1);
     let (edge_budget, selected_budget) = match level {
@@ -256,6 +402,9 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
     let normal_count = app.graph.graph_view.edges.len().saturating_sub(selected_count);
     let mut seen_normal = HashSet::with_capacity(edge_budget);
     let mut seen_selected = HashSet::with_capacity(selected_budget);
+    let mut layer = EdgeLayer::new(area);
+    let mut normal_arrows = Vec::new();
+    let mut selected_arrows = Vec::new();
     for selected_pass in [false, true] {
         let pass_count = if selected_pass { selected_count } else { normal_count };
         let budget = if selected_pass { selected_budget } else { edge_budget };
@@ -274,8 +423,8 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
             if !sample_index.is_multiple_of(stride) || drawn >= budget {
                 continue;
             }
-            let from = screen_position(app, area, &app.graph.graph_view.nodes[from_index]);
-            let to = screen_position(app, area, &app.graph.graph_view.nodes[to_index]);
+            let from = edge_anchor(screen_position(app, area, &app.graph.graph_view.nodes[from_index]), level);
+            let to = edge_anchor(screen_position(app, area, &app.graph.graph_view.nodes[to_index]), level);
             if from == to {
                 continue;
             }
@@ -285,12 +434,25 @@ fn render_edges(buffer: &mut Buffer, app: &App, area: Rect, level: DetailLevel, 
                 continue;
             }
             let color = if is_selected { app.state.theme.primary } else { app.state.theme.border };
-            draw_clipped_line(buffer, from, to, area, color, is_selected);
+            layer.add_line(from, to, is_selected);
             drawn += 1;
             if level == DetailLevel::Detail && (is_selected || app.graph.graph_view.nodes.len() < 300) {
-                draw_arrow(buffer, from, to, area, color, edge.bidirectional);
+                let arrow = EdgeArrow { from, to, color, bidirectional: edge.bidirectional };
+                if is_selected {
+                    selected_arrows.push(arrow);
+                } else {
+                    normal_arrows.push(arrow);
+                }
             }
         }
+    }
+    layer.render_normal(buffer, app.state.theme.border);
+    for arrow in normal_arrows {
+        draw_arrow(buffer, arrow.from, arrow.to, area, arrow.color, arrow.bidirectional);
+    }
+    layer.render_selected(buffer, app.state.theme.primary);
+    for arrow in selected_arrows {
+        draw_arrow(buffer, arrow.from, arrow.to, area, arrow.color, arrow.bidirectional);
     }
 }
 fn render_overview_nodes(buffer: &mut Buffer, app: &App, area: Rect, connected: &HashSet<usize>) {
@@ -521,35 +683,27 @@ fn draw_arrow(buffer: &mut Buffer, from: (i32, i32), to: (i32, i32), area: Rect,
     let position = if dx.abs() >= dy.abs() { (to.0 - dx.signum() * 2, to.1) } else { (to.0, to.1 - dy.signum() * 2) };
     put(buffer, position.0, position.1, arrow, color, area);
 }
-fn draw_clipped_line(buffer: &mut Buffer, from: (i32, i32), to: (i32, i32), area: Rect, color: Color, overwrite: bool) {
-    let Some(((mut x0, mut y0), (x1, y1))) = clip_line(from, to, area) else {
-        return;
-    };
-    let dx = (x1 - x0).abs();
-    let dy = (y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut error = dx - dy;
-    loop {
-        if let Some(cell) = buffer.cell_mut((x0 as u16, y0 as u16)) {
-            if overwrite || cell.symbol() == " " || cell.symbol() == "·" {
-                cell.set_char('·');
-                cell.set_fg(color);
-            }
-        }
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let twice = 2 * error;
-        if twice > -dy {
-            error -= dy;
-            x0 += sx;
-        }
-        if twice < dx {
-            error += dx;
-            y0 += sy;
-        }
+fn edge_glyph(directions: u8) -> char {
+    match directions {
+        EDGE_HORIZONTAL => '─',
+        EDGE_VERTICAL => '│',
+        EDGE_DOWN_RIGHT => '╭',
+        EDGE_DOWN_LEFT => '╮',
+        EDGE_UP_RIGHT => '╰',
+        EDGE_UP_LEFT => '╯',
+        EDGE_T_RIGHT => '├',
+        EDGE_T_DOWN => '┬',
+        EDGE_T_LEFT => '┤',
+        EDGE_T_UP => '┴',
+        EDGE_CROSS => '┼',
+        mask if mask & (EDGE_EAST | EDGE_WEST) != 0 && mask & (EDGE_NORTH | EDGE_SOUTH) != 0 => '┼',
+        mask if mask & (EDGE_EAST | EDGE_WEST) != 0 => '─',
+        _ => '│',
     }
+}
+
+fn is_edge_glyph(symbol: &str) -> bool {
+    matches!(symbol, "─" | "│" | "╭" | "╮" | "╰" | "╯" | "├" | "┬" | "┤" | "┴" | "┼")
 }
 
 /// Liang-Barsky clipping bounds work to the visible terminal rectangle before
@@ -676,10 +830,43 @@ mod tests {
     fn focused_trace_wins_at_edge_crossings() {
         let area = Rect::new(0, 0, 9, 5);
         let mut buffer = Buffer::empty(area);
-        draw_clipped_line(&mut buffer, (0, 2), (8, 2), area, Color::DarkGray, false);
-        draw_clipped_line(&mut buffer, (4, 0), (4, 4), area, Color::Yellow, true);
+        let mut edges = EdgeLayer::new(area);
+        edges.add_line((0, 2), (8, 2), false);
+        edges.add_line((4, 0), (4, 4), true);
+        edges.render_normal(&mut buffer, Color::DarkGray);
+        edges.render_selected(&mut buffer, Color::Yellow);
         let crossing = buffer.cell((4, 2)).expect("crossing cell");
-        assert_eq!(crossing.symbol(), "·");
+        assert_eq!(crossing.symbol(), "│");
         assert_eq!(crossing.fg, Color::Yellow);
+    }
+
+    #[test]
+    fn diagonal_edges_are_one_connected_stroke_without_dot_bands() {
+        let area = Rect::new(0, 0, 7, 4);
+        let mut buffer = Buffer::empty(area);
+        let mut edges = EdgeLayer::new(area);
+        edges.add_line((0, 0), (6, 3), false);
+        edges.render_normal(&mut buffer, Color::DarkGray);
+
+        let mut rendered = Vec::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    if cell.symbol() != " " {
+                        rendered.push(cell.symbol());
+                    }
+                }
+            }
+        }
+        assert!(!rendered.is_empty());
+        assert!(rendered.iter().all(|symbol| is_edge_glyph(symbol)));
+        assert!(rendered.iter().all(|symbol| *symbol != "·"));
+    }
+
+    #[test]
+    fn edge_anchors_use_node_centers_at_detail_level() {
+        assert_eq!(edge_anchor((10, 5), DetailLevel::Overview), (10, 5));
+        assert_eq!(edge_anchor((10, 5), DetailLevel::Compact), (10, 5));
+        assert_eq!(edge_anchor((10, 5), DetailLevel::Detail), (11, 6));
     }
 }
