@@ -50,10 +50,11 @@ pub enum AppCommand {
     CancelCut,
     SidebarSearch,
     CycleSort,
+    ToggleEditorMode,
 }
 
 impl AppCommand {
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::Quit,
         Self::FocusNext,
         Self::FocusPrevious,
@@ -98,6 +99,7 @@ impl AppCommand {
         Self::CancelCut,
         Self::SidebarSearch,
         Self::CycleSort,
+        Self::ToggleEditorMode,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -146,6 +148,7 @@ impl AppCommand {
             Self::CancelCut => "cancel_cut",
             Self::SidebarSearch => "sidebar_search",
             Self::CycleSort => "cycle_sort",
+            Self::ToggleEditorMode => "toggle_editor_mode",
         }
     }
 
@@ -199,6 +202,7 @@ impl AppCommand {
             Self::CancelCut => &["esc"],
             Self::SidebarSearch => &["/"],
             Self::CycleSort => &["s"],
+            Self::ToggleEditorMode => &["f6"],
         }
     }
 }
@@ -520,6 +524,12 @@ mod tests {
     use super::*;
     fn config(entries: &[(&str, &[&str])]) -> KeybindingsConfig {
         KeybindingsConfig(entries.iter().map(|(command, bindings)| ((*command).to_string(), bindings.iter().map(|binding| (*binding).to_string()).collect())).collect())
+    }
+
+    #[test]
+    fn editor_mode_toggle_defaults_to_f6() {
+        let keymap = Keymap::default();
+        assert_eq!(keymap.binding_label(AppCommand::ToggleEditorMode), "F6");
     }
 
     #[test]

@@ -195,6 +195,22 @@ impl History {
         self.undo_stack.push_back(entry);
         self.enforce_limits();
     }
+
+    pub(super) fn record_group(&mut self, operations: Vec<EditOperation>, cursor_before: Position, cursor_after: Position) {
+        if operations.is_empty() {
+            return;
+        }
+        if operations.len() == 1 {
+            self.record(operations.into_iter().next().expect("checked non-empty"), cursor_before, cursor_after);
+            return;
+        }
+        self.redo_stack.clear();
+        self.redo_payload_bytes = 0;
+        let entry = HistoryEntry { operations, cursor_before, cursor_after, timestamp: Instant::now() };
+        self.undo_payload_bytes += entry.payload_bytes();
+        self.undo_stack.push_back(entry);
+        self.enforce_limits();
+    }
     fn enforce_limits(&mut self) {
         while self.undo_stack.len() > 1 && (self.undo_stack.len() + self.redo_stack.len() > self.max_entries || self.undo_payload_bytes + self.redo_payload_bytes > self.max_payload_bytes) {
             if let Some(entry) = self.undo_stack.pop_front() {

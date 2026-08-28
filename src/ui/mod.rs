@@ -71,7 +71,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             app.editor.editor_area = layout.area;
             app.editor.set_view_size(layout.inner_width, layout.inner_height);
             app.update_editor_scroll(layout.inner_height);
-            editor::render_editor(f, editor::EditorView { theme: &app.state.theme, editor: &app.editor, zen_mode: app.state.zen_mode }, layout);
+            editor::render_editor(f, editor::EditorView { theme: &app.state.theme, editor: &app.editor, editing_mode: app.state.config.editor.mode, keymap: &app.state.keymap, zen_mode: app.state.zen_mode }, layout);
         }
     }
     let outline = render_outline(f, OutlineView { theme: &app.state.theme, document: &app.document, snapshot: app.document(), editor: &app.editor, focus: app.state.focus, minimized: app.is_outline_minimized() }, chunks[2]);
@@ -176,9 +176,7 @@ mod tests {
             let vault = root.join("vault");
             fs::create_dir_all(&vault).unwrap();
             fs::write(vault.join("fixture.md"), content).unwrap();
-            let mut config = Config::default();
-            config.welcome_shown = false;
-            config.check_updates = false;
+            let config = Config { general: crate::config::GeneralConfig { welcome_shown: false, check_updates: false, ..Default::default() }, ..Default::default() };
             let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
             let mut app = App::new_injected(config, vault, None, dependencies);
             app.state.show_welcome = false;
@@ -244,7 +242,7 @@ mod tests {
     fn golden_edit_view_80x24() {
         let mut fixture = GoldenApp::new();
         fixture.app.enter_edit_mode();
-        assert_eq!(fixture.hash(80, 24), 16_481_934_834_706_604_804);
+        assert_eq!(fixture.hash(80, 24), 15_822_003_958_405_314_542);
     }
 
     #[test]
@@ -260,7 +258,7 @@ mod tests {
                 let layout = editor::EditorLayout { area, inner_width: 0, inner_height: 0 };
                 fixture.app.editor.editor_area = area;
                 fixture.app.editor.set_view_size(0, 0);
-                editor::render_editor(frame, editor::EditorView { theme: &fixture.app.state.theme, editor: &fixture.app.editor, zen_mode: false }, layout);
+                editor::render_editor(frame, editor::EditorView { theme: &fixture.app.state.theme, editor: &fixture.app.editor, editing_mode: fixture.app.state.config.editor.mode, keymap: &fixture.app.state.keymap, zen_mode: false }, layout);
             })
             .unwrap();
 
@@ -319,9 +317,7 @@ mod tests {
             note.push_str(&format!("plain line {line}\n"));
         }
         fs::write(vault.join("fixture.md"), note).unwrap();
-        let mut config = Config::default();
-        config.welcome_shown = false;
-        config.check_updates = false;
+        let config = Config { general: crate::config::GeneralConfig { welcome_shown: false, check_updates: false, ..Default::default() }, ..Default::default() };
         let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
         let mut app = App::new_injected(config, vault, None, dependencies);
         app.images.picker = Some(Picker::halfblocks());
@@ -385,9 +381,7 @@ mod tests {
 
     #[test]
     fn custom_panel_layout_uses_independent_effective_widths() {
-        let mut config = Config::default();
-        config.sidebar_width_percent = 30;
-        config.outline_width_percent = 140;
+        let config = Config { general: crate::config::GeneralConfig { sidebar_width_percent: 30, outline_width_percent: 140, ..Default::default() }, ..Default::default() };
         assert_eq!(main_layout_constraints(false, false, false, config.effective_sidebar_width_percent(), config.effective_outline_width_percent(),), [Constraint::Percentage(30), Constraint::Min(20), Constraint::Percentage(95),]);
     }
 

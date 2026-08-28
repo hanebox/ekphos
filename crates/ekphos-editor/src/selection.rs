@@ -22,6 +22,27 @@ impl Editor {
         self.cursor.selection_range()
     }
 
+    pub fn select_all(&mut self) {
+        self.cursor.move_to(0, 0);
+        self.cursor.start_selection();
+        let last_row = self.buffer.line_count().saturating_sub(1);
+        self.cursor.move_to(last_row, self.buffer.line_len(last_row));
+        self.inclusive_selection = false;
+        self.ensure_cursor_visible();
+    }
+
+    pub fn move_cursor_with_selection(&mut self, movement: CursorMove, extend: bool) {
+        if extend {
+            if !self.cursor.has_selection() {
+                self.cursor.start_selection();
+                self.inclusive_selection = false;
+            }
+        } else {
+            self.cancel_selection();
+        }
+        self.move_cursor(movement);
+    }
+
     /// Selection range as used by copy/cut/rendering. When the selection is
     /// inclusive (character-wise Visual mode), the end is extended by one
     /// character so the cell under the cursor is part of the range.
@@ -49,33 +70,55 @@ impl Editor {
     }
 
     pub fn cut(&mut self) {
-        if let Some((start, end)) = self.effective_selection_range() {
-            let cursor_before = self.cursor.pos();
-            let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
+        if let Some(deleted) = self.delete_selection_impl() {
             self.clipboard = Some(deleted.clone());
             self.clipboard_linewise = false;
             let _ = self.clipboard_port.set_text(&deleted);
-            self.wrap_cache.invalidate_from(start.row);
-            self.history.record(EditOperation::Delete { start, end, deleted_text: deleted }, cursor_before, start);
-            self.cursor.move_to(start.row, start.col);
-            self.cursor.cancel_selection();
-            self.ensure_cursor_visible();
         }
     }
 
-    /// Delete the current line entirely (for dd command)
-    pub(super) fn delete_selection_internal(&mut self) {
-        if let Some((start, end)) = self.cursor.selection_range() {
-            let lines_deleted = end.row - start.row;
-            self.buffer.discard_text_range(start.row, start.col, end.row, end.col);
-            self.wrap_cache.invalidate_from(start.row);
-            if lines_deleted > 0 {
-                self.highlight_index.shift_rows_after(end.row + 1, -(lines_deleted as isize));
-                self.row_style_cache.borrow_mut().shift_rows_after(end.row + 1, -(lines_deleted as isize));
-            }
-            self.update_row_highlights(start.row);
-            self.cursor.move_to(start.row, start.col);
-            self.cursor.cancel_selection();
+    pub fn delete_selection(&mut self) -> bool {
+        self.delete_selection_impl().is_some()
+    }
+
+    fn delete_selection_impl(&mut self) -> Option<String> {
+        let (start, end) = self.effective_selection_range()?;
+        if start == end {
+            self.cancel_selection();
+            return None;
         }
+        let cursor_before = self.cursor.pos();
+        let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
+        self.wrap_cache.invalidate_from(start.row);
+        let removed_rows = end.row.saturating_sub(start.row);
+        if removed_rows > 0 {
+            self.highlight_index.shift_rows_after(end.row + 1, -(removed_rows as isize));
+            self.row_style_cache.borrow_mut().shift_rows_after(end.row + 1, -(removed_rows as isize));
+        }
+        self.update_row_highlights(start.row);
+        self.history.record(EditOperation::Delete { start, end, deleted_text: deleted.clone() }, cursor_before, start);
+        self.cursor.move_to(start.row, start.col);
+        self.cancel_selection();
+        self.ensure_cursor_visible();
+        Some(deleted)
+    }
+
+    pub(super) fn take_selection_operation(&mut self) -> Option<EditOperation> {
+        let (start, end) = self.effective_selection_range()?;
+        if start == end {
+            self.cancel_selection();
+            return None;
+        }
+        let deleted_text = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
+        self.wrap_cache.invalidate_from(start.row);
+        let removed_rows = end.row.saturating_sub(start.row);
+        if removed_rows > 0 {
+            self.highlight_index.shift_rows_after(end.row + 1, -(removed_rows as isize));
+            self.row_style_cache.borrow_mut().shift_rows_after(end.row + 1, -(removed_rows as isize));
+        }
+        self.update_row_highlights(start.row);
+        self.cursor.move_to(start.row, start.col);
+        self.cancel_selection();
+        Some(EditOperation::Delete { start, end, deleted_text })
     }
 }

@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, BlockInsertMode, Focus, Mode};
+use crate::config::EditingMode;
 use ekphos_vim::VimMode;
 
 pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -45,6 +46,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let status = app.state.status_message.clone();
             (mode.to_string(), String::new(), None, status)
         }
+        Mode::Edit if app.state.config.editor.mode == EditingMode::Standard => ("standard".to_string(), String::new(), None, None),
         Mode::Edit => {
             let vim = &app.editor.vim;
             let mode_name = match &vim.mode {
@@ -144,7 +146,7 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         let status = normal_status.map(|msg| vec![Span::styled(" › ", Style::default().fg(statusbar.separator)), Span::styled(msg, Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))]);
         (path, status)
     };
-    let recording_indicator = if app.editor.mode == Mode::Edit && app.editor.vim.macros.is_recording() { vec![Span::styled("● REC  ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))] } else { vec![] };
+    let recording_indicator = if app.editor.mode == Mode::Edit && app.state.config.editor.mode == EditingMode::Vim && app.editor.vim.macros.is_recording() { vec![Span::styled("● REC  ", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))] } else { vec![] };
     let indexing_indicator = if app.search.indexing_in_progress {
         use std::sync::atomic::Ordering;
         let current = app.search.index_progress.load(Ordering::Relaxed);
@@ -157,7 +159,8 @@ pub fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let zen_indicator = if app.state.zen_mode { vec![Span::styled("zen  ", Style::default().fg(theme.info).add_modifier(Modifier::BOLD))] } else { vec![] };
     let stats = Span::styled(format!("{} words", word_count), Style::default().fg(statusbar.mode));
     let position = Span::styled(format!("  {}%", percentage), Style::default().fg(statusbar.mode));
-    let help = Span::styled("  ? help ", Style::default().fg(statusbar.mode));
+    let help_label = if app.editor.mode == Mode::Edit { "  F1 help " } else { "  ? help " };
+    let help = Span::styled(help_label, Style::default().fg(statusbar.mode));
     let mut left_content = vec![brand, separator1, mode];
     left_content.extend(pending);
     left_content.push(separator2);

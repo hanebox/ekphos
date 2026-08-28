@@ -41,8 +41,20 @@ section of `~/.config/ekphos/config.toml`.
 - `Ctrl+g`: Open the active note's Local graph
 - `Ctrl+z`: Toggle zen mode
 - `Ctrl+m`: Toggle frontmatter
+- `F6`: Switch between Standard and Vim editing
 
-Press `?` for the full keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive vim keybindings and documentation.
+New installations use Standard editing: type normally, select with `Shift` plus the arrow keys, press `Ctrl+s` to save, and press `Esc` to return to preview. `Ctrl+a/c/x/v/z/y/f` provide familiar select, clipboard, undo, redo, and find actions. Press `F1` while editing for the full reference.
+
+Choose an editing mode in `~/.config/ekphos/config.toml`:
+
+```toml
+[editor]
+mode = "standard" # or "vim"
+```
+
+Press `F6` to switch immediately and save the choice. Existing configurations without a `mode` setting continue to use Vim. Terminal emulators may handle clipboard shortcuts themselves; terminal paste and the editor context menu remain available.
+
+Press `?` for the app keybind reference, or visit [docs.ekphos.xyz](https://docs.ekphos.xyz) for comprehensive editing, theme, and configuration documentation.
 
 ## Interactive Demo
 
@@ -168,6 +180,6 @@ Inline preview works in terminals with image support (iTerm2, Kitty, WezTerm, Gh
 
 ---
 
-Read the docs at [docs.ekphos.xyz](https://docs.ekphos.xyz) for full documentation, vim keybindings, themes, and configuration.
+Read the docs at [docs.ekphos.xyz](https://docs.ekphos.xyz) for full documentation, editing modes, themes, and configuration.
 
 Press `q` to quit. Happy note-taking!

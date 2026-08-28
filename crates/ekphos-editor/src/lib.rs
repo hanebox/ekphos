@@ -492,6 +492,57 @@ mod tests {
         assert_eq!(ed.selected_text().as_deref(), Some("Open "));
     }
 
+    #[test]
+    fn select_all_uses_an_exclusive_document_range() {
+        let mut ed = Editor::new(vec!["first".to_string(), "second".to_string()]);
+        ed.set_cursor(0, 2);
+        ed.select_all();
+        assert_eq!(ed.selected_text().as_deref(), Some("first\nsecond"));
+    }
+
+    #[test]
+    fn replacing_a_selection_is_one_undoable_edit() {
+        let mut ed = editor_with("hello world");
+        ed.set_cursor(0, 0);
+        ed.start_selection();
+        ed.set_cursor(0, 5);
+        ed.insert_char('H');
+        assert_eq!(ed.text(), "H world");
+        assert!(ed.undo());
+        assert_eq!(ed.text(), "hello world");
+        assert!(ed.redo());
+        assert_eq!(ed.text(), "H world");
+    }
+
+    #[test]
+    fn newline_replacement_is_one_undoable_edit() {
+        let mut ed = editor_with("hello world");
+        ed.set_cursor(0, 5);
+        ed.start_selection();
+        ed.set_cursor(0, 6);
+        ed.insert_newline();
+        assert_eq!(ed.iter_lines().collect::<Vec<_>>(), vec!["hello", "world"]);
+        assert!(ed.undo());
+        assert_eq!(ed.text(), "hello world");
+    }
+
+    #[test]
+    fn delete_selection_does_not_replace_the_clipboard() {
+        let mut ed = editor_with("copy delete");
+        ed.set_cursor(0, 0);
+        ed.start_selection();
+        ed.set_cursor(0, 4);
+        ed.copy();
+        ed.cancel_selection();
+        ed.set_cursor(0, 5);
+        ed.start_selection();
+        ed.set_cursor(0, 11);
+        assert!(ed.delete_selection());
+        ed.set_cursor(0, 5);
+        ed.paste();
+        assert_eq!(ed.text(), "copy copy");
+    }
+
     /// Regression: deleting the LAST line with `dd` must be undoable. The recorded
     /// op used to target a row past the buffer end, so undo silently lost the text.
     #[test]

@@ -1,6 +1,18 @@
 use super::*;
 
 pub(super) fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
+    match app.state.keymap.resolve(key, |command| command == AppCommand::ToggleEditorMode) {
+        KeyResolution::Command(AppCommand::ToggleEditorMode) => {
+            switch_editing_mode(app);
+            return;
+        }
+        KeyResolution::Pending => return,
+        KeyResolution::Command(_) | KeyResolution::NoMatch => {}
+    }
+    if key.code == KeyCode::F(1) {
+        app.state.dialog = DialogState::Help;
+        return;
+    }
     if handle_wiki_autocomplete(app, key) {
         app.request_highlight_update();
         return;
@@ -45,18 +57,22 @@ pub(super) fn handle_edit_mode(app: &mut App, key: crossterm::event::KeyEvent) {
             _ => {
                 app.editor.pending_delete = None;
                 app.editor.cancel_selection();
-                dispatch_vim_input(app, key);
+                dispatch_editor_input(app, key);
             }
         }
         app.request_highlight_update();
         app.update_editor_block();
         return;
     }
-    dispatch_vim_input(app, key);
+    dispatch_editor_input(app, key);
     app.request_highlight_update();
     app.update_editor_block();
 }
-fn dispatch_vim_input(app: &mut App, key: crossterm::event::KeyEvent) {
+fn dispatch_editor_input(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.state.config.editor.mode == EditingMode::Standard {
+        handle_standard_mode(app, key);
+        return;
+    }
     match app.editor.vim.mode.input_mode() {
         VimInputMode::Normal => handle_vim_normal_mode(app, key),
         VimInputMode::Insert => handle_vim_insert_mode(app, key),

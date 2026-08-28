@@ -37,6 +37,7 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         AppCommand::EditNote => {
             app.push_navigation_history(app.vault.selected_note);
             app.enter_edit_mode();
+            update_cursor_style(app);
         }
         AppCommand::CreateNote => {
             app.state.input_buffer.clear();
@@ -163,6 +164,7 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         AppCommand::ShowHelp => app.state.dialog = DialogState::Help,
         AppCommand::SidebarSearch => app.activate_sidebar_search(),
         AppCommand::CycleSort => app.cycle_sort_mode(),
+        AppCommand::ToggleEditorMode => switch_editing_mode(app),
         AppCommand::ContentAction => {
             if let Some(crate::app::ContentItem::TaskItem { .. }) = app.document.content_items.get(app.document.content_cursor) {
                 if app.is_task_checkbox_selected() || !open_selected_content_target(app) {

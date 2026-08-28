@@ -15,13 +15,13 @@ use ratatui::{
 };
 use ratatui_image::{picker::Picker, sliced::SlicedProtocol};
 
-use crate::config::{Config, Theme, ThemeEntry, ThemeFile};
+use crate::config::{Config, EditingMode, Theme, ThemeEntry, ThemeFile};
 use crate::highlight::Highlighter;
 use crate::highlight_worker::{HighlightColors, HighlightResult, HighlightWorker};
 use crate::image_service::ImageService as ImageWorkerService;
-use crate::keybindings::{KeybindingFallback, KeybindingWarning, Keymap};
+use crate::keybindings::{AppCommand, KeybindingFallback, KeybindingWarning, Keymap};
 use crate::syntax_service::SyntaxService;
-use ekphos_editor::{Editor, Position};
+use ekphos_editor::{CursorShape, Editor, Position};
 use ekphos_graph as graph;
 use ekphos_graph::{GraphEdge, GraphFileFingerprint, GraphFilter, GraphIndex, GraphLinkScope, GraphMode, GraphNode, GraphResponse, GraphSourceFile, GraphSourceMetadata, GraphWorker};
 use ekphos_search as search;
@@ -186,7 +186,15 @@ impl AppBuilder {
         editor.set_padding(config.editor.left_padding, config.editor.right_padding);
         editor.set_line_number_mode(config.editor.line_numbers);
         editor.set_scrolloff(config.editor.scrolloff as usize);
-        editor.set_block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(theme.primary)).title(" NORMAL | Ctrl+S: Save, Esc: Exit "));
+        let (editor_color, editor_title) = match config.editor.mode {
+            EditingMode::Standard => {
+                let toggle_key = keymap.binding_label(AppCommand::ToggleEditorMode);
+                (theme.success, format!(" STANDARD | Ctrl+S Save · Esc Preview · Ctrl+F Find · {toggle_key} Vim · F1 Help "))
+            }
+            EditingMode::Vim => (theme.primary, " NORMAL | Ctrl+S: Save, Esc: Exit ".to_string()),
+        };
+        editor.set_block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(editor_color)).title(editor_title));
+        editor.set_cursor_shape(if config.editor.mode == EditingMode::Standard { CursorShape::Bar } else { CursorShape::Block });
         editor.set_cursor_line_style(Style::default());
         editor.set_selection_style(Style::default().fg(theme.foreground).bg(theme.selection));
         let notes_dir_exists = config.notes_path().exists();

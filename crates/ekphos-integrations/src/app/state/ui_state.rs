@@ -9,6 +9,16 @@ impl App {
         Config::config_path_in(&self.dependencies.config_dir)
     }
 
+    pub fn toggle_editing_mode_preference(&mut self) -> EditingMode {
+        let mode = self.state.config.editor.mode.toggled();
+        self.state.config.editor.mode = mode;
+        match self.state.config.save_to_dir(&self.dependencies.config_dir) {
+            Ok(()) => self.show_toast(format!("Editing mode: {}", mode.display_name()), ToastKind::Info),
+            Err(error) => self.show_error_toast(format!("Editing mode changed for this session, but the config could not be saved: {error}")),
+        }
+        mode
+    }
+
     pub fn next_sidebar_item(&mut self) {
         if self.vault.sidebar_items.is_empty() {
             return;

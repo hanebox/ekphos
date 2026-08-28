@@ -6,7 +6,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::app::{App, BlockInsertMode, BlockInsertState, ContextMenuItem, ContextMenuState, DeleteType, DialogState, Focus, LinkInfo, Mode, SearchPickerState, SidebarItemKind, WikiAutocompleteMode, WikiAutocompleteState};
 use crate::clipboard::{self, ClipboardContent};
-use crate::config::Config;
+use crate::config::{Config, EditingMode};
 use crate::keybindings::{AppCommand, KeyResolution};
 use crate::ui;
 use ekphos_editor::{CursorMove, CursorShape, Position};
@@ -20,6 +20,7 @@ mod event_loop;
 mod graph;
 mod mouse;
 mod search;
+mod standard;
 mod vim_modes;
 mod vim_normal;
 
@@ -31,5 +32,6 @@ use event_loop::{open_selected_content_target, update_cursor_style};
 use graph::*;
 use mouse::*;
 use search::*;
+use standard::*;
 use vim_modes::*;
 use vim_normal::*;

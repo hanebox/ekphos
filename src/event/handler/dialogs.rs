@@ -139,7 +139,6 @@ pub(super) fn handle_key_event(app: &mut App, key: crossterm::event::KeyEvent) -
             }
         }
         Mode::Edit => {
-            app.state.keymap.reset_pending();
             handle_edit_mode(app, key);
         }
     }
@@ -285,13 +284,14 @@ pub(super) fn handle_delete_folder_confirm_dialog(app: &mut App, key: crossterm:
 
 pub(super) fn handle_unsaved_changes_dialog(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            app.save_edit();
-            app.editor.vim.mode = VimMode::Normal;
-            update_cursor_style(app);
-            app.state.dialog = DialogState::None;
+        KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if app.save_edit() {
+                app.editor.vim.mode = VimMode::Normal;
+                update_cursor_style(app);
+                app.state.dialog = DialogState::None;
+            }
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
+        KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Char('n') | KeyCode::Char('N') => {
             app.cancel_edit();
             app.editor.vim.mode = VimMode::Normal;
             update_cursor_style(app);

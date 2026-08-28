@@ -61,6 +61,7 @@ impl App {
             });
             self.editor.set_frontmatter_color(self.state.theme.content.frontmatter);
             self.editor.set_cursor(target_row, 0);
+            self.editor.set_cursor_shape(if self.state.config.editor.mode == EditingMode::Standard { CursorShape::Bar } else { CursorShape::Block });
             for source_line in 0..self.editor.line_count() {
                 let Some(line) = self.editor.line(source_line) else {
                     continue;
@@ -114,6 +115,17 @@ impl App {
     }
 
     pub fn update_editor_block(&mut self) {
+        if self.state.config.editor.mode == EditingMode::Standard {
+            if self.state.zen_mode {
+                self.editor.set_block(Block::default());
+            } else {
+                let toggle_key = self.state.keymap.binding_label(AppCommand::ToggleEditorMode);
+                self.editor.set_block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(self.state.theme.success)).title(format!(" STANDARD | Ctrl+S Save · Esc Preview · Ctrl+F Find · {toggle_key} Vim · F1 Help ")));
+            }
+            self.editor.set_selection_style(Style::default().fg(self.state.theme.foreground).bg(self.state.theme.selection));
+            self.editor.set_cursor_line_style(Style::default());
+            return;
+        }
         let is_command_mode = self.editor.vim.mode.is_command();
         let mode_str = if is_command_mode {
             "COMMAND"
@@ -166,7 +178,19 @@ impl App {
         self.editor.set_cursor_line_style(Style::default());
     }
 
-    pub fn save_edit(&mut self) {
+    pub fn save_edit_in_place(&mut self) -> bool {
+        let content = self.editor.text();
+        if !self.persist_active_body(content) {
+            return false;
+        }
+        self.sort_tree();
+        self.rebuild_sidebar_items();
+        self.select_current_note_in_sidebar();
+        self.show_toast("Saved", ToastKind::Success);
+        true
+    }
+
+    pub fn save_edit(&mut self) -> bool {
         self.end_buffer_search();
         self.editor.vim.reset_pending();
         self.editor.vim.command_buffer.clear();
@@ -181,7 +205,7 @@ impl App {
         let cursor_offset_from_top = cursor_row.saturating_sub(editor_scroll);
         let content = self.editor.text();
         if !self.persist_active_body(content) {
-            return;
+            return false;
         }
         self.sort_tree();
         self.rebuild_sidebar_items();
@@ -194,6 +218,7 @@ impl App {
         let preview_scroll = self.document.content_cursor.saturating_sub(cursor_offset_from_top);
         self.document.content_scroll_offset = preview_scroll + 1;
         self.request_memory_reclaim();
+        true
     }
 
     pub fn cancel_edit(&mut self) {

@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{BlockInsertMode, EditorSession};
-use crate::config::Theme;
+use crate::config::{EditingMode, Theme};
+use crate::keybindings::{AppCommand, Keymap};
 use ekphos_vim::VimMode;
 
 #[derive(Clone, Copy)]
@@ -20,6 +21,8 @@ pub struct EditorLayout {
 pub struct EditorView<'a> {
     pub theme: &'a Theme,
     pub editor: &'a EditorSession,
+    pub editing_mode: EditingMode,
+    pub keymap: &'a Keymap,
     pub zen_mode: bool,
 }
 
@@ -114,6 +117,16 @@ pub fn render_editor(f: &mut Frame, view: EditorView<'_>, layout: EditorLayout) 
 }
 fn render_zen_status_line(f: &mut Frame, view: &EditorView<'_>, area: Rect) {
     let theme = view.theme;
+    if view.editing_mode == EditingMode::Standard {
+        let toggle_key = view.keymap.binding_label(AppCommand::ToggleEditorMode);
+        let status_line = Line::from(vec![
+            Span::styled(" STANDARD ", Style::default().fg(theme.background).bg(theme.success).add_modifier(Modifier::BOLD)),
+            Span::styled(" │ ", Style::default().fg(theme.border)),
+            Span::styled(format!("Ctrl+S Save · Esc Preview · Ctrl+F Find · {toggle_key} Vim · F1 Help"), Style::default().fg(theme.muted)),
+        ]);
+        f.render_widget(Paragraph::new(status_line), area);
+        return;
+    }
     let is_command_mode = view.editor.vim.mode.is_command();
     let mode_str = if is_command_mode {
         "COMMAND"

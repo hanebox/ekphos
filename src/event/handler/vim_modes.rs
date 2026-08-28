@@ -26,46 +26,48 @@ pub(super) fn handle_vim_insert_mode(app: &mut App, key: crossterm::event::KeyEv
             app.editor.vim.mode = VimMode::Normal;
             app.start_buffer_search();
         }
-        KeyCode::Char('[') => {
-            app.editor.input(key);
-            let (row, col) = app.editor.cursor();
-            if !app.is_cursor_in_code(row, col) {
-                if let Some(line) = app.editor.line(row) {
-                    if col >= 2 && line.chars().nth(col.saturating_sub(2)) == Some('[') && line.chars().nth(col.saturating_sub(1)) == Some('[') {
-                        let trigger_pos = (row, col.saturating_sub(2));
-                        let suggestions = app.build_wiki_suggestions("");
-                        app.editor.wiki_autocomplete = WikiAutocompleteState::Open { trigger_pos, query: String::new(), suggestions, selected_index: 0, mode: WikiAutocompleteMode::Note, target_note: None };
-                    }
+        _ => handle_editor_text_input(app, key),
+    }
+}
+
+pub(super) fn handle_editor_text_input(app: &mut App, key: crossterm::event::KeyEvent) {
+    app.editor.input(key);
+    if key.code == KeyCode::Char('[') {
+        let (row, col) = app.editor.cursor();
+        if !app.is_cursor_in_code(row, col) {
+            if let Some(line) = app.editor.line(row) {
+                if col >= 2 && line.chars().nth(col.saturating_sub(2)) == Some('[') && line.chars().nth(col.saturating_sub(1)) == Some('[') {
+                    let trigger_pos = (row, col.saturating_sub(2));
+                    let suggestions = app.build_wiki_suggestions("");
+                    app.editor.wiki_autocomplete = WikiAutocompleteState::Open { trigger_pos, query: String::new(), suggestions, selected_index: 0, mode: WikiAutocompleteMode::Note, target_note: None };
                 }
             }
         }
-        _ => {
-            app.editor.input(key);
-            if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
-                app.update_editor_highlights_incremental();
-                let should_detect = matches!(key.code, KeyCode::Char(_)) || (matches!(key.code, KeyCode::Backspace) && matches!(app.editor.wiki_autocomplete, WikiAutocompleteState::Open { .. }));
-                if should_detect {
-                    let (row, col) = app.editor.cursor();
-                    if !app.is_cursor_in_code(row, col) {
-                        if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
-                            let (query, suggestions, target_note) = match mode {
-                                WikiAutocompleteMode::Note => {
-                                    let suggestions = app.build_wiki_suggestions(&note_query);
-                                    (note_query, suggestions, None)
-                                }
-                                WikiAutocompleteMode::Heading => {
-                                    let heading_q = heading_query.unwrap_or_default();
-                                    let suggestions = app.build_heading_suggestions(&note_query, &heading_q);
-                                    (heading_q, suggestions, Some(note_query))
-                                }
-                                WikiAutocompleteMode::Alias => {
-                                    let full_target = if let Some(ref h) = heading_query { format!("{}#{}", note_query, h) } else { note_query };
-                                    (alias_query.unwrap_or_default(), Vec::new(), Some(full_target))
-                                }
-                            };
-                            app.editor.wiki_autocomplete = WikiAutocompleteState::Open { trigger_pos: (row, 0), query, suggestions, selected_index: 0, mode, target_note };
+        return;
+    }
+    if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter) {
+        app.update_editor_highlights_incremental();
+        let should_detect = matches!(key.code, KeyCode::Char(_)) || (matches!(key.code, KeyCode::Backspace) && matches!(app.editor.wiki_autocomplete, WikiAutocompleteState::Open { .. }));
+        if should_detect {
+            let (row, col) = app.editor.cursor();
+            if !app.is_cursor_in_code(row, col) {
+                if let Some((note_query, heading_query, alias_query, mode)) = app.detect_unclosed_wikilink(row, col) {
+                    let (query, suggestions, target_note) = match mode {
+                        WikiAutocompleteMode::Note => {
+                            let suggestions = app.build_wiki_suggestions(&note_query);
+                            (note_query, suggestions, None)
                         }
-                    }
+                        WikiAutocompleteMode::Heading => {
+                            let heading_q = heading_query.unwrap_or_default();
+                            let suggestions = app.build_heading_suggestions(&note_query, &heading_q);
+                            (heading_q, suggestions, Some(note_query))
+                        }
+                        WikiAutocompleteMode::Alias => {
+                            let full_target = if let Some(ref h) = heading_query { format!("{}#{}", note_query, h) } else { note_query };
+                            (alias_query.unwrap_or_default(), Vec::new(), Some(full_target))
+                        }
+                    };
+                    app.editor.wiki_autocomplete = WikiAutocompleteState::Open { trigger_pos: (row, 0), query, suggestions, selected_index: 0, mode, target_note };
                 }
             }
         }

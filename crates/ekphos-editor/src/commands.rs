@@ -100,15 +100,19 @@ impl Editor {
     }
     pub fn insert_char(&mut self, c: char) {
         let cursor_before = self.cursor.pos();
-        if self.cursor.has_selection() {
-            self.delete_selection_internal();
-        }
+        let deleted_selection = self.take_selection_operation();
         let pos = self.cursor.pos();
         self.buffer.insert_char(pos.row, pos.col, c);
         self.wrap_cache.invalidate_line(pos.row);
         self.update_row_highlights(pos.row);
-        self.history.record(EditOperation::Insert { pos, text: c.to_string() }, cursor_before, Position::new(pos.row, pos.col + 1));
-        self.cursor.move_to(pos.row, pos.col + 1);
+        let cursor_after = Position::new(pos.row, pos.col + 1);
+        let insertion = EditOperation::Insert { pos, text: c.to_string() };
+        if let Some(deletion) = deleted_selection {
+            self.history.record_group(vec![deletion, insertion], cursor_before, cursor_after);
+        } else {
+            self.history.record(insertion, cursor_before, cursor_after);
+        }
+        self.cursor.move_to(cursor_after.row, cursor_after.col);
         self.ensure_cursor_visible();
     }
 
@@ -118,19 +122,7 @@ impl Editor {
             return;
         }
         let cursor_before = self.cursor.pos();
-        let deleted_selection = if self.cursor.has_selection() {
-            if let Some((start, end)) = self.cursor.selection_range() {
-                let deleted = self.buffer.delete_text_range(start.row, start.col, end.row, end.col);
-                self.wrap_cache.invalidate_from(start.row);
-                self.cursor.move_to(start.row, start.col);
-                self.cursor.cancel_selection();
-                Some((start, end, deleted))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let deleted_selection = self.take_selection_operation();
         let pos = self.cursor.pos();
         let newline_count = s.bytes().filter(|byte| *byte == b'\n').count();
         if newline_count == 0 {
@@ -169,19 +161,18 @@ impl Editor {
             self.recalc_code_blocks_from(pos.row);
             self.cursor.move_to(last_idx, last_part.chars().count());
         }
-        let had_selection = deleted_selection.is_some();
-        if let Some((start, end, deleted_text)) = deleted_selection {
-            self.history.record(EditOperation::Delete { start, end, deleted_text }, cursor_before, pos);
+        let insertion = EditOperation::Insert { pos, text: s.to_string() };
+        if let Some(deletion) = deleted_selection {
+            self.history.record_group(vec![deletion, insertion], cursor_before, self.cursor.pos());
+        } else {
+            self.history.record(insertion, cursor_before, self.cursor.pos());
         }
-        self.history.record(EditOperation::Insert { pos, text: s.to_string() }, if had_selection { pos } else { cursor_before }, self.cursor.pos());
         self.ensure_cursor_visible();
     }
 
     pub fn insert_newline(&mut self) {
         let cursor_before = self.cursor.pos();
-        if self.cursor.has_selection() {
-            self.delete_selection_internal();
-        }
+        let deleted_selection = self.take_selection_operation();
         let pos = self.cursor.pos();
         let list_prefix = self.buffer.line(pos.row).and_then(|line| {
             let prefix = ListPrefix::detect(line)?;
@@ -194,7 +185,12 @@ impl Editor {
             let deleted = self.buffer.delete_range(pos.row, 0, *prefix_len);
             self.wrap_cache.invalidate_line(pos.row);
             self.update_row_highlights(pos.row);
-            self.history.record(EditOperation::Delete { start: Position::new(pos.row, 0), end: Position::new(pos.row, *prefix_len), deleted_text: deleted }, cursor_before, Position::new(pos.row, 0));
+            let mut operations = Vec::with_capacity(2);
+            if let Some(deletion) = deleted_selection {
+                operations.push(deletion);
+            }
+            operations.push(EditOperation::Delete { start: Position::new(pos.row, 0), end: Position::new(pos.row, *prefix_len), deleted_text: deleted });
+            self.history.record_group(operations, cursor_before, Position::new(pos.row, 0));
             self.cursor.move_to(pos.row, 0);
             self.ensure_cursor_visible();
             return;
@@ -204,17 +200,22 @@ impl Editor {
         self.wrap_cache.invalidate_line(pos.row);
         self.highlight_index.shift_rows_after(pos.row + 1, 1);
         self.row_style_cache.borrow_mut().shift_rows_after(pos.row + 1, 1);
-        self.history.record(EditOperation::SplitLine { pos }, cursor_before, Position::new(pos.row + 1, 0));
+        let mut operations = Vec::with_capacity(3);
+        if let Some(deletion) = deleted_selection {
+            operations.push(deletion);
+        }
+        operations.push(EditOperation::SplitLine { pos });
         if let Some((prefix, _, false)) = list_prefix {
             let next_prefix = prefix.next_prefix();
             let prefix_char_count = next_prefix.chars().count();
             self.buffer.insert_str(pos.row + 1, 0, &next_prefix);
             self.wrap_cache.invalidate_line(pos.row + 1);
-            self.history.record(EditOperation::Insert { pos: Position::new(pos.row + 1, 0), text: next_prefix }, Position::new(pos.row + 1, 0), Position::new(pos.row + 1, prefix_char_count));
+            operations.push(EditOperation::Insert { pos: Position::new(pos.row + 1, 0), text: next_prefix });
             self.cursor.move_to(pos.row + 1, prefix_char_count);
         } else {
             self.cursor.move_to(pos.row + 1, 0);
         }
+        self.history.record_group(operations, cursor_before, self.cursor.pos());
         self.update_row_highlights(pos.row);
         self.update_row_highlights(pos.row + 1);
         self.ensure_cursor_visible();

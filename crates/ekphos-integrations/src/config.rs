@@ -22,7 +22,7 @@ fn expand_home_with(path: &str, home: Option<&Path>) -> PathBuf {
     }
     PathBuf::from(path)
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub editor: EditorConfig,
@@ -69,6 +69,8 @@ pub struct GeneralConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorConfig {
+    #[serde(default = "legacy_editing_mode")]
+    pub mode: EditingMode,
     #[serde(default = "default_line_wrap")]
     pub line_wrap: bool,
     #[serde(default = "default_tab_width")]
@@ -81,6 +83,34 @@ pub struct EditorConfig {
     pub line_numbers: LineNumberMode,
     #[serde(default = "default_scrolloff")]
     pub scrolloff: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EditingMode {
+    #[default]
+    Standard,
+    Vim,
+}
+
+impl EditingMode {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Vim => "Vim",
+        }
+    }
+
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Standard => Self::Vim,
+            Self::Vim => Self::Standard,
+        }
+    }
+}
+
+fn legacy_editing_mode() -> EditingMode {
+    EditingMode::Vim
 }
 fn default_line_wrap() -> bool {
     true
@@ -99,8 +129,12 @@ fn default_scrolloff() -> u8 {
 }
 impl Default for EditorConfig {
     fn default() -> Self {
-        Self { line_wrap: default_line_wrap(), tab_width: default_tab_width(), left_padding: default_left_padding(), right_padding: default_right_padding(), line_numbers: LineNumberMode::default(), scrolloff: default_scrolloff() }
+        Self { mode: EditingMode::Standard, line_wrap: default_line_wrap(), tab_width: default_tab_width(), left_padding: default_left_padding(), right_padding: default_right_padding(), line_numbers: LineNumberMode::default(), scrolloff: default_scrolloff() }
     }
+}
+
+fn legacy_editor_config() -> EditorConfig {
+    EditorConfig { mode: EditingMode::Vim, ..EditorConfig::default() }
 }
 fn default_notes_dir() -> String {
     "~/Documents/ekphos".to_string()
@@ -180,11 +214,6 @@ impl Default for GeneralConfig {
         }
     }
 }
-impl Default for Config {
-    fn default() -> Self {
-        Self { general: GeneralConfig::default(), editor: EditorConfig::default(), keybindings: KeybindingsConfig::default() }
-    }
-}
 impl Deref for Config {
     type Target = GeneralConfig;
     fn deref(&self) -> &Self::Target {
@@ -200,7 +229,7 @@ impl DerefMut for Config {
 struct ConfigFile {
     #[serde(default)]
     general: Option<GeneralConfig>,
-    #[serde(default)]
+    #[serde(default = "legacy_editor_config")]
     editor: EditorConfig,
     #[serde(default)]
     keybindings: KeybindingsConfig,
@@ -941,6 +970,30 @@ mod tests {
         assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Ctrl+g");
     }
     #[test]
+    fn fresh_configs_default_to_standard_editing() {
+        let config = Config::default();
+        assert_eq!(config.editor.mode, EditingMode::Standard);
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("mode = \"standard\""));
+    }
+    #[test]
+    fn legacy_configs_without_an_editor_mode_keep_vim() {
+        let without_editor: Config = toml::from_str("notes_dir = '/tmp/notes'").unwrap();
+        assert_eq!(without_editor.editor.mode, EditingMode::Vim);
+        let partial_editor: Config = toml::from_str("[editor]\nline_wrap = false\n").unwrap();
+        assert_eq!(partial_editor.editor.mode, EditingMode::Vim);
+    }
+    #[test]
+    fn explicit_editing_modes_round_trip() {
+        for mode in [EditingMode::Standard, EditingMode::Vim] {
+            let mut config = Config::default();
+            config.editor.mode = mode;
+            let serialized = toml::to_string_pretty(&config).unwrap();
+            let parsed: Config = toml::from_str(&serialized).unwrap();
+            assert_eq!(parsed.editor.mode, mode);
+        }
+    }
+    #[test]
     fn general_table_deserializes_config_values() {
         let config: Config = toml::from_str("[general]\nnotes_dir = '/tmp/notes'\ncheck_updates = false\n").unwrap();
         assert_eq!(config.notes_dir, "/tmp/notes");
@@ -980,9 +1033,7 @@ mod tests {
     }
     #[test]
     fn panel_widths_are_serialized() {
-        let mut config = Config::default();
-        config.sidebar_width_percent = 30;
-        config.outline_width_percent = 40;
+        let config = Config { general: GeneralConfig { sidebar_width_percent: 30, outline_width_percent: 40, ..GeneralConfig::default() }, ..Config::default() };
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.starts_with("[general]\n"));
         let document: toml::Table = toml::from_str(&serialized).unwrap();

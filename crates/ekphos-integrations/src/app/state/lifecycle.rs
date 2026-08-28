@@ -80,7 +80,7 @@ impl App {
         self.editor.set_padding(self.state.config.editor.left_padding, self.state.config.editor.right_padding);
         self.editor.set_line_number_mode(self.state.config.editor.line_numbers);
         self.editor.set_scrolloff(self.state.config.editor.scrolloff as usize);
-        self.editor.set_block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(self.state.theme.primary)).title(" NORMAL | Ctrl+S: Save, Esc: Exit "));
+        self.update_editor_block();
         self.editor.set_selection_style(Style::default().fg(self.state.theme.foreground).bg(self.state.theme.selection));
         self.state.syntax_service.configure_theme(&self.state.config.syntax_theme);
         self.state.syntax_service.clear_results();
@@ -97,7 +97,7 @@ impl App {
     /// alone. Used for both live preview and final apply in the theme selector.
     pub(super) fn apply_theme_named(&mut self, name: &str) {
         self.state.theme = Theme::from_name_in(name, &Config::themes_dir_in(&self.dependencies.config_dir));
-        self.editor.set_block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(self.state.theme.primary)).title(" NORMAL | Ctrl+S: Save, Esc: Exit "));
+        self.update_editor_block();
         self.editor.set_selection_style(Style::default().fg(self.state.theme.foreground).bg(self.state.theme.selection));
         self.state.needs_full_clear = true;
     }

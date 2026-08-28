@@ -161,26 +161,34 @@ pub(super) fn handle_paste_event(app: &mut App, text: String) {
     if app.editor.mode != Mode::Edit {
         return;
     }
+    paste_into_editor(app, Some(text));
+}
+
+pub(super) fn paste_into_editor(app: &mut App, fallback: Option<String>) {
     app.editor.context_menu_state = ContextMenuState::None;
     app.editor.wiki_autocomplete = WikiAutocompleteState::None;
-    if app.editor.vim.mode == VimMode::Normal || app.editor.vim.mode == VimMode::Visual {
+    if app.state.config.editor.mode == EditingMode::Vim && matches!(app.editor.vim.mode, VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::VisualBlock) {
         app.editor.cancel_selection();
         app.editor.vim.mode = VimMode::Insert;
         update_cursor_style(app);
     }
     let paste_text = match clipboard::get_content_as_markdown_from(app.clipboard()) {
-        Ok(ClipboardContent::Markdown(md)) => md,
-        Ok(ClipboardContent::PlainText(txt)) => txt,
-        Ok(ClipboardContent::Empty) => text.clone(),
+        Ok(ClipboardContent::Markdown(md)) => Some(md),
+        Ok(ClipboardContent::PlainText(txt)) => Some(txt),
+        Ok(ClipboardContent::Empty) => fallback,
         Err(e) => {
             app.show_error_toast(format!("Clipboard: {}", e));
-            text.clone()
+            fallback
         }
     };
-    if paste_text.contains('\n') {
-        app.state.needs_full_clear = true;
+    if let Some(paste_text) = paste_text.filter(|text| !text.is_empty()) {
+        if paste_text.contains('\n') {
+            app.state.needs_full_clear = true;
+        }
+        app.editor.insert_str(&paste_text);
+    } else {
+        app.editor.paste();
     }
-    app.editor.insert_str(&paste_text);
     app.update_editor_highlights();
     app.update_editor_block();
     if let Some(view_height) = app.editor.editor_view_height.checked_sub(2) {
@@ -201,8 +209,10 @@ pub(super) fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::Mou
                 let row = row.min(line_count.saturating_sub(1));
                 let line_len = app.editor.line(row).map(|line| line.chars().count()).unwrap_or(0);
                 let col = col.min(line_len);
-                if app.editor.vim.mode == VimMode::Visual {
+                if app.editor.has_selection() {
                     app.editor.cancel_selection();
+                }
+                if app.state.config.editor.mode == EditingMode::Vim && app.editor.vim.mode.is_visual() {
                     app.editor.vim.mode = VimMode::Normal;
                     update_cursor_style(app);
                 }
@@ -223,14 +233,19 @@ pub(super) fn handle_edit_mode_mouse(app: &mut App, mouse: crossterm::event::Mou
         MouseEventKind::Drag(MouseButton::Left) => {
             if app.editor.mouse_button_held {
                 app.editor.last_mouse_y = mouse_y;
-                if app.editor.vim.mode == VimMode::Normal {
-                    app.editor.vim.mode = VimMode::Visual;
-                    update_cursor_style(app);
+                let can_start_selection = app.state.config.editor.mode == EditingMode::Standard || app.editor.vim.mode == VimMode::Normal;
+                if !app.editor.has_selection() && can_start_selection {
+                    if app.state.config.editor.mode == EditingMode::Vim {
+                        app.editor.vim.mode = VimMode::Visual;
+                        update_cursor_style(app);
+                        app.editor.set_inclusive_selection(true);
+                    } else {
+                        app.editor.set_inclusive_selection(false);
+                    }
                     app.editor.start_selection();
-                    app.editor.set_inclusive_selection(true);
                     app.update_editor_block();
                 }
-                if app.editor.vim.mode == VimMode::Visual {
+                if app.editor.has_selection() {
                     handle_auto_scroll(app, mouse_y);
                 }
                 if let Some((row, col)) = app.screen_to_editor_coords(mouse_x, mouse_y) {
@@ -369,24 +384,27 @@ pub(super) fn execute_context_menu_action(app: &mut App, action: ContextMenuItem
         ContextMenuItem::Copy => {
             app.editor.copy();
             app.editor.cancel_selection();
-            app.editor.vim.mode = VimMode::Normal;
-            update_cursor_style(app);
+            if app.state.config.editor.mode == EditingMode::Vim {
+                app.editor.vim.mode = VimMode::Normal;
+                update_cursor_style(app);
+            }
         }
         ContextMenuItem::Cut => {
             app.editor.cut();
-            app.editor.vim.mode = VimMode::Normal;
-            update_cursor_style(app);
+            if app.state.config.editor.mode == EditingMode::Vim {
+                app.editor.vim.mode = VimMode::Normal;
+                update_cursor_style(app);
+            }
         }
         ContextMenuItem::Paste => {
-            app.editor.paste();
+            paste_into_editor(app, None);
         }
         ContextMenuItem::SelectAll => {
-            app.editor.move_cursor(CursorMove::Top);
-            app.editor.start_selection();
-            app.editor.move_cursor(CursorMove::Bottom);
-            app.editor.set_inclusive_selection(true);
-            app.editor.vim.mode = VimMode::Visual;
-            update_cursor_style(app);
+            app.editor.select_all();
+            if app.state.config.editor.mode == EditingMode::Vim {
+                app.editor.vim.mode = VimMode::Visual;
+                update_cursor_style(app);
+            }
         }
     }
     app.update_editor_block();

@@ -27,16 +27,16 @@ pub(super) fn write_term_control(cmd: impl crossterm::Command) {
 }
 
 pub(super) fn update_cursor_style(app: &mut App) {
-    let terminal_style = match app.editor.vim.mode {
-        VimMode::Insert => SetCursorStyle::SteadyBar,
-        VimMode::Replace => SetCursorStyle::SteadyUnderScore,
-        _ => SetCursorStyle::SteadyBlock,
+    let terminal_style = match (app.state.config.editor.mode, app.editor.vim.mode) {
+        (EditingMode::Standard, _) | (EditingMode::Vim, VimMode::Insert) => SetCursorStyle::SteadyBar,
+        (EditingMode::Vim, VimMode::Replace) => SetCursorStyle::SteadyUnderScore,
+        (EditingMode::Vim, _) => SetCursorStyle::SteadyBlock,
     };
     write_term_control(terminal_style);
-    let editor_shape = match app.editor.vim.mode {
-        VimMode::Insert => CursorShape::Bar,
-        VimMode::Replace => CursorShape::Underline,
-        _ => CursorShape::Block,
+    let editor_shape = match (app.state.config.editor.mode, app.editor.vim.mode) {
+        (EditingMode::Standard, _) | (EditingMode::Vim, VimMode::Insert) => CursorShape::Bar,
+        (EditingMode::Vim, VimMode::Replace) => CursorShape::Underline,
+        (EditingMode::Vim, _) => CursorShape::Block,
     };
     app.editor.set_cursor_shape(editor_shape);
 }
@@ -77,7 +77,7 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
                 if process_events(terminal, app, &mut needs_render)? {
                     return Ok(());
                 }
-            } else if app.editor.mouse_button_held && app.editor.mode == Mode::Edit && app.editor.vim.mode == VimMode::Visual {
+            } else if app.editor.mouse_button_held && app.editor.mode == Mode::Edit && app.editor.has_selection() {
                 handle_continuous_auto_scroll(app);
                 needs_render = true;
             }
