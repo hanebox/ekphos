@@ -176,7 +176,9 @@ mod tests {
             let vault = root.join("vault");
             fs::create_dir_all(&vault).unwrap();
             fs::write(vault.join("fixture.md"), content).unwrap();
-            let config = Config { welcome_shown: false, check_updates: false, ..Config::default() };
+            let mut config = Config::default();
+            config.welcome_shown = false;
+            config.check_updates = false;
             let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
             let mut app = App::new_injected(config, vault, None, dependencies);
             app.state.show_welcome = false;
@@ -317,7 +319,9 @@ mod tests {
             note.push_str(&format!("plain line {line}\n"));
         }
         fs::write(vault.join("fixture.md"), note).unwrap();
-        let config = Config { welcome_shown: false, check_updates: false, ..Config::default() };
+        let mut config = Config::default();
+        config.welcome_shown = false;
+        config.check_updates = false;
         let dependencies = AppDependencies::headless(root.join("config"), root.join("cache"));
         let mut app = App::new_injected(config, vault, None, dependencies);
         app.images.picker = Some(Picker::halfblocks());
@@ -381,7 +385,9 @@ mod tests {
 
     #[test]
     fn custom_panel_layout_uses_independent_effective_widths() {
-        let config = Config { sidebar_width_percent: 30, outline_width_percent: 140, ..Config::default() };
+        let mut config = Config::default();
+        config.sidebar_width_percent = 30;
+        config.outline_width_percent = 140;
         assert_eq!(main_layout_constraints(false, false, false, config.effective_sidebar_width_percent(), config.effective_outline_width_percent(),), [Constraint::Percentage(30), Constraint::Min(20), Constraint::Percentage(95),]);
     }
 

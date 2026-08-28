@@ -3,6 +3,7 @@ pub use ekphos_editor::LineNumberMode;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 pub fn expand_home(path: &str) -> PathBuf {
     expand_home_with(path, dirs::home_dir().as_deref())
@@ -21,8 +22,14 @@ fn expand_home_with(path: &str, home: Option<&Path>) -> PathBuf {
     }
     PathBuf::from(path)
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Config {
+    pub general: GeneralConfig,
+    pub editor: EditorConfig,
+    pub keybindings: KeybindingsConfig,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralConfig {
     #[serde(default = "default_notes_dir")]
     pub notes_dir: String,
     #[serde(default = "default_journal_dir")]
@@ -59,10 +66,6 @@ pub struct Config {
     pub transparent_bg: bool,
     #[serde(default = "default_floating_cursor")]
     pub floating_cursor: bool,
-    #[serde(default)]
-    pub editor: EditorConfig,
-    #[serde(default)]
-    pub keybindings: KeybindingsConfig,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorConfig {
@@ -153,7 +156,7 @@ fn default_transparent_bg() -> bool {
 fn default_floating_cursor() -> bool {
     false
 }
-impl Default for Config {
+impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             notes_dir: default_notes_dir(),
@@ -174,9 +177,43 @@ impl Default for Config {
             check_updates: default_check_updates(),
             transparent_bg: default_transparent_bg(),
             floating_cursor: default_floating_cursor(),
-            editor: EditorConfig::default(),
-            keybindings: KeybindingsConfig::default(),
         }
+    }
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self { general: GeneralConfig::default(), editor: EditorConfig::default(), keybindings: KeybindingsConfig::default() }
+    }
+}
+impl Deref for Config {
+    type Target = GeneralConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.general
+    }
+}
+impl DerefMut for Config {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.general
+    }
+}
+#[derive(Deserialize)]
+struct ConfigFile {
+    #[serde(default)]
+    general: Option<GeneralConfig>,
+    #[serde(default)]
+    editor: EditorConfig,
+    #[serde(default)]
+    keybindings: KeybindingsConfig,
+    #[serde(flatten)]
+    legacy_general: GeneralConfig,
+}
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let file = ConfigFile::deserialize(deserializer)?;
+        Ok(Self { general: file.general.unwrap_or(file.legacy_general), editor: file.editor, keybindings: file.keybindings })
     }
 }
 impl Config {
@@ -904,6 +941,13 @@ mod tests {
         assert_eq!(keymap.binding_label(AppCommand::OpenGraph), "Ctrl+g");
     }
     #[test]
+    fn general_table_deserializes_config_values() {
+        let config: Config = toml::from_str("[general]\nnotes_dir = '/tmp/notes'\ncheck_updates = false\n").unwrap();
+        assert_eq!(config.notes_dir, "/tmp/notes");
+        assert!(!config.check_updates);
+        assert_eq!(config.journal_dir, "Journal");
+    }
+    #[test]
     fn partial_keybinding_table_keeps_other_command_defaults() {
         let config: Config = toml::from_str("notes_dir = '/tmp/notes'\n[keybindings]\nopen_graph = ['alt+g']\n").unwrap();
         let keymap = Keymap::from_config(&config.keybindings).unwrap();
@@ -936,10 +980,17 @@ mod tests {
     }
     #[test]
     fn panel_widths_are_serialized() {
-        let config = Config { sidebar_width_percent: 30, outline_width_percent: 40, ..Config::default() };
+        let mut config = Config::default();
+        config.sidebar_width_percent = 30;
+        config.outline_width_percent = 40;
         let serialized = toml::to_string_pretty(&config).unwrap();
-        assert!(serialized.contains("sidebar_width_percent = 30"));
-        assert!(serialized.contains("outline_width_percent = 40"));
+        assert!(serialized.starts_with("[general]\n"));
+        let document: toml::Table = toml::from_str(&serialized).unwrap();
+        let general = document.get("general").and_then(toml::Value::as_table).unwrap();
+        assert_eq!(general.get("sidebar_width_percent").and_then(toml::Value::as_integer), Some(30));
+        assert_eq!(general.get("outline_width_percent").and_then(toml::Value::as_integer), Some(40));
+        assert!(!document.contains_key("sidebar_width_percent"));
+        assert!(!document.contains_key("outline_width_percent"));
     }
     #[test]
     fn image_height_defaults_when_missing_from_toml() {
