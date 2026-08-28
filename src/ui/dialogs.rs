@@ -10,100 +10,43 @@ use crate::app::App;
 use crate::config::Theme;
 use crate::keybindings::{AppCommand, KeybindingFallback};
 
-const TITLE_MAIN: &[&str] = &[
-    "████████ ██   ██ ██████  ██   ██  ██████  ███████",
-    "██       ██  ██  ██   ██ ██   ██ ██    ██ ██     ",
-    "█████    █████   ██████  ███████ ██    ██ ███████",
-    "██       ██  ██  ██      ██   ██ ██    ██      ██",
-    "████████ ██   ██ ██      ██   ██  ██████  ███████",
-];
+const TITLE_MAIN: &[&str] = &["████████ ██   ██ ██████  ██   ██  ██████  ███████", "██       ██  ██  ██   ██ ██   ██ ██    ██ ██     ", "█████    █████   ██████  ███████ ██    ██ ███████", "██       ██  ██  ██      ██   ██ ██    ██      ██", "████████ ██   ██ ██      ██   ██  ██████  ███████"];
 
 pub fn render_keybinding_warning(f: &mut Frame, app: &App) {
-    let Some(warning) = &app.keybinding_warning else { return };
+    let Some(warning) = &app.state.keybinding_warning else { return };
     let area = f.area();
     let width = 76.min(area.width.saturating_sub(4));
     let height = 26.min(area.height.saturating_sub(4));
     if width < 20 || height < 8 {
         return;
     }
-    let dialog_area = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
+    let dialog_area = Rect { x: area.x + area.width.saturating_sub(width) / 2, y: area.y + area.height.saturating_sub(height) / 2, width, height };
     f.render_widget(Clear, dialog_area);
-    let block = Block::default()
-        .title(Span::styled(
-            " Keybinding Warning ",
-            Style::default().fg(app.theme.warning).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.theme.warning))
-        .style(Style::default().bg(app.theme.background_secondary));
+    let block = Block::default().title(Span::styled(" Keybinding Warning ", Style::default().fg(app.state.theme.warning).add_modifier(Modifier::BOLD))).borders(Borders::ALL).border_style(Style::default().fg(app.state.theme.warning)).style(Style::default().bg(app.state.theme.background_secondary));
     let inner = block.inner(dialog_area);
     f.render_widget(block, dialog_area);
-
     let fallback = match warning.fallback {
         KeybindingFallback::Defaults => "Custom keybindings were not applied; built-in defaults are active.",
         KeybindingFallback::Previous => "Custom keybindings were not applied; the previous valid bindings remain active.",
     };
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(4)])
-        .split(inner);
-    let header = vec![
-        Line::from(Span::styled(fallback, Style::default().fg(app.theme.foreground))),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Resolve every item below:",
-            Style::default().fg(app.theme.error).add_modifier(Modifier::BOLD),
-        )),
-    ];
+    let sections = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(4)]).split(inner);
+    let header = vec![Line::from(Span::styled(fallback, Style::default().fg(app.state.theme.foreground))), Line::from(""), Line::from(Span::styled("Resolve every item below:", Style::default().fg(app.state.theme.error).add_modifier(Modifier::BOLD)))];
     f.render_widget(Paragraph::new(header).wrap(Wrap { trim: false }), sections[0]);
-
-    let issues: Vec<Line> = warning
-        .issues
-        .iter()
-        .map(|issue| {
-            Line::from(vec![
-                Span::styled("• ", Style::default().fg(app.theme.error)),
-                Span::styled(issue, Style::default().fg(app.theme.foreground)),
-            ])
-        })
-        .collect();
-    f.render_widget(
-        Paragraph::new(issues)
-            .wrap(Wrap { trim: false })
-            .scroll((warning.scroll.min(u16::MAX as usize) as u16, 0)),
-        sections[1],
-    );
-
+    let issues: Vec<Line> = warning.issues.iter().map(|issue| Line::from(vec![Span::styled("• ", Style::default().fg(app.state.theme.error)), Span::styled(issue, Style::default().fg(app.state.theme.foreground))])).collect();
+    f.render_widget(Paragraph::new(issues).wrap(Wrap { trim: false }).scroll((warning.scroll.min(u16::MAX as usize) as u16, 0)), sections[1]);
     let footer = vec![
-        Line::from(Span::styled(
-            "Use j/k, arrows, or Page Up/Down to scroll.",
-            Style::default().fg(app.theme.muted),
-        )),
-        Line::from(vec![
-            Span::styled("Config: ", Style::default().fg(app.theme.muted)),
-            Span::styled(app.config_path().display().to_string(), Style::default().fg(app.theme.info)),
-        ]),
-        Line::from(Span::styled(
-            "Edit the config and reload. Press Enter or Esc to dismiss.",
-            Style::default().fg(app.theme.muted),
-        )),
+        Line::from(Span::styled("Use j/k, arrows, or Page Up/Down to scroll.", Style::default().fg(app.state.theme.muted))),
+        Line::from(vec![Span::styled("Config: ", Style::default().fg(app.state.theme.muted)), Span::styled(app.config_path().display().to_string(), Style::default().fg(app.state.theme.info))]),
+        Line::from(Span::styled("Edit the config and reload. Press Enter or Esc to dismiss.", Style::default().fg(app.state.theme.muted))),
     ];
     f.render_widget(Paragraph::new(footer).alignment(Alignment::Left).wrap(Wrap { trim: false }), sections[2]);
 }
-
 fn render_flat_title(theme: &Theme, dialog_width: u16) -> Vec<Line<'static>> {
     let main_color = theme.dialog.title;
-
     let title_width = TITLE_MAIN[0].chars().count();
     let inner_width = dialog_width.saturating_sub(2) as usize; // minus borders
     let left_pad = inner_width.saturating_sub(title_width) / 2;
     let padding = " ".repeat(left_pad);
-
     TITLE_MAIN
         .iter()
         .map(|line| {
@@ -116,487 +59,212 @@ fn render_flat_title(theme: &Theme, dialog_width: u16) -> Vec<Line<'static>> {
 pub fn render_welcome_dialog(f: &mut Frame, theme: &Theme) {
     let area = f.area();
     let dialog_theme = &theme.dialog;
-
-    // Calculate centered dialog area
     let dialog_width = 60.min(area.width.saturating_sub(4));
     let dialog_height = 24.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
-    // Clear the area behind the dialog
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    // Build welcome content with bitmap title
     let mut welcome_text = vec![Line::from("")];
-
-    // Add flat bitmap title with manual centering
     welcome_text.extend(render_flat_title(theme, dialog_width));
-
     welcome_text.extend(vec![
         Line::from(""),
         Line::from(Span::styled("A lightweight markdown research tool", Style::default().fg(dialog_theme.text))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("j/k ", Style::default().fg(theme.warning)),
-            Span::styled("Navigate notes", Style::default().fg(dialog_theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("Tab ", Style::default().fg(theme.warning)),
-            Span::styled("Switch focus  ", Style::default().fg(dialog_theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("e   ", Style::default().fg(theme.warning)),
-            Span::styled("Edit note     ", Style::default().fg(dialog_theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("?   ", Style::default().fg(theme.warning)),
-            Span::styled("Help          ", Style::default().fg(dialog_theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("q   ", Style::default().fg(theme.warning)),
-            Span::styled("Quit          ", Style::default().fg(dialog_theme.text)),
-        ]),
+        Line::from(vec![Span::styled("j/k ", Style::default().fg(theme.warning)), Span::styled("Navigate notes", Style::default().fg(dialog_theme.text))]),
+        Line::from(vec![Span::styled("Tab ", Style::default().fg(theme.warning)), Span::styled("Switch focus  ", Style::default().fg(dialog_theme.text))]),
+        Line::from(vec![Span::styled("e   ", Style::default().fg(theme.warning)), Span::styled("Edit note     ", Style::default().fg(dialog_theme.text))]),
+        Line::from(vec![Span::styled("?   ", Style::default().fg(theme.warning)), Span::styled("Help          ", Style::default().fg(dialog_theme.text))]),
+        Line::from(vec![Span::styled("q   ", Style::default().fg(theme.warning)), Span::styled("Quit          ", Style::default().fg(dialog_theme.text))]),
         Line::from(""),
         Line::from(Span::styled("Read the docs at docs.ekphos.xyz", Style::default().fg(dialog_theme.text))),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press Enter or Space to continue",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("Press Enter or Space to continue", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ]);
-
-    let welcome = Paragraph::new(welcome_text)
-        .block(
-            Block::default()
-                .title(" Welcome ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(dialog_theme.border))
-                .style(Style::default().bg(dialog_theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let welcome = Paragraph::new(welcome_text).block(Block::default().title(" Welcome ").borders(Borders::ALL).border_style(Style::default().fg(dialog_theme.border)).style(Style::default().bg(dialog_theme.background))).alignment(Alignment::Center);
     f.render_widget(welcome, dialog_area);
 }
 
 pub fn render_onboarding_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    // Calculate centered dialog area
+    let theme = &app.state.theme;
     let dialog_width = 60.min(area.width.saturating_sub(4));
     let dialog_height = 12.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
-    // Clear the area behind the dialog
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Welcome to Ekphos!",
-            Style::default().fg(theme.primary).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Welcome to Ekphos!", Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled("Where would you like to store your notes?", Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.warning)),
-            Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-            Span::styled("█", Style::default().fg(theme.cursor)),
-        ]),
+        Line::from(vec![Span::styled("> ", Style::default().fg(theme.warning)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press Enter to confirm",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("Press Enter to confirm", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Setup ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.primary))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Setup ").borders(Borders::ALL).border_style(Style::default().fg(theme.primary)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_create_note_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    let has_context = app.target_folder.is_some();
-    let has_error = app.dialog_error.is_some();
+    let theme = &app.state.theme;
+    let has_context = app.vault.target_folder.is_some();
+    let has_error = app.state.dialog_error.is_some();
     let base_height = if has_context { 10 } else { 9 };
     let dialog_height = if has_error { base_height + 2 } else { base_height };
-
-    // Calculate centered dialog area
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
-    // Clear the area behind the dialog
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    let mut content = vec![
-        Line::from(""),
-        Line::from(Span::styled("Enter note name:", Style::default().fg(theme.foreground))),
-    ];
-
-    // Show context if creating in a subfolder
-    if let Some(ref folder_path) = app.target_folder {
+    let mut content = vec![Line::from(""), Line::from(Span::styled("Enter note name:", Style::default().fg(theme.foreground)))];
+    if let Some(ref folder_path) = app.vault.target_folder {
         if let Some(folder_name) = folder_path.file_name() {
-            content.push(Line::from(Span::styled(
-                format!("in {}/", folder_name.to_string_lossy()),
-                Style::default().fg(theme.info),
-            )));
+            content.push(Line::from(Span::styled(format!("in {}/", folder_name.to_string_lossy()), Style::default().fg(theme.info))));
         }
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(vec![
-        Span::styled("> ", Style::default().fg(theme.warning)),
-        Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-        Span::styled("█", Style::default().fg(theme.cursor)),
-    ]));
-
-    // Show error message if present
-    if let Some(ref error) = app.dialog_error {
+    content.push(Line::from(vec![Span::styled("> ", Style::default().fg(theme.warning)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]));
+    if let Some(ref error) = app.state.dialog_error {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(error.as_str(), Style::default().fg(theme.error))));
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "Enter: Create  |  Esc: Cancel",
-        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-    )));
-
+    content.push(Line::from(Span::styled("Enter: Create  |  Esc: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))));
     let border_color = if has_error { theme.error } else { theme.success };
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" New Note ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" New Note ").borders(Borders::ALL).border_style(Style::default().fg(border_color)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_delete_confirm_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    // Calculate centered dialog area
+    let theme = &app.state.theme;
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = 9.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
-    // Clear the area behind the dialog
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let note_name = app.current_note().map(|n| n.title.as_str()).unwrap_or("this note");
-
     let content = vec![
         Line::from(""),
         Line::from(Span::styled("Delete note?", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled(note_name, Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(Span::styled(
-            "y: Yes  |  n: No",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("y: Yes  |  n: No", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Confirm Delete ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.error))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Confirm Delete ").borders(Borders::ALL).border_style(Style::default().fg(theme.error)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_unsaved_changes_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = 10.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "You have unsaved changes!",
-            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("You have unsaved changes!", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled("Do you want to save before exiting?", Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(Span::styled(
-            "y: Save  |  n: Discard  |  Esc: Cancel",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("y: Save  |  n: Discard  |  Esc: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Unsaved Changes ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.warning))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Unsaved Changes ").borders(Borders::ALL).border_style(Style::default().fg(theme.warning)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_create_wiki_note_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 55.min(area.width.saturating_sub(4));
     let dialog_height = 10.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    let target = app.pending_wiki_target.as_deref().unwrap_or("note");
-
+    let target = app.editor.pending_wiki_target.as_deref().unwrap_or("note");
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            format!("Note '[[{}]]' doesn't exist.", target),
-            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled(format!("Note '[[{}]]' doesn't exist.", target), Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled("Would you like to create it?", Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(Span::styled(
-            "y: Create  |  n: Cancel",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("y: Create  |  n: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Create Note ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.info))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Create Note ").borders(Borders::ALL).border_style(Style::default().fg(theme.info)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_delete_folder_confirm_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = 11.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let folder_name = app.get_selected_folder_name().unwrap_or_else(|| "this folder".to_string());
-
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Delete folder and all contents?",
-            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Delete folder and all contents?", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled(folder_name, Style::default().fg(theme.foreground))),
         Line::from(""),
         Line::from(Span::styled("This will delete all notes inside!", Style::default().fg(theme.warning))),
         Line::from(""),
-        Line::from(Span::styled(
-            "y: Yes  |  n: No",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("y: Yes  |  n: No", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Confirm Delete Folder ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.error))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Confirm Delete Folder ").borders(Borders::ALL).border_style(Style::default().fg(theme.error)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_rename_note_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = 9.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let content = vec![
         Line::from(""),
         Line::from(Span::styled("Enter new name:", Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.warning)),
-            Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-            Span::styled("█", Style::default().fg(theme.cursor)),
-        ]),
+        Line::from(vec![Span::styled("> ", Style::default().fg(theme.warning)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]),
         Line::from(""),
-        Line::from(Span::styled(
-            "Enter: Rename  |  Esc: Cancel",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("Enter: Rename  |  Esc: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Rename Note ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.warning))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Rename Note ").borders(Borders::ALL).border_style(Style::default().fg(theme.warning)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_rename_folder_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    let has_error = app.dialog_error.is_some();
+    let theme = &app.state.theme;
+    let has_error = app.state.dialog_error.is_some();
     let dialog_height = if has_error { 11 } else { 9 };
-
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let mut content = vec![
         Line::from(""),
         Line::from(Span::styled("Enter new folder name:", Style::default().fg(theme.foreground))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.info)),
-            Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-            Span::styled("█", Style::default().fg(theme.cursor)),
-        ]),
+        Line::from(vec![Span::styled("> ", Style::default().fg(theme.info)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]),
     ];
-
-    if let Some(ref error) = app.dialog_error {
+    if let Some(ref error) = app.state.dialog_error {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(error.as_str(), Style::default().fg(theme.error))));
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "Enter: Rename  |  Esc: Cancel",
-        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-    )));
-
+    content.push(Line::from(Span::styled("Enter: Rename  |  Esc: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))));
     let border_color = if has_error { theme.error } else { theme.info };
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Rename Folder ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Rename Folder ").borders(Borders::ALL).border_style(Style::default().fg(border_color)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_create_folder_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    let has_error = app.dialog_error.is_some();
-    let has_context = app.target_folder.is_some();
+    let theme = &app.state.theme;
+    let has_error = app.state.dialog_error.is_some();
+    let has_context = app.vault.target_folder.is_some();
     let dialog_height = if has_error {
         11
     } else if has_context {
@@ -604,415 +272,171 @@ pub fn render_create_folder_dialog(f: &mut Frame, app: &App) {
     } else {
         9
     };
-
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    let mut content = vec![
-        Line::from(""),
-        Line::from(Span::styled("Enter folder name:", Style::default().fg(theme.foreground))),
-    ];
-
-    if let Some(ref folder_path) = app.target_folder {
+    let mut content = vec![Line::from(""), Line::from(Span::styled("Enter folder name:", Style::default().fg(theme.foreground)))];
+    if let Some(ref folder_path) = app.vault.target_folder {
         if let Some(folder_name) = folder_path.file_name() {
-            content.push(Line::from(Span::styled(
-                format!("in {}/", folder_name.to_string_lossy()),
-                Style::default().fg(theme.info),
-            )));
+            content.push(Line::from(Span::styled(format!("in {}/", folder_name.to_string_lossy()), Style::default().fg(theme.info))));
         }
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(vec![
-        Span::styled("> ", Style::default().fg(theme.info)),
-        Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-        Span::styled("█", Style::default().fg(theme.cursor)),
-    ]));
-
-    if let Some(ref error) = app.dialog_error {
+    content.push(Line::from(vec![Span::styled("> ", Style::default().fg(theme.info)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]));
+    if let Some(ref error) = app.state.dialog_error {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(error.as_str(), Style::default().fg(theme.error))));
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "Enter: Create  |  Esc: Cancel",
-        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-    )));
-
+    content.push(Line::from(Span::styled("Enter: Create  |  Esc: Cancel", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))));
     let border_color = if has_error { theme.error } else { theme.info };
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" New Folder ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" New Folder ").borders(Borders::ALL).border_style(Style::default().fg(border_color)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_create_note_in_folder_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
-    let has_error = app.dialog_error.is_some();
+    let theme = &app.state.theme;
+    let has_error = app.state.dialog_error.is_some();
     let dialog_height = if has_error { 13 } else { 11 };
-
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    let folder_name = app
-        .target_folder
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "folder".to_string());
-
+    let folder_name = app.vault.target_folder.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "folder".to_string());
     let mut content = vec![
         Line::from(""),
         Line::from(Span::styled("Folder created! Now create your first note:", Style::default().fg(theme.success))),
         Line::from(Span::styled(format!("in {}/", folder_name), Style::default().fg(theme.info))),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.warning)),
-            Span::styled(&app.input_buffer, Style::default().fg(theme.foreground)),
-            Span::styled("█", Style::default().fg(theme.cursor)),
-        ]),
+        Line::from(vec![Span::styled("> ", Style::default().fg(theme.warning)), Span::styled(&app.state.input_buffer, Style::default().fg(theme.foreground)), Span::styled("█", Style::default().fg(theme.cursor))]),
     ];
-
-    if let Some(ref error) = app.dialog_error {
+    if let Some(ref error) = app.state.dialog_error {
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(error.as_str(), Style::default().fg(theme.error))));
     }
-
     content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "Enter: Create  |  Esc: Cancel (removes folder)",
-        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-    )));
-
+    content.push(Line::from(Span::styled("Enter: Create  |  Esc: Cancel (removes folder)", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))));
     let border_color = if has_error { theme.error } else { theme.success };
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" New Note in Folder ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" New Note in Folder ").borders(Borders::ALL).border_style(Style::default().fg(border_color)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
 pub fn render_empty_directory_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 55.min(area.width.saturating_sub(4));
     let dialog_height = 12.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Oops! This directory seems empty",
-            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Oops! This directory seems empty", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled("No markdown notes found in:", Style::default().fg(theme.foreground))),
-        Line::from(Span::styled(&app.config.notes_dir, Style::default().fg(theme.muted))),
+        Line::from(Span::styled(&app.state.config.notes_dir, Style::default().fg(theme.muted))),
         Line::from(""),
-        Line::from(Span::styled(
-            format!("Press {} to create your first note!", app.keymap.binding_label(AppCommand::CreateNote)),
-            Style::default().fg(theme.success),
-        )),
+        Line::from(Span::styled(format!("Press {} to create your first note!", app.state.keymap.binding_label(AppCommand::CreateNote)), Style::default().fg(theme.success))),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press Enter or Esc to continue",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("Press Enter or Esc to continue", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Getting Started ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.warning))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Getting Started ").borders(Borders::ALL).border_style(Style::default().fg(theme.warning)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }
 
-pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
+pub fn render_help_dialog(f: &mut Frame, app: &App) -> usize {
     let area = f.area();
-    let theme = &app.theme;
+    let theme = &app.state.theme;
     let dialog_theme = &theme.dialog;
-
-    // Calculate centered dialog area - wider for two columns
     let dialog_width = 90.min(area.width.saturating_sub(4));
     let dialog_height = area.height.saturating_sub(4).min(50);
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
-    // Clear the area behind the dialog
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .title(" Help - Keybindings (j/k to scroll) ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(dialog_theme.border))
-        .style(Style::default().bg(dialog_theme.background));
-
+    let block = Block::default().title(" Help - Keybindings (j/k to scroll) ").borders(Borders::ALL).border_style(Style::default().fg(dialog_theme.border)).style(Style::default().bg(dialog_theme.background));
     let inner_area = block.inner(dialog_area);
     f.render_widget(block, dialog_area);
-
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(inner_area);
-
+    let columns = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner_area);
     let key_style = Style::default().fg(theme.warning);
     let desc_style = Style::default().fg(dialog_theme.text);
     let header_style = Style::default().fg(dialog_theme.title).add_modifier(Modifier::BOLD);
     let subheader_style = Style::default().fg(theme.info).add_modifier(Modifier::BOLD);
-    let keys = |command| format!(" {:<16}", app.keymap.binding_label(command));
-    let paired_keys = |first, second| format!(" {:<16}", format!("{} / {}", app.keymap.binding_label(first), app.keymap.binding_label(second)),);
-
+    let keys = |command| format!(" {:<16}", app.state.keymap.binding_label(command));
+    let paired_keys = |first, second| format!(" {:<16}", format!("{} / {}", app.state.keymap.binding_label(first), app.state.keymap.binding_label(second)),);
     let left_content = vec![
         Line::from(""),
         Line::from(Span::styled(" Global", header_style)),
-        Line::from(vec![
-            Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style),
-            Span::styled("Navigate up/down", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::FocusNext), key_style),
-            Span::styled("Switch focus", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::FocusPrevious), key_style),
-            Span::styled("Switch focus (reverse)", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(paired_keys(AppCommand::Activate, AppCommand::OpenSelected), key_style),
-            Span::styled("Open / Jump to heading", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ShowHelp), key_style),
-            Span::styled("Show this help", desc_style),
-        ]),
+        Line::from(vec![Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style), Span::styled("Navigate up/down", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::FocusNext), key_style), Span::styled("Switch focus", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::FocusPrevious), key_style), Span::styled("Switch focus (reverse)", desc_style)]),
+        Line::from(vec![Span::styled(paired_keys(AppCommand::Activate, AppCommand::OpenSelected), key_style), Span::styled("Open / Jump to heading", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ShowHelp), key_style), Span::styled("Show this help", desc_style)]),
         Line::from(vec![Span::styled(keys(AppCommand::Quit), key_style), Span::styled("Quit", desc_style)]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleSidebar), key_style),
-            Span::styled("Toggle sidebar", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleOutline), key_style),
-            Span::styled("Toggle outline", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ShrinkPanel), key_style),
-            Span::styled("Shrink focused side panel", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::GrowPanel), key_style),
-            Span::styled("Grow focused side panel", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::FindInBuffer), key_style),
-            Span::styled("Find in buffer", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::OpenQuickSearch), key_style),
-            Span::styled("Fuzzy search notes", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::OpenThemeSelector), key_style),
-            Span::styled("Select theme", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::OpenGraph), key_style),
-            Span::styled("Open graph view", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::OpenJournal), key_style),
-            Span::styled("Open today's journal", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleZen), key_style),
-            Span::styled("Toggle zen mode", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleFrontmatter), key_style),
-            Span::styled("Toggle frontmatter", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ReloadFiles), key_style),
-            Span::styled("Reload files from disk", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ReloadConfig), key_style),
-            Span::styled("Reload config/theme", desc_style),
-        ]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleSidebar), key_style), Span::styled("Toggle sidebar", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleOutline), key_style), Span::styled("Toggle outline", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ShrinkPanel), key_style), Span::styled("Shrink focused side panel", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::GrowPanel), key_style), Span::styled("Grow focused side panel", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::FindInBuffer), key_style), Span::styled("Find in buffer", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::OpenQuickSearch), key_style), Span::styled("Fuzzy search notes", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::OpenThemeSelector), key_style), Span::styled("Select theme", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::OpenGraph), key_style), Span::styled("Open graph view", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::OpenJournal), key_style), Span::styled("Open today's journal", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleZen), key_style), Span::styled("Toggle zen mode", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleFrontmatter), key_style), Span::styled("Toggle frontmatter", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ReloadFiles), key_style), Span::styled("Reload files from disk", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ReloadConfig), key_style), Span::styled("Reload config/theme", desc_style)]),
         Line::from(""),
         Line::from(Span::styled(" Sidebar", header_style)),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::CreateNote), key_style),
-            Span::styled("Create new note", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::CreateFolder), key_style),
-            Span::styled("Create new folder", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::Activate), key_style),
-            Span::styled("Toggle folder / Open", desc_style),
-        ]),
+        Line::from(vec![Span::styled(keys(AppCommand::CreateNote), key_style), Span::styled("Create new note", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::CreateFolder), key_style), Span::styled("Create new folder", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::Activate), key_style), Span::styled("Toggle folder / Open", desc_style)]),
         Line::from(vec![Span::styled(keys(AppCommand::RenameItem), key_style), Span::styled("Rename", desc_style)]),
         Line::from(vec![Span::styled(keys(AppCommand::DeleteItem), key_style), Span::styled("Delete", desc_style)]),
         Line::from(vec![Span::styled(keys(AppCommand::EditNote), key_style), Span::styled("Edit note", desc_style)]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::SidebarSearch), key_style),
-            Span::styled("Search notes", desc_style),
-        ]),
+        Line::from(vec![Span::styled(keys(AppCommand::SidebarSearch), key_style), Span::styled("Search notes", desc_style)]),
         Line::from(""),
         Line::from(Span::styled(" Content View", header_style)),
-        Line::from(vec![
-            Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style),
-            Span::styled("Navigate lines", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleFloatingCursor), key_style),
-            Span::styled("Toggle floating cursor", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::GoFirst), key_style),
-            Span::styled("Go to beginning", desc_style),
-        ]),
+        Line::from(vec![Span::styled(paired_keys(AppCommand::MoveDown, AppCommand::MoveUp), key_style), Span::styled("Navigate lines", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleFloatingCursor), key_style), Span::styled("Toggle floating cursor", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::GoFirst), key_style), Span::styled("Go to beginning", desc_style)]),
         Line::from(vec![Span::styled(keys(AppCommand::GoLast), key_style), Span::styled("Go to end", desc_style)]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ContentAction), key_style),
-            Span::styled("Toggle task/Open link", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(paired_keys(AppCommand::NextTarget, AppCommand::PreviousTarget), key_style),
-            Span::styled("Next/Previous link", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::ToggleFold), key_style),
-            Span::styled("Toggle heading fold", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::FoldAll), key_style),
-            Span::styled("Fold all headings", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(keys(AppCommand::UnfoldAll), key_style),
-            Span::styled("Unfold all headings", desc_style),
-        ]),
+        Line::from(vec![Span::styled(keys(AppCommand::ContentAction), key_style), Span::styled("Toggle task/Open link", desc_style)]),
+        Line::from(vec![Span::styled(paired_keys(AppCommand::NextTarget, AppCommand::PreviousTarget), key_style), Span::styled("Next/Previous link", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::ToggleFold), key_style), Span::styled("Toggle heading fold", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::FoldAll), key_style), Span::styled("Fold all headings", desc_style)]),
+        Line::from(vec![Span::styled(keys(AppCommand::UnfoldAll), key_style), Span::styled("Unfold all headings", desc_style)]),
         Line::from(""),
-        Line::from(Span::styled(
-            " Press Esc or ? to close",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled(" Press Esc or ? to close", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
     let right_content = vec![
         Line::from(""),
         Line::from(Span::styled(" Edit Mode - Normal", header_style)),
         Line::from(""),
         Line::from(Span::styled("  Mode Changes", subheader_style)),
-        Line::from(vec![
-            Span::styled(" i/a       ", key_style),
-            Span::styled("Insert before/after cursor", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(" I/A       ", key_style),
-            Span::styled("Insert at line start/end", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" i/a       ", key_style), Span::styled("Insert before/after cursor", desc_style)]),
+        Line::from(vec![Span::styled(" I/A       ", key_style), Span::styled("Insert at line start/end", desc_style)]),
         Line::from(vec![Span::styled(" o/O       ", key_style), Span::styled("New line below/above", desc_style)]),
-        Line::from(vec![
-            Span::styled(" v/V       ", key_style),
-            Span::styled("Visual / Visual Line mode", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" v/V       ", key_style), Span::styled("Visual / Visual Line mode", desc_style)]),
         Line::from(vec![Span::styled(" :         ", key_style), Span::styled("Command mode", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Movement", subheader_style)),
-        Line::from(vec![
-            Span::styled(" h/j/k/l   ", key_style),
-            Span::styled("Move left/down/up/right", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" h/j/k/l   ", key_style), Span::styled("Move left/down/up/right", desc_style)]),
         Line::from(vec![Span::styled(" w/W       ", key_style), Span::styled("Word/WORD forward", desc_style)]),
         Line::from(vec![Span::styled(" b/B       ", key_style), Span::styled("Word/WORD backward", desc_style)]),
         Line::from(vec![Span::styled(" e/E       ", key_style), Span::styled("Word/WORD end forward", desc_style)]),
-        Line::from(vec![
-            Span::styled(" 0/^/$     ", key_style),
-            Span::styled("Line start/first char/end", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" 0/^/$     ", key_style), Span::styled("Line start/first char/end", desc_style)]),
         Line::from(vec![Span::styled(" gg/G      ", key_style), Span::styled("File top/bottom", desc_style)]),
-        Line::from(vec![
-            Span::styled(" {/}       ", key_style),
-            Span::styled("Paragraph backward/forward", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" {/}       ", key_style), Span::styled("Paragraph backward/forward", desc_style)]),
         Line::from(vec![Span::styled(" %         ", key_style), Span::styled("Matching bracket", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Find Character", subheader_style)),
-        Line::from(vec![
-            Span::styled(" f/F{c}    ", key_style),
-            Span::styled("Find char forward/backward", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(" t/T{c}    ", key_style),
-            Span::styled("Till char forward/backward", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" f/F{c}    ", key_style), Span::styled("Find char forward/backward", desc_style)]),
+        Line::from(vec![Span::styled(" t/T{c}    ", key_style), Span::styled("Till char forward/backward", desc_style)]),
         Line::from(vec![Span::styled(" ;/,       ", key_style), Span::styled("Repeat find / reverse", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Operators (+ motion/text obj)", subheader_style)),
         Line::from(vec![Span::styled(" d{motion} ", key_style), Span::styled("Delete", desc_style)]),
-        Line::from(vec![
-            Span::styled(" c{motion} ", key_style),
-            Span::styled("Change (delete + insert)", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" c{motion} ", key_style), Span::styled("Change (delete + insert)", desc_style)]),
         Line::from(vec![Span::styled(" y{motion} ", key_style), Span::styled("Yank (copy)", desc_style)]),
         Line::from(vec![Span::styled(" >/< {m}   ", key_style), Span::styled("Indent / Outdent", desc_style)]),
         Line::from(vec![Span::styled(" dd/cc/yy  ", key_style), Span::styled("Operate on whole line", desc_style)]),
@@ -1021,18 +445,9 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
         Line::from(Span::styled("  Text Objects (inner/around)", subheader_style)),
         Line::from(vec![Span::styled(" iw/aw     ", key_style), Span::styled("Inner/around word", desc_style)]),
         Line::from(vec![Span::styled(" iW/aW     ", key_style), Span::styled("Inner/around WORD", desc_style)]),
-        Line::from(vec![
-            Span::styled(" i\"/a\"     ", key_style),
-            Span::styled("Inner/around double quotes", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(" i'/a'     ", key_style),
-            Span::styled("Inner/around single quotes", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled(" i(/a(     ", key_style),
-            Span::styled("Inner/around parentheses", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" i\"/a\"     ", key_style), Span::styled("Inner/around double quotes", desc_style)]),
+        Line::from(vec![Span::styled(" i'/a'     ", key_style), Span::styled("Inner/around single quotes", desc_style)]),
+        Line::from(vec![Span::styled(" i(/a(     ", key_style), Span::styled("Inner/around parentheses", desc_style)]),
         Line::from(vec![Span::styled(" i[/a[     ", key_style), Span::styled("Inner/around brackets", desc_style)]),
         Line::from(vec![Span::styled(" i{/a{     ", key_style), Span::styled("Inner/around braces", desc_style)]),
         Line::from(vec![Span::styled(" ip/ap     ", key_style), Span::styled("Inner/around paragraph", desc_style)]),
@@ -1048,22 +463,13 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
         Line::from(vec![Span::styled(" ~         ", key_style), Span::styled("Toggle case", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Registers", subheader_style)),
-        Line::from(vec![
-            Span::styled(" \"{reg}    ", key_style),
-            Span::styled("Use register (a-z, 0-9)", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" \"{reg}    ", key_style), Span::styled("Use register (a-z, 0-9)", desc_style)]),
         Line::from(vec![Span::styled(" \"+/\"*     ", key_style), Span::styled("System clipboard", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Macros", subheader_style)),
-        Line::from(vec![
-            Span::styled(" q{reg}    ", key_style),
-            Span::styled("Record macro to register", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" q{reg}    ", key_style), Span::styled("Record macro to register", desc_style)]),
         Line::from(vec![Span::styled(" q         ", key_style), Span::styled("Stop recording", desc_style)]),
-        Line::from(vec![
-            Span::styled(" @{reg}    ", key_style),
-            Span::styled("Play macro from register", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" @{reg}    ", key_style), Span::styled("Play macro from register", desc_style)]),
         Line::from(vec![Span::styled(" @@        ", key_style), Span::styled("Repeat last macro", desc_style)]),
         Line::from(""),
         Line::from(Span::styled("  Marks", subheader_style)),
@@ -1082,64 +488,38 @@ pub fn render_help_dialog(f: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(Span::styled("  Save/Exit", subheader_style)),
         Line::from(vec![Span::styled(" Ctrl+s    ", key_style), Span::styled("Save and exit", desc_style)]),
-        Line::from(vec![
-            Span::styled(" Esc       ", key_style),
-            Span::styled("Exit to normal / cancel", desc_style),
-        ]),
+        Line::from(vec![Span::styled(" Esc       ", key_style), Span::styled("Exit to normal / cancel", desc_style)]),
         Line::from(vec![Span::styled(" :w/:q/:wq ", key_style), Span::styled("Write/Quit/Both", desc_style)]),
         Line::from(""),
     ];
-
-    // Calculate total lines and visible height
     let left_total = left_content.len();
     let right_total = right_content.len();
     let max_total = left_total.max(right_total);
     let visible_height = inner_area.height as usize;
-
-    // Apply scroll offset and clamp to prevent overflow
     let max_scroll = max_total.saturating_sub(visible_height);
-    app.help_scroll = app.help_scroll.min(max_scroll);
-    let scroll = app.help_scroll;
-
+    let scroll = app.state.help_scroll.min(max_scroll);
     let left_visible: Vec<Line> = left_content.into_iter().skip(scroll).take(visible_height).collect();
-
     let right_visible: Vec<Line> = right_content.into_iter().skip(scroll).take(visible_height).collect();
-
     let left_paragraph = Paragraph::new(left_visible).alignment(Alignment::Left);
     let right_paragraph = Paragraph::new(right_visible).alignment(Alignment::Left);
-
     f.render_widget(left_paragraph, columns[0]);
     f.render_widget(right_paragraph, columns[1]);
+    scroll
 }
 
 pub fn render_directory_not_found_dialog(f: &mut Frame, app: &App) {
     let area = f.area();
-    let theme = &app.theme;
-
+    let theme = &app.state.theme;
     let dialog_width = 58.min(area.width.saturating_sub(4));
     let dialog_height = 14.min(area.height.saturating_sub(4));
-
-    let dialog_area = Rect {
-        x: (area.width.saturating_sub(dialog_width)) / 2,
-        y: (area.height.saturating_sub(dialog_height)) / 2,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let dialog_area = Rect { x: (area.width.saturating_sub(dialog_width)) / 2, y: (area.height.saturating_sub(dialog_height)) / 2, width: dialog_width, height: dialog_height };
     f.render_widget(Clear, dialog_area);
-
     let content = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "Directory Not Found",
-            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Directory Not Found", Style::default().fg(theme.error).add_modifier(Modifier::BOLD))),
         Line::from(""),
-        Line::from(Span::styled(
-            "The configured notes directory does not exist:",
-            Style::default().fg(theme.foreground),
-        )),
-        Line::from(Span::styled(&app.config.notes_dir, Style::default().fg(theme.warning))),
+        Line::from(Span::styled("The configured notes directory does not exist:", Style::default().fg(theme.foreground))),
+        Line::from(Span::styled(&app.state.config.notes_dir, Style::default().fg(theme.warning))),
         Line::from(""),
         Line::from(Span::styled("Would you like to create it?", Style::default().fg(theme.foreground))),
         Line::from(""),
@@ -1150,21 +530,8 @@ pub fn render_directory_not_found_dialog(f: &mut Frame, app: &App) {
             Span::styled(" Quit and fix config", Style::default().fg(theme.foreground)),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "Config: ~/.config/ekphos/config.toml",
-            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
-        )),
+        Line::from(Span::styled("Config: ~/.config/ekphos/config.toml", Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC))),
     ];
-
-    let dialog = Paragraph::new(content)
-        .block(
-            Block::default()
-                .title(" Error ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.error))
-                .style(Style::default().bg(theme.background)),
-        )
-        .alignment(Alignment::Center);
-
+    let dialog = Paragraph::new(content).block(Block::default().title(" Error ").borders(Borders::ALL).border_style(Style::default().fg(theme.error)).style(Style::default().bg(theme.background))).alignment(Alignment::Center);
     f.render_widget(dialog, dialog_area);
 }

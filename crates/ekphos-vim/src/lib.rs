@@ -24,7 +24,7 @@ pub mod text_object;
 pub use find::{FindState, PendingFind};
 pub use macro_record::MacroState;
 pub use marks::MarkMap;
-pub use mode::VimMode;
+pub use mode::{VimInputMode, VimMode};
 pub use motion::Motion;
 pub use operator::Operator;
 pub use register::RegisterMap;
@@ -57,7 +57,6 @@ pub enum SearchDirection {
 }
 
 /// Represents a repeatable change for the . (dot) command
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LastChange {
     /// Delete line(s): dd with optional count
@@ -88,7 +87,6 @@ pub enum LastChange {
     ChangeWord(usize, String),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RecordedCommand {
     pub operator: Option<Operator>,
@@ -101,14 +99,7 @@ pub struct RecordedCommand {
 
 impl RecordedCommand {
     pub fn new() -> Self {
-        Self {
-            operator: None,
-            motion: None,
-            text_object: None,
-            count: None,
-            inserted_text: None,
-            register: None,
-        }
+        Self { operator: None, motion: None, text_object: None, count: None, inserted_text: None, register: None }
     }
 }
 
@@ -118,7 +109,6 @@ impl Default for RecordedCommand {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VimState {
     pub mode: VimMode,
@@ -194,19 +184,16 @@ impl VimState {
         self.pending_macro = None;
         self.pending_register = false;
         self.registers.clear_selection();
-
         if matches!(self.mode, VimMode::OperatorPending { .. }) {
             self.mode = VimMode::Normal;
         }
     }
 
-    #[allow(dead_code)]
     pub fn enter_replace_mode(&mut self) {
         self.mode = VimMode::Replace;
         self.reset_pending();
     }
 
-    #[allow(dead_code)]
     pub fn enter_visual_block_mode(&mut self) {
         self.mode = VimMode::VisualBlock;
         self.reset_pending();
@@ -220,31 +207,23 @@ impl VimState {
         self.count = Some(self.count.unwrap_or(0) * 10 + digit);
     }
 
-    #[allow(dead_code)]
     pub fn enter_operator_pending(&mut self, op: Operator) {
         let count = self.count.take();
         self.mode = VimMode::OperatorPending { operator: op, count };
-        self.recording_command = Some(RecordedCommand {
-            operator: Some(op),
-            count,
-            ..RecordedCommand::new()
-        });
+        self.recording_command = Some(RecordedCommand { operator: Some(op), count, ..RecordedCommand::new() });
     }
 
-    #[allow(dead_code)]
     pub fn enter_insert_mode(&mut self, start_pos: Position) {
         self.mode = VimMode::Insert;
         self.insert_start_pos = Some(start_pos);
         self.reset_pending();
     }
 
-    #[allow(dead_code)]
     pub fn exit_insert_mode(&mut self) {
         self.mode = VimMode::Normal;
         self.insert_start_pos = None;
     }
 
-    #[allow(dead_code)]
     pub fn enter_visual_mode(&mut self, line_wise: bool) {
         self.mode = if line_wise { VimMode::VisualLine } else { VimMode::Visual };
         self.reset_pending();
@@ -256,39 +235,31 @@ impl VimState {
         self.reset_pending();
     }
 
-    #[allow(dead_code)]
     pub fn exit_command_mode(&mut self) {
         self.mode = VimMode::Normal;
         self.command_buffer.clear();
     }
 
-    #[allow(dead_code)]
     pub fn record_command(&mut self, cmd: RecordedCommand) {
         self.last_command = Some(cmd);
         self.recording_command = None;
     }
 
-    #[allow(dead_code)]
     pub fn status_display(&self) -> String {
         let mut parts = Vec::new();
-
         if let Some(reg) = self.macros.recording_register() {
             parts.push(format!("recording @{}", reg));
         }
-
         parts.push(self.mode.display_name().to_string());
-
         if let Some(count) = self.count {
             parts.push(format!("{}", count));
         }
-
         if let VimMode::OperatorPending { operator, count } = &self.mode {
             if let Some(c) = count {
                 parts.push(format!("{}", c));
             }
             parts.push(format!("{}-", operator.char()));
         }
-
         if self.pending_g {
             parts.push("g-".to_string());
         }
@@ -301,7 +272,6 @@ impl VimState {
         if self.awaiting_replace {
             parts.push("r-".to_string());
         }
-
         if let Some(pending) = &self.pending_mark {
             parts.push(match pending {
                 PendingMark::Set => "m-".to_string(),
@@ -309,25 +279,21 @@ impl VimState {
                 PendingMark::GotoLine => "'-".to_string(),
             });
         }
-
         if let Some(pending) = &self.pending_macro {
             parts.push(match pending {
                 PendingMacro::Record => "q-".to_string(),
                 PendingMacro::Play => "@-".to_string(),
             });
         }
-
         if let Some(scope) = &self.pending_text_object_scope {
             parts.push(match scope {
                 TextObjectScope::Inner => "i-".to_string(),
                 TextObjectScope::Around => "a-".to_string(),
             });
         }
-
         if let Some(reg) = self.registers.get_selected() {
             parts.push(format!("\"{}", reg));
         }
-
         parts.join(" ")
     }
 }
@@ -405,7 +371,6 @@ mod tests {
         let mut state = VimState::new();
         state.enter_visual_mode(false);
         assert_eq!(state.mode, VimMode::Visual);
-
         state.enter_visual_mode(true);
         assert_eq!(state.mode, VimMode::VisualLine);
     }
@@ -467,10 +432,8 @@ mod tests {
         let mut state = VimState::new();
         state.pending_mark = Some(PendingMark::Set);
         assert!(state.status_display().contains("m-"));
-
         state.pending_mark = Some(PendingMark::GotoExact);
         assert!(state.status_display().contains("`-"));
-
         state.pending_mark = Some(PendingMark::GotoLine);
         assert!(state.status_display().contains("'-"));
     }
@@ -480,7 +443,6 @@ mod tests {
         let mut state = VimState::new();
         state.pending_macro = Some(PendingMacro::Record);
         assert!(state.status_display().contains("q-"));
-
         state.pending_macro = Some(PendingMacro::Play);
         assert!(state.status_display().contains("@-"));
     }

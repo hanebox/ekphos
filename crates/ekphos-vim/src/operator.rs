@@ -1,6 +1,5 @@
 //! Vim operators (d, c, y, >, <)
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
     Delete,
@@ -27,12 +26,10 @@ impl Operator {
         }
     }
 
-    #[allow(dead_code)]
     pub fn enters_insert_mode(&self) -> bool {
         matches!(self, Operator::Change)
     }
 
-    #[allow(dead_code)]
     pub fn modifies_buffer(&self) -> bool {
         !matches!(self, Operator::Yank)
     }

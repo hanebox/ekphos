@@ -23,10 +23,7 @@ pub fn heading(line: &str) -> Option<Heading<'_>> {
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
-    Some(Heading {
-        level,
-        text: rest.trim_start().trim_end_matches(|ch: char| ch == '#' || ch.is_whitespace()),
-    })
+    Some(Heading { level, text: rest.trim_start().trim_end_matches(|ch: char| ch == '#' || ch.is_whitespace()) })
 }
 
 /// Return the zero-based line containing the closing frontmatter delimiter.
@@ -89,35 +86,19 @@ pub fn wiki_link_at(source: &str, start: usize) -> Option<WikiLink<'_>> {
     if raw.is_empty() || raw.contains(['[', ']']) {
         return None;
     }
-
-    let (destination, alias) = raw
-        .split_once('|')
-        .map(|(destination, alias)| (destination, Some(alias)))
-        .unwrap_or((raw, None));
-    let (target, heading) = destination
-        .split_once('#')
-        .map(|(target, heading)| (target, Some(heading)))
-        .unwrap_or((destination, None));
+    let (destination, alias) = raw.split_once('|').map(|(destination, alias)| (destination, Some(alias))).unwrap_or((raw, None));
+    let (target, heading) = destination.split_once('#').map(|(target, heading)| (target, Some(heading))).unwrap_or((destination, None));
     let end = start + 2 + close + 2;
-
-    Some(WikiLink {
-        range: start..end,
-        raw,
-        target,
-        heading,
-        alias,
-    })
+    Some(WikiLink { range: start..end, raw, target, heading, alias })
 }
 
 /// Visit valid wiki links on one source line, excluding inline-code spans.
 pub fn visit_wiki_links<'a>(source: &'a str, mut visit: impl FnMut(WikiLink<'a>)) {
     let mut cursor = 0;
-
     while cursor < source.len() {
         let remaining = &source[cursor..];
         let next_wiki = remaining.find("[[");
         let next_tick = remaining.find('`');
-
         if let Some(tick) = next_tick {
             if next_wiki.is_none() || tick < next_wiki.unwrap() {
                 let opening = cursor + tick;
@@ -128,7 +109,6 @@ pub fn visit_wiki_links<'a>(source: &'a str, mut visit: impl FnMut(WikiLink<'a>)
                 continue;
             }
         }
-
         let Some(relative_start) = next_wiki else {
             break;
         };
@@ -158,12 +138,6 @@ pub struct LocatedWikiLink<'a> {
     pub link: WikiLink<'a>,
 }
 
-/// Scan wiki links across a document while excluding frontmatter and fenced code.
-#[cfg(test)]
-pub fn document_wiki_links(content: &str, skip_through_row: Option<usize>) -> Vec<LocatedWikiLink<'_>> {
-    document_wiki_links_with_tilde_fences(content, skip_through_row, true)
-}
-
 pub fn document_wiki_links_with_tilde_fences(content: &str, skip_through_row: Option<usize>, recognize_tilde_fences: bool) -> Vec<LocatedWikiLink<'_>> {
     let mut links = Vec::new();
     visit_document_wiki_links_with_tilde_fences(content, skip_through_row, recognize_tilde_fences, |link| links.push(link));
@@ -171,14 +145,8 @@ pub fn document_wiki_links_with_tilde_fences(content: &str, skip_through_row: Op
 }
 
 /// Visit document links without retaining an intermediate collection.
-pub fn visit_document_wiki_links_with_tilde_fences<'a>(
-    content: &'a str,
-    skip_through_row: Option<usize>,
-    recognize_tilde_fences: bool,
-    mut visit: impl FnMut(LocatedWikiLink<'a>),
-) {
+pub fn visit_document_wiki_links_with_tilde_fences<'a>(content: &'a str, skip_through_row: Option<usize>, recognize_tilde_fences: bool, mut visit: impl FnMut(LocatedWikiLink<'a>)) {
     let mut fence = None;
-
     for (row, line) in content.lines().enumerate() {
         if skip_through_row.is_some_and(|end| row <= end) {
             continue;
@@ -230,12 +198,7 @@ pub fn markdown_link_at(source: &str, start: usize) -> Option<MarkdownLink<'_>> 
     let destination_start = label_end + 2;
     let destination_end = rest[destination_start..].find(')')? + destination_start;
     let destination = &rest[destination_start..destination_end];
-    Some(MarkdownLink {
-        range: start..start + destination_end + 1,
-        label: &rest[prefix_len..label_end],
-        destination,
-        kind,
-    })
+    Some(MarkdownLink { range: start..start + destination_end + 1, label: &rest[prefix_len..label_end], destination, kind })
 }
 
 /// Return the byte length of a bare HTTP(S) URL at `start`.
@@ -248,7 +211,6 @@ pub fn bare_url_len(source: &str, start: usize) -> Option<usize> {
     } else {
         return None;
     };
-
     let mut end = rest.len();
     for (index, ch) in rest[scheme_len..].char_indices() {
         if ch.is_whitespace() || matches!(ch, ')' | ']' | '>' | '<' | '"' | '\'' | '|') {
@@ -307,7 +269,7 @@ mod tests {
     #[test]
     fn document_scanner_skips_frontmatter_and_both_fence_styles() {
         let content = "---\n[[meta]]\n---\n[[one]]\n```md\n[[code]]\n```\n~~~\n[[tilde]]\n~~~\n[[two]]";
-        let links = document_wiki_links(content, frontmatter_end(content));
+        let links = document_wiki_links_with_tilde_fences(content, frontmatter_end(content), true);
         assert_eq!(links.iter().map(|item| item.link.target).collect::<Vec<_>>(), vec!["one", "two"]);
         assert_eq!(links.iter().map(|item| item.row).collect::<Vec<_>>(), vec![3, 10]);
     }
@@ -315,15 +277,12 @@ mod tests {
     #[test]
     fn streaming_and_collecting_document_scans_match() {
         let content = "[[one]] and [[two#heading|alias]]\n```\n[[code]]\n```\n[[three]]";
-        let collected = document_wiki_links(content, None);
+        let collected = document_wiki_links_with_tilde_fences(content, None, true);
         let mut streamed = Vec::new();
         visit_document_wiki_links_with_tilde_fences(content, None, true, |link| {
             streamed.push((link.row, link.link.range, link.link.raw));
         });
-        let collected = collected
-            .iter()
-            .map(|link| (link.row, link.link.range.clone(), link.link.raw))
-            .collect::<Vec<_>>();
+        let collected = collected.iter().map(|link| (link.row, link.link.range.clone(), link.link.raw)).collect::<Vec<_>>();
         assert_eq!(streamed, collected);
     }
 

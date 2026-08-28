@@ -15,7 +15,6 @@ impl LineSource for BorrowedLines<'_> {
     fn line(&self, row: usize) -> Option<&str> {
         self.0.get(row).copied()
     }
-
     fn line_count(&self) -> usize {
         self.0.len()
     }
@@ -25,7 +24,6 @@ impl LineSource for EditorSnapshot {
     fn line(&self, row: usize) -> Option<&str> {
         self.line(row)
     }
-
     fn line_count(&self) -> usize {
         self.line_count()
     }
@@ -58,7 +56,6 @@ impl TextObject {
             'a' => TextObjectScope::Around,
             _ => return None,
         };
-
         let object = match second {
             'w' => TextObject::Word,
             'W' => TextObject::BigWord,
@@ -72,7 +69,6 @@ impl TextObject {
             '<' | '>' => TextObject::AngleBrackets,
             _ => return None,
         };
-
         Some((scope, object))
     }
 
@@ -96,7 +92,6 @@ impl TextObject {
     pub fn find_bounds_snapshot(&self, scope: TextObjectScope, snapshot: &EditorSnapshot, pos: Position) -> Option<(Position, Position)> {
         self.find_bounds_from(scope, snapshot, pos)
     }
-
     fn find_bounds_from(&self, scope: TextObjectScope, lines: &impl LineSource, pos: Position) -> Option<(Position, Position)> {
         match self {
             TextObject::Word => find_word_bounds(lines, pos, scope, false),
@@ -113,28 +108,18 @@ impl TextObject {
         }
     }
 }
-
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
-
 fn find_word_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, big_word: bool) -> Option<(Position, Position)> {
     let line = lines.line(pos.row)?;
     let line_len = line.chars().count();
-
     if line_len == 0 {
         return Some((pos, pos));
     }
-
     let col = pos.col.min(line_len.saturating_sub(1));
     let current_char = line.chars().nth(col)?;
-
-    let is_word = if big_word {
-        !current_char.is_whitespace()
-    } else {
-        is_word_char(current_char)
-    };
-
+    let is_word = if big_word { !current_char.is_whitespace() } else { is_word_char(current_char) };
     let mut start = col;
     let start_byte = char_to_byte_index(line, col);
     for c in line[..start_byte].chars().rev() {
@@ -144,7 +129,6 @@ fn find_word_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectSco
         }
         start -= 1;
     }
-
     let mut end = col;
     for c in line.chars().skip(col) {
         let c_is_word = if big_word { !c.is_whitespace() } else { is_word_char(c) };
@@ -153,7 +137,6 @@ fn find_word_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectSco
         }
         end += 1;
     }
-
     if scope == TextObjectScope::Around {
         let mut has_trailing = false;
         for c in line.chars().skip(end) {
@@ -173,51 +156,37 @@ fn find_word_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectSco
             }
         }
     }
-
     Some((Position::new(pos.row, start), Position::new(pos.row, end)))
 }
-
 fn find_paragraph_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope) -> Option<(Position, Position)> {
     let mut start_row = pos.row;
     let mut end_row = pos.row;
-
     while start_row > 0 {
-        if lines.line(start_row.saturating_sub(1)).map_or(true, |line| line.trim().is_empty()) {
+        if lines.line(start_row.saturating_sub(1)).is_none_or(|line| line.trim().is_empty()) {
             break;
         }
         start_row -= 1;
     }
-
     while end_row < lines.line_count() {
-        if lines.line(end_row).map_or(true, |line| line.trim().is_empty()) {
+        if lines.line(end_row).is_none_or(|line| line.trim().is_empty()) {
             break;
         }
         end_row += 1;
     }
-
     if scope == TextObjectScope::Around {
         while end_row < lines.line_count() && lines.line(end_row).is_some_and(|line| line.trim().is_empty()) {
             end_row += 1;
         }
     }
-
-    let end_col = if end_row > 0 && end_row <= lines.line_count() {
-        lines.line(end_row.saturating_sub(1)).map_or(0, |line| line.chars().count())
-    } else {
-        0
-    };
-
+    let end_col = if end_row > 0 && end_row <= lines.line_count() { lines.line(end_row.saturating_sub(1)).map_or(0, |line| line.chars().count()) } else { 0 };
     Some((Position::new(start_row, 0), Position::new(end_row.saturating_sub(1).max(start_row), end_col)))
 }
-
 fn find_quote_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, open: char, _close: char) -> Option<(Position, Position)> {
     let line = lines.line(pos.row)?;
-
     let mut in_quote = false;
     let mut quote_start = None;
     let mut found_pair = None;
     let mut seek_pair = None;
-
     for (i, c) in line.chars().enumerate() {
         if c == open {
             if in_quote {
@@ -236,33 +205,24 @@ fn find_quote_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectSc
             }
         }
     }
-
     let (start, end) = found_pair.or(seek_pair)?;
-
     match scope {
         TextObjectScope::Inner => Some((Position::new(pos.row, start + 1), Position::new(pos.row, end))),
         TextObjectScope::Around => Some((Position::new(pos.row, start), Position::new(pos.row, end + 1))),
     }
 }
-
 fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObjectScope, open: char, close: char) -> Option<(Position, Position)> {
     let mut open_pos = None;
     let row = pos.row;
     let col = pos.col;
-
     let current_line = lines.line(row)?;
     let current_line_len = current_line.chars().count();
     if col > current_line_len {
         return None;
     }
-
-    // Step 1: Check if cursor is directly on an opening bracket
     if current_line.chars().nth(col) == Some(open) {
         open_pos = Some(Position::new(row, col));
     }
-
-    // Step 2: Search backward on CURRENT LINE ONLY first
-    // This prevents unmatched brackets from previous lines from interfering
     if open_pos.is_none() {
         let mut depth = 0;
         let byte_end = char_to_byte_index(current_line, col);
@@ -280,8 +240,6 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
             }
         }
     }
-
-    // Step 3: Seek forward on current line for an open bracket
     if open_pos.is_none() {
         for (c, ch) in current_line.chars().enumerate().skip(col) {
             if ch == open {
@@ -290,9 +248,6 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
             }
         }
     }
-
-    // Step 4: If nothing found on current line, search backward across previous lines
-    // This handles multi-line bracket pairs
     if open_pos.is_none() {
         let mut depth = 0;
         let mut search_row = row;
@@ -300,7 +255,6 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
             search_row -= 1;
             let line = lines.line(search_row)?;
             let mut c = line.chars().count();
-
             for ch in line.chars().rev() {
                 c -= 1;
                 if ch == close {
@@ -313,26 +267,19 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
                     depth -= 1;
                 }
             }
-
             if open_pos.is_some() {
                 break;
             }
         }
     }
-
-    if open_pos.is_none() {
-        return None;
-    }
-
+    open_pos?;
     let open_pos = open_pos?;
     let mut depth = 1;
     let mut search_row = open_pos.row;
     let search_col = open_pos.col + 1;
-
     loop {
         let line = lines.line(search_row)?;
         let start_col = if search_row == open_pos.row { search_col } else { 0 };
-
         for (c, ch) in line.chars().enumerate().skip(start_col) {
             if ch == open {
                 depth += 1;
@@ -347,7 +294,6 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
                 }
             }
         }
-
         search_row += 1;
         if search_row >= lines.line_count() {
             return None;
@@ -358,8 +304,6 @@ fn find_bracket_bounds(lines: &impl LineSource, pos: Position, scope: TextObject
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== Parse Tests ====================
 
     #[test]
     fn test_parse_word() {
@@ -441,8 +385,6 @@ mod tests {
         assert_eq!(TextObject::parse('a', '!'), None);
     }
 
-    // ==================== Delimiters Tests ====================
-
     #[test]
     fn test_delimiters_all() {
         assert_eq!(TextObject::SingleQuote.delimiters(), Some(('\'', '\'')));
@@ -456,8 +398,6 @@ mod tests {
         assert_eq!(TextObject::BigWord.delimiters(), None);
         assert_eq!(TextObject::Paragraph.delimiters(), None);
     }
-
-    // ==================== Word Bounds Tests ====================
 
     #[test]
     fn test_find_word_bounds_inner() {
@@ -529,8 +469,6 @@ mod tests {
         assert!(bounds.is_some());
     }
 
-    // ==================== Big Word Bounds Tests ====================
-
     #[test]
     fn test_find_big_word_bounds_inner() {
         let lines = vec!["foo.bar baz"];
@@ -551,8 +489,6 @@ mod tests {
         let bounds = TextObject::BigWord.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 5));
         assert_eq!(bounds, Some((Position::new(0, 0), Position::new(0, 18))));
     }
-
-    // ==================== Quote Bounds Tests ====================
 
     #[test]
     fn test_find_quote_bounds_inner() {
@@ -609,8 +545,6 @@ mod tests {
         let bounds = TextObject::DoubleQuote.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 6));
         assert_eq!(bounds, None);
     }
-
-    // ==================== Bracket Bounds Tests ====================
 
     #[test]
     fn test_find_bracket_bounds_inner() {
@@ -768,34 +702,27 @@ mod tests {
 
     #[test]
     fn test_find_bracket_bounds_unmatched_on_previous_line() {
-        // Regression test: unmatched brackets on previous lines should not
-        // interfere with bracket matching on current line
         let lines = vec![
             "abc()",                       // line 0: matched
             "text with unmatched ( paren", // line 1: unmatched opening
             "abc(...)",                    // line 2: should still work!
         ];
-        // Cursor at start of line 2, should seek forward to find abc(...)
         let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(2, 0));
         assert_eq!(bounds, Some((Position::new(2, 4), Position::new(2, 7))));
     }
 
     #[test]
     fn test_find_bracket_bounds_unmatched_does_not_match_later_close() {
-        // An unmatched opening bracket should not match with a closing bracket
-        // from a different pair on a later line
         let lines = vec![
             "unmatched (", // line 0: unmatched opening
             "abc(foo)",    // line 1: complete pair
         ];
-        // Cursor inside abc(foo), should find that pair, not the unmatched one
         let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(1, 5));
         assert_eq!(bounds, Some((Position::new(1, 4), Position::new(1, 7))));
     }
 
     #[test]
     fn test_find_bracket_bounds_multiple_unmatched() {
-        // Multiple unmatched brackets on different lines
         let lines = vec![
             "( unmatched",         // line 0
             "another ( unmatched", // line 1
@@ -805,8 +732,6 @@ mod tests {
         let bounds = TextObject::Parentheses.find_bounds(TextObjectScope::Inner, &lines, Position::new(3, 7));
         assert_eq!(bounds, Some((Position::new(3, 6), Position::new(3, 13))));
     }
-
-    // ==================== Paragraph Bounds Tests ====================
 
     #[test]
     fn test_find_paragraph_bounds_inner() {
@@ -846,8 +771,6 @@ mod tests {
         assert!(bounds.is_some());
     }
 
-    // ==================== Edge Cases ====================
-
     #[test]
     fn test_find_bounds_empty_lines() {
         let lines: Vec<&str> = vec![];
@@ -875,8 +798,6 @@ mod tests {
         let bounds = TextObject::Word.find_bounds(TextObjectScope::Inner, &lines, Position::new(0, 1));
         assert!(bounds.is_some());
     }
-
-    // ==================== is_word_char Tests ====================
 
     #[test]
     fn test_is_word_char_letters() {

@@ -3,7 +3,6 @@
 use crossterm::event::KeyEvent;
 use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MacroState {
     macros: HashMap<char, Vec<KeyEvent>>,
@@ -49,7 +48,6 @@ impl MacroState {
         self.macros.get(&register)
     }
 
-    #[allow(dead_code)]
     pub fn get_last_macro(&self) -> Option<&Vec<KeyEvent>> {
         self.last_played.and_then(|r| self.macros.get(&r))
     }
@@ -63,15 +61,12 @@ impl MacroState {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
-
     fn make_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
-
     fn make_key_with_mod(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
     }
-
     // ==================== Basic Recording Tests ====================
 
     #[test]
@@ -93,11 +88,9 @@ mod tests {
     #[test]
     fn test_start_recording_different_registers() {
         let mut state = MacroState::new();
-
         state.start_recording('a');
         assert_eq!(state.recording_register(), Some('a'));
         state.stop_recording();
-
         state.start_recording('z');
         assert_eq!(state.recording_register(), Some('z'));
         state.stop_recording();
@@ -110,7 +103,6 @@ mod tests {
         state.record_key(make_key(KeyCode::Char('j')));
         state.record_key(make_key(KeyCode::Char('k')));
         state.stop_recording();
-
         assert!(!state.is_recording());
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 2);
@@ -122,7 +114,6 @@ mod tests {
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('x')));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].code, KeyCode::Char('x'));
@@ -136,11 +127,9 @@ mod tests {
             state.record_key(make_key(KeyCode::Char('j')));
         }
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 100);
     }
-
     // ==================== Empty Macro Tests ====================
 
     #[test]
@@ -157,7 +146,6 @@ mod tests {
         state.stop_recording();
         assert!(!state.is_recording());
     }
-
     // ==================== Overwrite Tests ====================
 
     #[test]
@@ -166,18 +154,15 @@ mod tests {
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('j')));
         state.stop_recording();
-
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('k')));
         state.record_key(make_key(KeyCode::Char('l')));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 2);
         assert_eq!(recorded[0].code, KeyCode::Char('k'));
         assert_eq!(recorded[1].code, KeyCode::Char('l'));
     }
-
     // ==================== Get Macro Tests ====================
 
     #[test]
@@ -195,28 +180,23 @@ mod tests {
         state.record_key(make_key(KeyCode::Char('2')));
         state.record_key(make_key(KeyCode::Char('3')));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded[0].code, KeyCode::Char('1'));
         assert_eq!(recorded[1].code, KeyCode::Char('2'));
         assert_eq!(recorded[2].code, KeyCode::Char('3'));
     }
-
     // ==================== Multiple Registers Tests ====================
 
     #[test]
     fn test_multiple_registers() {
         let mut state = MacroState::new();
-
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('a')));
         state.stop_recording();
-
         state.start_recording('b');
         state.record_key(make_key(KeyCode::Char('b')));
         state.record_key(make_key(KeyCode::Char('b')));
         state.stop_recording();
-
         let macro_a = state.get_macro('a').unwrap();
         let macro_b = state.get_macro('b').unwrap();
         assert_eq!(macro_a.len(), 1);
@@ -231,13 +211,11 @@ mod tests {
             state.record_key(make_key(KeyCode::Char(c)));
             state.stop_recording();
         }
-
         for c in 'a'..='z' {
             let recorded = state.get_macro(c).unwrap();
             assert_eq!(recorded.len(), 1);
         }
     }
-
     // ==================== Last Played Tests ====================
 
     #[test]
@@ -252,7 +230,6 @@ mod tests {
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('j')));
         state.stop_recording();
-
         state.set_last_played('a');
         assert!(state.get_last_macro().is_some());
         assert_eq!(state.get_last_macro().unwrap().len(), 1);
@@ -268,23 +245,18 @@ mod tests {
     #[test]
     fn test_last_played_updates() {
         let mut state = MacroState::new();
-
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('a')));
         state.stop_recording();
-
         state.start_recording('b');
         state.record_key(make_key(KeyCode::Char('b')));
         state.record_key(make_key(KeyCode::Char('b')));
         state.stop_recording();
-
         state.set_last_played('a');
         assert_eq!(state.get_last_macro().unwrap().len(), 1);
-
         state.set_last_played('b');
         assert_eq!(state.get_last_macro().unwrap().len(), 2);
     }
-
     // ==================== Recording While Not Recording Tests ====================
 
     #[test]
@@ -293,7 +265,6 @@ mod tests {
         state.record_key(make_key(KeyCode::Char('j')));
         assert!(!state.is_recording());
     }
-
     // ==================== Key With Modifiers Tests ====================
 
     #[test]
@@ -303,7 +274,6 @@ mod tests {
         state.record_key(make_key_with_mod(KeyCode::Char('c'), KeyModifiers::CONTROL));
         state.record_key(make_key_with_mod(KeyCode::Char('v'), KeyModifiers::CONTROL));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 2);
         assert_eq!(recorded[0].modifiers, KeyModifiers::CONTROL);
@@ -319,11 +289,9 @@ mod tests {
         state.record_key(make_key(KeyCode::Tab));
         state.record_key(make_key(KeyCode::Esc));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 4);
     }
-
     // ==================== Start Recording Clears Buffer Tests ====================
 
     #[test]
@@ -334,7 +302,6 @@ mod tests {
         state.start_recording('a');
         state.record_key(make_key(KeyCode::Char('y')));
         state.stop_recording();
-
         let recorded = state.get_macro('a').unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].code, KeyCode::Char('y'));

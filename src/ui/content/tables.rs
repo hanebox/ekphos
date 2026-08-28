@@ -1,20 +1,6 @@
 use super::*;
 
-/// Visible width of a table cell after inline markdown shrinks
-/// (e.g. `[label](url)` -> `label`). Measured in *display columns*, so wide
-/// characters (CJK, emoji) contribute their full terminal width — not just 1
-/// char each. Markdown markers stripped by `calc_formatting_shrinkage` are all
-/// ASCII (1 col each), so subtracting their char-count from the display width
-/// gives the visible-content's display width.
-pub(crate) fn cell_visible_width(cell: &str) -> usize {
-    let display_width: usize = cell
-        .chars()
-        .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
-        .sum();
-    let total_chars = cell.chars().count();
-    let marker_chars = calc_formatting_shrinkage(cell, total_chars);
-    display_width.saturating_sub(marker_chars)
-}
+pub(crate) use ekphos_integrations::text::cell_visible_width;
 
 /// Per-column minimum width when shrinking a wide table to fit the terminal.
 pub(super) const TABLE_COLUMN_MIN_WIDTH: usize = 8;
@@ -34,7 +20,6 @@ pub(crate) fn cap_column_widths(natural: &[usize], available: usize) -> Vec<usiz
         if total <= available {
             return widths;
         }
-        // Pick the widest column that can still shrink.
         let mut target: Option<usize> = None;
         let mut max_w: usize = 0;
         for (i, &w) in widths.iter().enumerate() {
@@ -92,15 +77,12 @@ pub(super) fn try_match_br(bytes: &[u8], at: usize) -> Option<usize> {
         return None;
     }
     let mut i = at + 3;
-    // Optional single space ("<br />" form).
     if b.get(i) == Some(&b' ') {
         i += 1;
     }
-    // Optional self-closing slash.
     if b.get(i) == Some(&b'/') {
         i += 1;
     }
-    // Must end in `>`.
     if b.get(i) == Some(&b'>') {
         Some(i + 1)
     } else {
@@ -111,41 +93,23 @@ pub(super) fn try_match_br(bytes: &[u8], at: usize) -> Option<usize> {
 /// Calculate the adjusted column for a table cell
 /// Raw format: "| cell1 | cell2 |"
 /// Rendered:   "▶ │ cell1 │ cell2 │" with cells padded to column widths
-pub(super) fn calc_table_adjusted_col(
-    raw_col: usize,
-    document: &DocumentSnapshot,
-    cells: &[DocumentRange],
-    column_widths: &[u16],
-    alignments: &[crate::app::Alignment],
-) -> usize {
+pub(super) fn calc_table_adjusted_col(raw_col: usize, document: &DocumentSnapshot, cells: &[DocumentRange], column_widths: &[u16], alignments: &[crate::app::Alignment]) -> usize {
     use crate::app::Alignment;
     let mut rendered_pos = 3;
     let mut raw_pos = 0;
-
     for (cell_idx, range) in cells.iter().enumerate() {
         let cell = document.slice(*range);
         let col_width = column_widths.get(cell_idx).copied().unwrap_or(3) as usize;
         if raw_pos == 0 {
             raw_pos = 1;
         }
-
         let raw_cell_start = raw_pos;
-
         let cell_char_len = cell.chars().count();
-        let cell_display_width: usize = cell
-            .chars()
-            .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
-            .sum();
+        let cell_display_width: usize = cell.chars().map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) }).sum();
         let raw_cell_end = raw_cell_start + cell_char_len + 3; // " content |"
-
         if raw_col >= raw_cell_start && raw_col < raw_cell_end {
             let char_offset_in_raw_cell = raw_col.saturating_sub(raw_cell_start + 1); // +1 for leading space
-                                                                                      // Convert character offset to display width
-            let display_offset: usize = cell
-                .chars()
-                .take(char_offset_in_raw_cell.min(cell_char_len))
-                .map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) })
-                .sum();
+            let display_offset: usize = cell.chars().take(char_offset_in_raw_cell.min(cell_char_len)).map(|character| if character == '\t' { 4 } else { character.width().unwrap_or(0) }).sum();
             let pad = col_width.saturating_sub(cell_display_width);
             let alignment = alignments.get(cell_idx).copied().unwrap_or(Alignment::Left);
             let content_padding = match alignment {
@@ -154,13 +118,10 @@ pub(super) fn calc_table_adjusted_col(
                 Alignment::Center => pad / 2,
             };
             let rendered_content_start = rendered_pos + 1 + content_padding; // +1 for leading space
-
             return rendered_content_start + display_offset;
         }
-
         raw_pos = raw_cell_end;
         rendered_pos += col_width + 2 + 1;
     }
-
     3 + raw_col
 }

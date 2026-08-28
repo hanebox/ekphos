@@ -18,61 +18,27 @@ const MAX_WIDTH: u16 = 48;
 /// just above the status bar. Called last in the draw pass so it floats on top
 /// of everything else. No-op when there is no toast.
 pub fn render_toast(f: &mut Frame, app: &App) {
-    let Some(toast) = &app.toast else { return };
-
-    let theme = &app.theme;
+    let Some(toast) = &app.state.toast else { return };
+    let theme = &app.state.theme;
     let area = f.area();
-    // Need room for a >=3-row box plus the status bar; below this the clamps
-    // below would have min > max.
     if area.width < 16 || area.height < 5 {
         return;
     }
-
     let (accent, label) = match toast.kind {
         ToastKind::Error => (theme.error, " Error "),
         ToastKind::Info => (theme.info, " Info "),
         ToastKind::Success => (theme.success, " Done "),
     };
-
-    // Wrap the message to the available inner width so the box fits it exactly.
     let max_width = MAX_WIDTH.min(area.width.saturating_sub(4));
     let inner_width = max_width.saturating_sub(2).max(1) as usize;
     let wrapped = wrap_to_width(&toast.message, inner_width);
-
-    let content_width = wrapped
-        .iter()
-        .map(|l| UnicodeWidthStr::width(l.as_str()))
-        .max()
-        .unwrap_or(0)
-        .max(label.chars().count());
+    let content_width = wrapped.iter().map(|l| UnicodeWidthStr::width(l.as_str())).max().unwrap_or(0).max(label.chars().count());
     let box_width = (content_width as u16 + 2).clamp(12, max_width);
     let box_height = (wrapped.len() as u16 + 2).clamp(3, area.height.saturating_sub(2));
-
-    // Anchor bottom-right, leaving a one-cell margin and the status bar row.
-    let toast_area = Rect {
-        x: area.x + area.width.saturating_sub(box_width + 1),
-        y: area.y + area.height.saturating_sub(box_height + 1),
-        width: box_width,
-        height: box_height,
-    };
-
+    let toast_area = Rect { x: area.x + area.width.saturating_sub(box_width + 1), y: area.y + area.height.saturating_sub(box_height + 1), width: box_width, height: box_height };
     f.render_widget(Clear, toast_area);
-
-    let lines: Vec<Line> = wrapped
-        .into_iter()
-        .map(|l| Line::from(Span::styled(l, Style::default().fg(theme.foreground))))
-        .collect();
-
-    let widget = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(Span::styled(label, Style::default().fg(accent).add_modifier(Modifier::BOLD)))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(accent))
-                .style(Style::default().bg(theme.background_secondary)),
-        )
-        .alignment(Alignment::Left);
-
+    let lines: Vec<Line> = wrapped.into_iter().map(|l| Line::from(Span::styled(l, Style::default().fg(theme.foreground)))).collect();
+    let widget = Paragraph::new(lines).block(Block::default().title(Span::styled(label, Style::default().fg(accent).add_modifier(Modifier::BOLD))).borders(Borders::ALL).border_style(Style::default().fg(accent)).style(Style::default().bg(theme.background_secondary))).alignment(Alignment::Left);
     f.render_widget(widget, toast_area);
 }
 
@@ -82,7 +48,6 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
     }
-
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {
         let mut current = String::new();
@@ -104,7 +69,6 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
         }
         lines.push(current);
     }
-
     if lines.is_empty() {
         lines.push(String::new());
     }

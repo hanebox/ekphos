@@ -1,0 +1,322 @@
+use super::*;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockInsertMode {
+    Insert,
+    Append,
+}
+
+/// Severity of a transient [`Toast`] notification, used to pick its accent color.
+///
+/// `Info`/`Success` round out the notification API for future callers; only
+/// `Error` is raised today (see [`App::show_error_toast`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToastKind {
+    Error,
+    Info,
+    Success,
+}
+
+/// A short-lived, non-blocking notification shown as a floating overlay.
+///
+/// Toasts are how recoverable errors (e.g. a clipboard read failing) reach the
+/// user without writing to stdout/stderr, which would corrupt the TUI.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub message: String,
+    pub kind: ToastKind,
+    pub shown_at: std::time::Instant,
+}
+
+impl Toast {
+    /// How long a toast stays on screen before auto-dismissing.
+    const TTL: std::time::Duration = std::time::Duration::from_secs(4);
+
+    pub fn is_expired_at(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.shown_at) >= Self::TTL
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockInsertState {
+    pub mode: BlockInsertMode,
+    pub rows: (usize, usize),
+    pub insert_col: usize,
+    pub active_row: usize,
+    pub start_col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct Note {
+    pub id: NoteId,
+    pub title: String,
+    pub file_path: Option<PathBuf>,
+    pub file_size: u64,
+    pub modified_time: Option<std::time::SystemTime>,
+    pub created_time: Option<std::time::SystemTime>,
+    pub frontmatter: Option<CompactFrontmatter>,
+    pub content_start_line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompactFrontmatter {
+    pub tags: Box<[Box<str>]>,
+    pub date: Option<Box<str>>,
+}
+
+impl From<ekphos_core::FrontmatterSummary> for CompactFrontmatter {
+    fn from(summary: ekphos_core::FrontmatterSummary) -> Self {
+        Self { tags: summary.tags.into_iter().map(String::into_boxed_str).collect(), date: summary.date.map(String::into_boxed_str) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    Normal,
+    Edit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DialogState {
+    None,
+    Onboarding,
+    CreateNote,
+    CreateFolder,
+    CreateNoteInFolder,
+    DeleteConfirm,
+    DeleteFolderConfirm,
+    RenameNote,
+    RenameFolder,
+    Help,
+    EmptyDirectory,
+    DirectoryNotFound,
+    UnsavedChanges,
+    CreateWikiNote,
+    GraphView,
+    ThemeSelector,
+}
+
+/// State for the theme selector modal (opened with Ctrl+T). Live-previews the
+/// highlighted theme as the user navigates; the original theme is restored on
+/// cancel and the selected one is persisted to config on confirm.
+#[derive(Debug, Clone, Default)]
+pub struct ThemePicker {
+    pub themes: Vec<ThemeEntry>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    /// Theme name active when the picker was opened, restored on Esc.
+    pub original_theme_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SortMode {
+    #[default]
+    NameAsc,
+    NameDesc,
+    ModifiedOldest,
+    ModifiedNewest,
+    CreatedOldest,
+    CreatedNewest,
+}
+
+impl SortMode {
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::NameAsc => SortMode::NameDesc,
+            SortMode::NameDesc => SortMode::ModifiedOldest,
+            SortMode::ModifiedOldest => SortMode::ModifiedNewest,
+            SortMode::ModifiedNewest => SortMode::CreatedOldest,
+            SortMode::CreatedOldest => SortMode::CreatedNewest,
+            SortMode::CreatedNewest => SortMode::NameAsc,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::NameAsc => "A→Z",
+            SortMode::NameDesc => "Z→A",
+            SortMode::ModifiedOldest => "Mod↑",
+            SortMode::ModifiedNewest => "Mod↓",
+            SortMode::CreatedOldest => "Cre↑",
+            SortMode::CreatedNewest => "Cre↓",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphViewState {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub selected_node: Option<usize>,
+    pub selected_note_index: Option<usize>,
+    pub root_note_index: usize,
+    pub mode: GraphMode,
+    pub depth: usize,
+    pub link_scope: GraphLinkScope,
+    pub filter_query: String,
+    pub filter_draft: String,
+    pub filter_before_edit: String,
+    pub filter_editing: bool,
+    pub show_orphans: bool,
+    pub help_visible: bool,
+    pub total_nodes: usize,
+    pub total_edges: usize,
+    pub index_pending: bool,
+    pub layout_pending: bool,
+    pub global_positions: Vec<(NoteId, f32, f32)>,
+    pub global_fingerprint: Option<u64>,
+    pub viewport_x: f32,
+    pub viewport_y: f32,
+    pub zoom: f32,
+    pub dirty: bool,
+    pub drag_start: Option<(u16, u16)>,
+    pub is_panning: bool,
+    pub dragging_node: Option<usize>,
+    pub view_width: f32,
+    pub view_height: f32,
+    pub graph_area: Rect,
+    pub needs_center: bool,
+    pub last_click: Option<(std::time::Instant, usize)>,
+}
+
+impl Default for GraphViewState {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            selected_node: None,
+            selected_note_index: None,
+            root_note_index: 0,
+            mode: GraphMode::Local,
+            depth: 1,
+            link_scope: GraphLinkScope::All,
+            filter_query: String::new(),
+            filter_draft: String::new(),
+            filter_before_edit: String::new(),
+            filter_editing: false,
+            show_orphans: true,
+            help_visible: false,
+            total_nodes: 0,
+            total_edges: 0,
+            index_pending: false,
+            layout_pending: false,
+            global_positions: Vec::new(),
+            global_fingerprint: None,
+            viewport_x: 0.0,
+            viewport_y: 0.0,
+            zoom: 1.0,
+            dirty: true,
+            drag_start: None,
+            is_panning: false,
+            dragging_node: None,
+            view_width: 100.0,
+            view_height: 50.0,
+            graph_area: Rect::default(),
+            needs_center: false,
+            last_click: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Focus {
+    Sidebar,
+    Content,
+    Outline,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutlineItem {
+    pub level: u8,
+    pub source_line: u32,
+    pub line: usize,
+}
+
+pub struct ImageState {
+    pub image: SlicedProtocol,
+    pub size: Size,
+    pub source_bytes: usize,
+    pub document_generation: u64,
+    pub last_visible_epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InlineImageRect {
+    pub item_index: usize,
+    pub selection_index: usize,
+    pub rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
+impl Alignment {
+    /// Classify a GFM table separator cell (e.g. `:---`, `---:`, `:---:`, `---`)
+    /// into its alignment. Any cell without a leading `:` is treated as Left
+    /// (matches GFM's default-left convention).
+    pub fn from_separator_cell(cell: &str) -> Alignment {
+        let t = cell.trim();
+        match (t.starts_with(':'), t.ends_with(':')) {
+            (true, true) => Alignment::Center,
+            (false, true) => Alignment::Right,
+            _ => Alignment::Left,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentItem {
+    TextLine { range: DocumentRange, source_line: u32, heading_level: u8 },
+    Image { path: DocumentRange, source_line: u32 },
+    CodeLine { range: DocumentRange, source_line: u32 },
+    CodeFence { language: DocumentRange, source_line: u32 },
+    TaskItem { text: DocumentRange, checked: bool, source_line: u32, indent: u16 },
+    TableRow { cells: Box<[DocumentRange]>, table: u32, source_line: u32, is_separator: bool, is_header: bool },
+    Details { summary: Option<DocumentRange>, content_lines: Box<[u32]>, source_line: u32 },
+    FrontmatterLine { key: DocumentRange, value: DocumentRange, source_line: u32 },
+    FrontmatterDelimiter { source_line: u32 },
+    TagBadges,
+}
+
+impl ContentItem {
+    pub fn source_line(&self) -> usize {
+        match self {
+            Self::TextLine { source_line, .. }
+            | Self::Image { source_line, .. }
+            | Self::CodeLine { source_line, .. }
+            | Self::CodeFence { source_line, .. }
+            | Self::TaskItem { source_line, .. }
+            | Self::TableRow { source_line, .. }
+            | Self::Details { source_line, .. }
+            | Self::FrontmatterLine { source_line, .. }
+            | Self::FrontmatterDelimiter { source_line } => *source_line as usize,
+            Self::TagBadges => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TableMetadata {
+    pub column_widths: Box<[u16]>,
+    pub alignments: Box<[Alignment]>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DocumentLinkRange {
+    pub start: u32,
+    pub len: u16,
+    pub image_count: u16,
+}
+
+#[derive(Default)]
+pub struct ContentRenderScratch {
+    pub item_text_heights: Vec<u16>,
+    pub constraints: Vec<Constraint>,
+    pub visible_indices: Vec<usize>,
+    pub height_generation: u64,
+    pub height_width: usize,
+}

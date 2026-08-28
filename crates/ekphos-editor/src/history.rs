@@ -49,9 +49,7 @@ impl EditOperation {
         match self {
             Self::Insert { text, .. } => text.capacity(),
             Self::Delete { deleted_text, .. } => deleted_text.capacity(),
-            Self::BlockDelete { deleted_lines, .. } | Self::LineInsert { lines: deleted_lines, .. } | Self::LineDelete { lines: deleted_lines, .. } => {
-                deleted_lines.capacity() * std::mem::size_of::<String>() + deleted_lines.iter().map(String::capacity).sum::<usize>()
-            }
+            Self::BlockDelete { deleted_lines, .. } | Self::LineInsert { lines: deleted_lines, .. } | Self::LineDelete { lines: deleted_lines, .. } => deleted_lines.capacity() * std::mem::size_of::<String>() + deleted_lines.iter().map(String::capacity).sum::<usize>(),
             #[cfg(test)]
             Self::BlockInsert { lines, .. } => lines.capacity() * std::mem::size_of::<String>() + lines.iter().map(String::capacity).sum::<usize>(),
             Self::SplitLine { .. } | Self::JoinLine { .. } => 0,
@@ -63,51 +61,18 @@ impl EditOperation {
         match self {
             EditOperation::Insert { pos, text } => {
                 let end = calculate_end_position(*pos, text);
-                EditOperation::Delete {
-                    start: *pos,
-                    end,
-                    deleted_text: text.clone(),
-                }
+                EditOperation::Delete { start: *pos, end, deleted_text: text.clone() }
             }
-            EditOperation::Delete { start, deleted_text, .. } => EditOperation::Insert {
-                pos: *start,
-                text: deleted_text.clone(),
-            },
-            EditOperation::SplitLine { pos } => EditOperation::JoinLine {
-                row: pos.row + 1,
-                col: pos.col,
-            },
-            EditOperation::JoinLine { row, col } => EditOperation::SplitLine {
-                pos: Position::new(row - 1, *col),
-            },
-            EditOperation::BlockDelete {
-                start_row,
-                start_col,
-                deleted_lines,
-                ..
-            } => EditOperation::BlockInsert {
-                start_row: *start_row,
-                col: *start_col,
-                lines: deleted_lines.clone(),
-            },
+            EditOperation::Delete { start, deleted_text, .. } => EditOperation::Insert { pos: *start, text: deleted_text.clone() },
+            EditOperation::SplitLine { pos } => EditOperation::JoinLine { row: pos.row + 1, col: pos.col },
+            EditOperation::JoinLine { row, col } => EditOperation::SplitLine { pos: Position::new(row - 1, *col) },
+            EditOperation::BlockDelete { start_row, start_col, deleted_lines, .. } => EditOperation::BlockInsert { start_row: *start_row, col: *start_col, lines: deleted_lines.clone() },
             EditOperation::BlockInsert { start_row, col, lines } => {
                 let max_len = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-                EditOperation::BlockDelete {
-                    start_row: *start_row,
-                    end_row: start_row + lines.len().saturating_sub(1),
-                    start_col: *col,
-                    end_col: col + max_len.saturating_sub(1),
-                    deleted_lines: lines.clone(),
-                }
+                EditOperation::BlockDelete { start_row: *start_row, end_row: start_row + lines.len().saturating_sub(1), start_col: *col, end_col: col + max_len.saturating_sub(1), deleted_lines: lines.clone() }
             }
-            EditOperation::LineInsert { row, lines } => EditOperation::LineDelete {
-                row: *row,
-                lines: lines.clone(),
-            },
-            EditOperation::LineDelete { row, lines } => EditOperation::LineInsert {
-                row: *row,
-                lines: lines.clone(),
-            },
+            EditOperation::LineInsert { row, lines } => EditOperation::LineDelete { row: *row, lines: lines.clone() },
+            EditOperation::LineDelete { row, lines } => EditOperation::LineInsert { row: *row, lines: lines.clone() },
         }
     }
 }
@@ -116,7 +81,6 @@ pub(super) fn calculate_end_position(start: Position, text: &str) -> Position {
     if text.is_empty() {
         return start;
     }
-
     let newline_count = text.bytes().filter(|byte| *byte == b'\n').count();
     if newline_count == 0 {
         Position::new(start.row, start.col + text.chars().count())
@@ -135,12 +99,7 @@ pub struct HistoryEntry {
 
 impl HistoryEntry {
     pub fn new(op: EditOperation, cursor_before: Position, cursor_after: Position) -> Self {
-        Self {
-            operations: vec![op],
-            cursor_before,
-            cursor_after,
-            timestamp: Instant::now(),
-        }
+        Self { operations: vec![op], cursor_before, cursor_after, timestamp: Instant::now() }
     }
 
     /// Check if this entry can merge with another single-char insertion
@@ -148,21 +107,12 @@ impl HistoryEntry {
         if self.timestamp.elapsed().as_millis() > merge_timeout_ms as u128 {
             return false;
         }
-
-        if let (
-            Some(EditOperation::Insert {
-                pos: last_pos,
-                text: last_text,
-            }),
-            EditOperation::Insert { pos, text },
-        ) = (self.operations.last(), op)
-        {
+        if let (Some(EditOperation::Insert { pos: last_pos, text: last_text }), EditOperation::Insert { pos, text }) = (self.operations.last(), op) {
             if text.chars().count() == 1 && last_text.chars().all(|c| !c.is_whitespace()) && text.chars().all(|c| !c.is_whitespace()) {
                 let expected_col = last_pos.col + last_text.chars().count();
                 return pos.row == last_pos.row && pos.col == expected_col;
             }
         }
-
         false
     }
 
@@ -174,7 +124,6 @@ impl HistoryEntry {
         self.cursor_after = cursor_after;
         self.timestamp = Instant::now();
     }
-
     fn payload_bytes(&self) -> usize {
         self.operations.capacity() * std::mem::size_of::<EditOperation>() + self.operations.iter().map(EditOperation::retained_bytes).sum::<usize>()
     }
@@ -225,26 +174,14 @@ impl History {
     }
 
     pub fn with_limits(max_entries: usize, max_payload_bytes: usize) -> Self {
-        Self {
-            undo_stack: VecDeque::new(),
-            redo_stack: Vec::new(),
-            max_entries: max_entries.max(1),
-            max_payload_bytes,
-            merge_timeout_ms: Self::DEFAULT_MERGE_TIMEOUT_MS,
-            undo_payload_bytes: 0,
-            redo_payload_bytes: 0,
-        }
+        Self { undo_stack: VecDeque::new(), redo_stack: Vec::new(), max_entries: max_entries.max(1), max_payload_bytes, merge_timeout_ms: Self::DEFAULT_MERGE_TIMEOUT_MS, undo_payload_bytes: 0, redo_payload_bytes: 0 }
     }
 
     pub fn record(&mut self, op: EditOperation, cursor_before: Position, cursor_after: Position) {
         self.redo_stack.clear();
         self.redo_payload_bytes = 0;
-
         if let Some(last) = self.undo_stack.back_mut() {
-            let merge_estimate = last
-                .payload_bytes()
-                .saturating_add(op.retained_bytes())
-                .saturating_add(std::mem::size_of::<EditOperation>());
+            let merge_estimate = last.payload_bytes().saturating_add(op.retained_bytes()).saturating_add(std::mem::size_of::<EditOperation>());
             if last.can_merge(&op, self.merge_timeout_ms) && merge_estimate <= self.max_payload_bytes {
                 let old_bytes = last.payload_bytes();
                 last.merge(op, cursor_after);
@@ -253,17 +190,13 @@ impl History {
                 return;
             }
         }
-
         let entry = HistoryEntry::new(op, cursor_before, cursor_after);
         self.undo_payload_bytes += entry.payload_bytes();
         self.undo_stack.push_back(entry);
         self.enforce_limits();
     }
-
     fn enforce_limits(&mut self) {
-        while self.undo_stack.len() > 1
-            && (self.undo_stack.len() + self.redo_stack.len() > self.max_entries || self.undo_payload_bytes + self.redo_payload_bytes > self.max_payload_bytes)
-        {
+        while self.undo_stack.len() > 1 && (self.undo_stack.len() + self.redo_stack.len() > self.max_entries || self.undo_payload_bytes + self.redo_payload_bytes > self.max_payload_bytes) {
             if let Some(entry) = self.undo_stack.pop_front() {
                 self.undo_payload_bytes = self.undo_payload_bytes.saturating_sub(entry.payload_bytes());
             }
@@ -291,13 +224,7 @@ impl History {
     }
 
     pub fn stats(&self) -> HistoryStats {
-        HistoryStats {
-            undo_entries: self.undo_stack.len(),
-            redo_entries: self.redo_stack.len(),
-            undo_payload_bytes: self.undo_payload_bytes,
-            redo_payload_bytes: self.redo_payload_bytes,
-            payload_limit_bytes: self.max_payload_bytes,
-        }
+        HistoryStats { undo_entries: self.undo_stack.len(), redo_entries: self.redo_stack.len(), undo_payload_bytes: self.undo_payload_bytes, redo_payload_bytes: self.redo_payload_bytes, payload_limit_bytes: self.max_payload_bytes }
     }
 
     pub fn set_limits(&mut self, max_entries: usize, max_payload_bytes: usize) {
@@ -307,13 +234,8 @@ impl History {
     }
 
     pub fn retained_bytes(&self) -> usize {
-        let entry_bytes = |entry: &HistoryEntry| {
-            entry.operations.capacity() * std::mem::size_of::<EditOperation>() + entry.operations.iter().map(EditOperation::retained_bytes).sum::<usize>()
-        };
-        self.undo_stack.capacity() * std::mem::size_of::<HistoryEntry>()
-            + self.redo_stack.capacity() * std::mem::size_of::<HistoryEntry>()
-            + self.undo_stack.iter().map(entry_bytes).sum::<usize>()
-            + self.redo_stack.iter().map(entry_bytes).sum::<usize>()
+        let entry_bytes = |entry: &HistoryEntry| entry.operations.capacity() * std::mem::size_of::<EditOperation>() + entry.operations.iter().map(EditOperation::retained_bytes).sum::<usize>();
+        self.undo_stack.capacity() * std::mem::size_of::<HistoryEntry>() + self.redo_stack.capacity() * std::mem::size_of::<HistoryEntry>() + self.undo_stack.iter().map(entry_bytes).sum::<usize>() + self.redo_stack.iter().map(entry_bytes).sum::<usize>()
     }
 }
 
@@ -325,9 +247,7 @@ mod tests {
     fn test_record_and_undo() {
         let mut history = History::new();
         let pos = Position::new(0, 0);
-
         history.record(EditOperation::Insert { pos, text: "a".into() }, pos, Position::new(0, 1));
-
         let entry = history.pop_undo();
         assert!(entry.is_some());
     }
@@ -336,10 +256,8 @@ mod tests {
     fn test_redo() {
         let mut history = History::new();
         let pos = Position::new(0, 0);
-
         history.record(EditOperation::Insert { pos, text: "a".into() }, pos, Position::new(0, 1));
         history.pop_undo();
-
         let entry = history.pop_redo();
         assert!(entry.is_some());
     }
@@ -348,23 +266,16 @@ mod tests {
     fn test_new_edit_clears_redo() {
         let mut history = History::new();
         let pos = Position::new(0, 0);
-
         history.record(EditOperation::Insert { pos, text: "a".into() }, pos, Position::new(0, 1));
         history.pop_undo();
-
         history.record(EditOperation::Insert { pos, text: "b".into() }, pos, Position::new(0, 1));
-
         assert!(history.pop_redo().is_none());
     }
 
     #[test]
     fn test_inverse_operations() {
-        let insert_op = EditOperation::Insert {
-            pos: Position::new(0, 0),
-            text: "hello".into(),
-        };
+        let insert_op = EditOperation::Insert { pos: Position::new(0, 0), text: "hello".into() };
         let inverse = insert_op.inverse();
-
         if let EditOperation::Delete { start, end, deleted_text } = inverse {
             assert_eq!(start.col, 0);
             assert_eq!(end.col, 5);
@@ -376,13 +287,8 @@ mod tests {
 
     #[test]
     fn test_inverse_delete() {
-        let delete_op = EditOperation::Delete {
-            start: Position::new(1, 5),
-            end: Position::new(1, 10),
-            deleted_text: "world".into(),
-        };
+        let delete_op = EditOperation::Delete { start: Position::new(1, 5), end: Position::new(1, 10), deleted_text: "world".into() };
         let inverse = delete_op.inverse();
-
         if let EditOperation::Insert { pos, text } = inverse {
             assert_eq!(pos.row, 1);
             assert_eq!(pos.col, 5);
@@ -394,12 +300,8 @@ mod tests {
 
     #[test]
     fn test_inverse_line_insert() {
-        let op = EditOperation::LineInsert {
-            row: 2,
-            lines: vec!["line one".into(), "line two".into()],
-        };
+        let op = EditOperation::LineInsert { row: 2, lines: vec!["line one".into(), "line two".into()] };
         let inverse = op.inverse();
-
         if let EditOperation::LineDelete { row, lines } = inverse {
             assert_eq!(row, 2);
             assert_eq!(lines, vec!["line one", "line two"]);
@@ -410,12 +312,8 @@ mod tests {
 
     #[test]
     fn test_inverse_line_delete() {
-        let op = EditOperation::LineDelete {
-            row: 3,
-            lines: vec!["deleted line".into()],
-        };
+        let op = EditOperation::LineDelete { row: 3, lines: vec!["deleted line".into()] };
         let inverse = op.inverse();
-
         if let EditOperation::LineInsert { row, lines } = inverse {
             assert_eq!(row, 3);
             assert_eq!(lines, vec!["deleted line"]);
@@ -426,21 +324,9 @@ mod tests {
 
     #[test]
     fn test_inverse_block_insert() {
-        let op = EditOperation::BlockInsert {
-            start_row: 1,
-            col: 5,
-            lines: vec!["abc".into(), "def".into(), "ghi".into()],
-        };
+        let op = EditOperation::BlockInsert { start_row: 1, col: 5, lines: vec!["abc".into(), "def".into(), "ghi".into()] };
         let inverse = op.inverse();
-
-        if let EditOperation::BlockDelete {
-            start_row,
-            end_row,
-            start_col,
-            end_col,
-            deleted_lines,
-        } = inverse
-        {
+        if let EditOperation::BlockDelete { start_row, end_row, start_col, end_col, deleted_lines } = inverse {
             assert_eq!(start_row, 1);
             assert_eq!(end_row, 3);
             assert_eq!(start_col, 5);
@@ -453,15 +339,8 @@ mod tests {
 
     #[test]
     fn test_inverse_block_delete() {
-        let op = EditOperation::BlockDelete {
-            start_row: 0,
-            end_row: 2,
-            start_col: 10,
-            end_col: 15,
-            deleted_lines: vec!["foo".into(), "bar".into(), "baz".into()],
-        };
+        let op = EditOperation::BlockDelete { start_row: 0, end_row: 2, start_col: 10, end_col: 15, deleted_lines: vec!["foo".into(), "bar".into(), "baz".into()] };
         let inverse = op.inverse();
-
         if let EditOperation::BlockInsert { start_row, col, lines } = inverse {
             assert_eq!(start_row, 0);
             assert_eq!(col, 10);
@@ -475,7 +354,6 @@ mod tests {
     fn test_inverse_split_line() {
         let op = EditOperation::SplitLine { pos: Position::new(5, 10) };
         let inverse = op.inverse();
-
         if let EditOperation::JoinLine { row, col } = inverse {
             assert_eq!(row, 6);
             assert_eq!(col, 10);
@@ -488,7 +366,6 @@ mod tests {
     fn test_inverse_join_line() {
         let op = EditOperation::JoinLine { row: 3, col: 15 };
         let inverse = op.inverse();
-
         if let EditOperation::SplitLine { pos } = inverse {
             assert_eq!(pos.row, 2);
             assert_eq!(pos.col, 15);
@@ -502,16 +379,7 @@ mod tests {
         let mut history = History::new();
         let cursor_before = Position::new(5, 10);
         let cursor_after = Position::new(5, 15);
-
-        history.record(
-            EditOperation::Insert {
-                pos: Position::new(5, 10),
-                text: "hello".into(),
-            },
-            cursor_before,
-            cursor_after,
-        );
-
+        history.record(EditOperation::Insert { pos: Position::new(5, 10), text: "hello".into() }, cursor_before, cursor_after);
         let entry = history.pop_undo().unwrap();
         assert_eq!(entry.cursor_before.row, 5);
         assert_eq!(entry.cursor_before.col, 10);
@@ -524,12 +392,9 @@ mod tests {
         let mut history = History::new();
         let cursor_before = Position::new(3, 0);
         let cursor_after = Position::new(4, 0);
-
         history.record(EditOperation::SplitLine { pos: Position::new(3, 0) }, cursor_before, cursor_after);
-
         history.pop_undo();
         let entry = history.pop_redo().unwrap();
-
         assert_eq!(entry.cursor_before.row, 3);
         assert_eq!(entry.cursor_before.col, 0);
         assert_eq!(entry.cursor_after.row, 4);
@@ -542,16 +407,7 @@ mod tests {
         // Simulating: cursor at line 5, delete line, cursor should restore to line 5 on undo
         let cursor_before = Position::new(5, 3);
         let cursor_after = Position::new(5, 0);
-
-        history.record(
-            EditOperation::LineDelete {
-                row: 5,
-                lines: vec!["   deleted line content".into()],
-            },
-            cursor_before,
-            cursor_after,
-        );
-
+        history.record(EditOperation::LineDelete { row: 5, lines: vec!["   deleted line content".into()] }, cursor_before, cursor_after);
         let entry = history.pop_undo().unwrap();
         // After undo, cursor should go back to (5, 3)
         assert_eq!(entry.cursor_before.row, 5);
@@ -561,53 +417,30 @@ mod tests {
     #[test]
     fn test_multiple_undo_redo_cycle() {
         let mut history = History::new();
-
         // Use different operation types to prevent merging
         // First edit: insert at start
-        history.record(
-            EditOperation::Insert {
-                pos: Position::new(0, 0),
-                text: "hello".into(),
-            },
-            Position::new(0, 0),
-            Position::new(0, 5),
-        );
-
+        history.record(EditOperation::Insert { pos: Position::new(0, 0), text: "hello".into() }, Position::new(0, 0), Position::new(0, 5));
         // Second edit: split line (won't merge with insert)
         history.record(EditOperation::SplitLine { pos: Position::new(0, 5) }, Position::new(0, 5), Position::new(1, 0));
-
         // Third edit: insert on new line (won't merge - different row)
-        history.record(
-            EditOperation::Insert {
-                pos: Position::new(1, 0),
-                text: "world".into(),
-            },
-            Position::new(1, 0),
-            Position::new(1, 5),
-        );
-
+        history.record(EditOperation::Insert { pos: Position::new(1, 0), text: "world".into() }, Position::new(1, 0), Position::new(1, 5));
         // Undo all three (in reverse order)
         let entry1 = history.pop_undo().unwrap();
         assert_eq!(entry1.cursor_before.row, 1);
         assert_eq!(entry1.cursor_before.col, 0);
-
         let entry2 = history.pop_undo().unwrap();
         assert_eq!(entry2.cursor_before.row, 0);
         assert_eq!(entry2.cursor_before.col, 5);
-
         let entry3 = history.pop_undo().unwrap();
         assert_eq!(entry3.cursor_before.row, 0);
         assert_eq!(entry3.cursor_before.col, 0);
-
         // Redo all three
         let redo1 = history.pop_redo().unwrap();
         assert_eq!(redo1.cursor_after.row, 0);
         assert_eq!(redo1.cursor_after.col, 5);
-
         let redo2 = history.pop_redo().unwrap();
         assert_eq!(redo2.cursor_after.row, 1);
         assert_eq!(redo2.cursor_after.col, 0);
-
         let redo3 = history.pop_redo().unwrap();
         assert_eq!(redo3.cursor_after.row, 1);
         assert_eq!(redo3.cursor_after.col, 5);
@@ -618,16 +451,7 @@ mod tests {
         let mut history = History::new();
         let cursor_before = Position::new(2, 5);
         let cursor_after = Position::new(5, 0); // After inserting 3 lines
-
-        history.record(
-            EditOperation::LineInsert {
-                row: 3,
-                lines: vec!["first inserted line".into(), "second inserted line".into(), "third inserted line".into()],
-            },
-            cursor_before,
-            cursor_after,
-        );
-
+        history.record(EditOperation::LineInsert { row: 3, lines: vec!["first inserted line".into(), "second inserted line".into(), "third inserted line".into()] }, cursor_before, cursor_after);
         let entry = history.pop_undo().unwrap();
         assert_eq!(entry.cursor_before.row, 2);
         assert_eq!(entry.cursor_before.col, 5);
@@ -639,19 +463,7 @@ mod tests {
         // Visual block select from (1,5) to (3,10), delete, cursor should restore
         let cursor_before = Position::new(1, 5);
         let cursor_after = Position::new(1, 5);
-
-        history.record(
-            EditOperation::BlockDelete {
-                start_row: 1,
-                end_row: 3,
-                start_col: 5,
-                end_col: 10,
-                deleted_lines: vec!["12345".into(), "12345".into(), "12345".into()],
-            },
-            cursor_before,
-            cursor_after,
-        );
-
+        history.record(EditOperation::BlockDelete { start_row: 1, end_row: 3, start_col: 5, end_col: 10, deleted_lines: vec!["12345".into(), "12345".into(), "12345".into()] }, cursor_before, cursor_after);
         let entry = history.pop_undo().unwrap();
         assert_eq!(entry.cursor_before.row, 1);
         assert_eq!(entry.cursor_before.col, 5);
@@ -659,13 +471,9 @@ mod tests {
 
     #[test]
     fn test_double_inverse_is_original() {
-        let original = EditOperation::LineInsert {
-            row: 5,
-            lines: vec!["test line".into()],
-        };
+        let original = EditOperation::LineInsert { row: 5, lines: vec!["test line".into()] };
         let inverse = original.inverse();
         let double_inverse = inverse.inverse();
-
         if let EditOperation::LineInsert { row, lines } = double_inverse {
             assert_eq!(row, 5);
             assert_eq!(lines, vec!["test line"]);
@@ -676,24 +484,10 @@ mod tests {
 
     #[test]
     fn test_block_double_inverse_is_original() {
-        let original = EditOperation::BlockDelete {
-            start_row: 2,
-            end_row: 4,
-            start_col: 3,
-            end_col: 8,
-            deleted_lines: vec!["abc".into(), "def".into(), "ghi".into()],
-        };
+        let original = EditOperation::BlockDelete { start_row: 2, end_row: 4, start_col: 3, end_col: 8, deleted_lines: vec!["abc".into(), "def".into(), "ghi".into()] };
         let inverse = original.inverse();
         let double_inverse = inverse.inverse();
-
-        if let EditOperation::BlockDelete {
-            start_row,
-            end_row,
-            start_col,
-            deleted_lines,
-            ..
-        } = double_inverse
-        {
+        if let EditOperation::BlockDelete { start_row, end_row, start_col, deleted_lines, .. } = double_inverse {
             assert_eq!(start_row, 2);
             assert_eq!(end_row, 4);
             assert_eq!(start_col, 3);
@@ -705,12 +499,8 @@ mod tests {
 
     #[test]
     fn test_multiline_insert_inverse() {
-        let op = EditOperation::Insert {
-            pos: Position::new(2, 5),
-            text: "hello\nworld\n!".into(),
-        };
+        let op = EditOperation::Insert { pos: Position::new(2, 5), text: "hello\nworld\n!".into() };
         let inverse = op.inverse();
-
         if let EditOperation::Delete { start, end, deleted_text } = inverse {
             assert_eq!(start.row, 2);
             assert_eq!(start.col, 5);
@@ -724,12 +514,8 @@ mod tests {
 
     #[test]
     fn test_empty_line_insert() {
-        let op = EditOperation::LineInsert {
-            row: 0,
-            lines: vec!["".into()],
-        };
+        let op = EditOperation::LineInsert { row: 0, lines: vec!["".into()] };
         let inverse = op.inverse();
-
         if let EditOperation::LineDelete { row, lines } = inverse {
             assert_eq!(row, 0);
             assert_eq!(lines, vec![""]);
@@ -741,27 +527,17 @@ mod tests {
     #[test]
     fn test_max_entries_limit() {
         let mut history = History::new();
-
         // Record more than max entries
         for i in 0..1100usize {
-            history.record(
-                EditOperation::Insert {
-                    pos: Position::new(0, i),
-                    text: "x".into(),
-                },
-                Position::new(0, i),
-                Position::new(0, i + 1),
-            );
+            history.record(EditOperation::Insert { pos: Position::new(0, i), text: "x".into() }, Position::new(0, i), Position::new(0, i + 1));
             // Sleep briefly to prevent merging
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-
         // Count undo entries
         let mut count = 0;
         while history.pop_undo().is_some() {
             count += 1;
         }
-
         // Should be capped at max_entries (1000)
         assert!(count <= History::DEFAULT_MAX_ENTRIES);
     }
@@ -770,27 +546,11 @@ mod tests {
     fn payload_budget_evicts_old_entries_and_keeps_oversized_newest() {
         let mut history = History::with_limits(10, 8);
         for row in 0..3 {
-            history.record(
-                EditOperation::Insert {
-                    pos: Position::new(row, 0),
-                    text: "123456".into(),
-                },
-                Position::new(row, 0),
-                Position::new(row, 6),
-            );
+            history.record(EditOperation::Insert { pos: Position::new(row, 0), text: "123456".into() }, Position::new(row, 0), Position::new(row, 6));
         }
         assert_eq!(history.stats().undo_entries, 1);
         assert!(history.stats().total_payload_bytes() >= 6);
-
-        history.record(
-            EditOperation::Delete {
-                start: Position::new(0, 0),
-                end: Position::new(0, 32),
-                deleted_text: "x".repeat(32),
-            },
-            Position::new(0, 32),
-            Position::new(0, 0),
-        );
+        history.record(EditOperation::Delete { start: Position::new(0, 0), end: Position::new(0, 32), deleted_text: "x".repeat(32) }, Position::new(0, 32), Position::new(0, 0));
         let stats = history.stats();
         assert_eq!(stats.undo_entries, 1);
         assert!(stats.total_payload_bytes() >= 32);
@@ -800,20 +560,12 @@ mod tests {
     #[test]
     fn undo_redo_moves_the_same_payload_allocation() {
         let mut history = History::new();
-        history.record(
-            EditOperation::Insert {
-                pos: Position::new(0, 0),
-                text: "move me without cloning".repeat(1024),
-            },
-            Position::new(0, 0),
-            Position::new(0, 21 * 1024),
-        );
+        history.record(EditOperation::Insert { pos: Position::new(0, 0), text: "move me without cloning".repeat(1024) }, Position::new(0, 0), Position::new(0, 21 * 1024));
         let original_ptr = match &history.undo_stack.back().unwrap().operations[0] {
             EditOperation::Insert { text, .. } => text.as_ptr(),
             _ => unreachable!(),
         };
         let payload_bytes = history.stats().total_payload_bytes();
-
         let undone = history.pop_undo().unwrap();
         let undo_ptr = match &undone.operations[0] {
             EditOperation::Insert { text, .. } => text.as_ptr(),
@@ -821,7 +573,6 @@ mod tests {
         };
         assert_eq!(undo_ptr, original_ptr);
         assert_eq!(history.stats().total_payload_bytes(), payload_bytes);
-
         let redone = history.pop_redo().unwrap();
         let redo_ptr = match &redone.operations[0] {
             EditOperation::Insert { text, .. } => text.as_ptr(),
@@ -835,14 +586,7 @@ mod tests {
     fn consecutive_typing_merges_into_one_string_payload() {
         let mut history = History::new();
         for col in 0..10_000 {
-            history.record(
-                EditOperation::Insert {
-                    pos: Position::new(0, col),
-                    text: "x".into(),
-                },
-                Position::new(0, col),
-                Position::new(0, col + 1),
-            );
+            history.record(EditOperation::Insert { pos: Position::new(0, col), text: "x".into() }, Position::new(0, col), Position::new(0, col + 1));
         }
         let entry = history.undo_stack.back().unwrap();
         assert_eq!(entry.operations.len(), 1);

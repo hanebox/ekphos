@@ -1,7 +1,6 @@
 use super::*;
 
 impl Editor {
-    // Cursor
     pub fn cursor(&self) -> (usize, usize) {
         let pos = self.cursor.pos();
         (pos.row, pos.col)
@@ -27,11 +26,9 @@ impl Editor {
     pub fn move_cursor(&mut self, movement: CursorMove) {
         let pos = self.cursor.pos();
         let line_count = self.buffer.line_count();
-
         if !matches!(movement, CursorMove::Up | CursorMove::Down) {
             self.preferred_visual_x = None;
         }
-
         match movement {
             CursorMove::Forward => {
                 let line_len = self.buffer.line_len(pos.row);
@@ -56,7 +53,6 @@ impl Editor {
                         let (cur_visual_line, cur_x) = self.cursor_wrapped_position();
                         let preferred_x = self.preferred_visual_x.unwrap_or(cur_x);
                         self.preferred_visual_x = Some(preferred_x);
-
                         if cur_visual_line > 0 {
                             let new_col = self.col_at_visual_pos(pos.row, cur_visual_line - 1, preferred_x, content_width);
                             self.cursor.set_pos(Position::new(pos.row, new_col), false);
@@ -84,7 +80,6 @@ impl Editor {
                         let preferred_x = self.preferred_visual_x.unwrap_or(cur_x);
                         self.preferred_visual_x = Some(preferred_x);
                         let total_visual_lines = self.visual_lines_for_row(pos.row, content_width);
-
                         if cur_visual_line + 1 < total_visual_lines {
                             let new_col = self.col_at_visual_pos(pos.row, cur_visual_line + 1, preferred_x, content_width);
                             self.cursor.set_pos(Position::new(pos.row, new_col), false);
@@ -126,52 +121,38 @@ impl Editor {
             CursorMove::BigWordEndBackward => self.move_big_word_end_backward(),
             CursorMove::ParagraphForward => {
                 let mut row = pos.row;
-                while row < line_count && !self.buffer.line(row).map_or(true, |l| l.trim().is_empty()) {
+                while row < line_count && !self.buffer.line(row).is_none_or(|l| l.trim().is_empty()) {
                     row += 1;
                 }
-                while row < line_count && self.buffer.line(row).map_or(false, |l| l.trim().is_empty()) {
+                while row < line_count && self.buffer.line(row).is_some_and(|l| l.trim().is_empty()) {
                     row += 1;
                 }
                 self.cursor.move_to(row.min(line_count.saturating_sub(1)), 0);
             }
             CursorMove::ParagraphBack => {
                 let mut row = pos.row;
-                if row > 0 {
+                row = row.saturating_sub(1);
+                while row > 0 && self.buffer.line(row).is_some_and(|l| l.trim().is_empty()) {
                     row -= 1;
                 }
-                while row > 0 && self.buffer.line(row).map_or(false, |l| l.trim().is_empty()) {
-                    row -= 1;
-                }
-                while row > 0 && !self.buffer.line(row - 1).map_or(true, |l| l.trim().is_empty()) {
+                while row > 0 && !self.buffer.line(row - 1).is_none_or(|l| l.trim().is_empty()) {
                     row -= 1;
                 }
                 self.cursor.move_to(row, 0);
             }
             CursorMove::ScreenTop => {
                 let row = self.scroll_offset;
-                let col = self
-                    .buffer
-                    .line(row)
-                    .map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0))
-                    .unwrap_or(0);
+                let col = self.buffer.line(row).map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0)).unwrap_or(0);
                 self.cursor.move_to(row, col);
             }
             CursorMove::ScreenMiddle => {
                 let row = (self.scroll_offset + self.view_height / 2).min(line_count.saturating_sub(1));
-                let col = self
-                    .buffer
-                    .line(row)
-                    .map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0))
-                    .unwrap_or(0);
+                let col = self.buffer.line(row).map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0)).unwrap_or(0);
                 self.cursor.move_to(row, col);
             }
             CursorMove::ScreenBottom => {
                 let row = (self.scroll_offset + self.view_height.saturating_sub(1)).min(line_count.saturating_sub(1));
-                let col = self
-                    .buffer
-                    .line(row)
-                    .map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0))
-                    .unwrap_or(0);
+                let col = self.buffer.line(row).map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0)).unwrap_or(0);
                 self.cursor.move_to(row, col);
             }
             CursorMove::HalfPageUp => {
@@ -212,11 +193,7 @@ impl Editor {
             }
             CursorMove::GoToLine(line) => {
                 let row = line.saturating_sub(1).min(line_count.saturating_sub(1));
-                let col = self
-                    .buffer
-                    .line(row)
-                    .map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0))
-                    .unwrap_or(0);
+                let col = self.buffer.line(row).map(|l| l.chars().position(|c| !c.is_whitespace()).unwrap_or(0)).unwrap_or(0);
                 self.cursor.move_to(row, col);
             }
             CursorMove::GoToColumn(col) => {
@@ -226,16 +203,13 @@ impl Editor {
         }
         self.ensure_cursor_visible();
     }
-
     pub(super) fn move_word_forward(&mut self) {
         let pos = self.cursor.pos();
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
-
         let new_col = cursor::find_word_forward(line, pos.col);
         let line_len = line.chars().count();
-
         if new_col >= line_len && pos.row + 1 < self.buffer.line_count() {
             self.cursor.move_to(pos.row + 1, 0);
             if let Some(next_line) = self.buffer.line(pos.row + 1) {
@@ -246,28 +220,23 @@ impl Editor {
             self.cursor.move_to(pos.row, new_col.min(line_len));
         }
     }
-
     pub(super) fn move_word_back(&mut self) {
         let pos = self.cursor.pos();
-
         if pos.col == 0 && pos.row > 0 {
             let prev_len = self.buffer.line_len(pos.row - 1);
             self.cursor.move_to(pos.row - 1, prev_len);
             return;
         }
-
         if let Some(line) = self.buffer.line(pos.row) {
             self.cursor.move_to(pos.row, cursor::find_word_back(line, pos.col));
         }
     }
-
     pub(super) fn move_word_end_forward(&mut self) {
         let pos = self.cursor.pos();
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
         let len = line.chars().count();
-
         if len == 0 || pos.col >= len.saturating_sub(1) {
             if pos.row + 1 < self.buffer.line_count() {
                 self.cursor.move_to(pos.row + 1, 0);
@@ -275,7 +244,6 @@ impl Editor {
             }
             return;
         }
-
         let mut chars = line.chars().enumerate().skip(pos.col + 1);
         let Some((mut col, first)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
             if pos.row + 1 < self.buffer.line_count() {
@@ -293,7 +261,6 @@ impl Editor {
         }
         self.cursor.move_to(pos.row, col);
     }
-
     pub(super) fn move_word_end_backward(&mut self) {
         let pos = self.cursor.pos();
         if pos.col == 0 {
@@ -321,20 +288,13 @@ impl Editor {
         }
         self.cursor.move_to(pos.row, run.or(previous_run).map_or(0, |(start, _)| start));
     }
-
     pub(super) fn move_big_word_forward(&mut self) {
         let pos = self.cursor.pos();
         let Some(line) = self.buffer.line(pos.row) else {
             return;
         };
         let len = line.chars().count();
-        let col = line
-            .chars()
-            .enumerate()
-            .skip(pos.col)
-            .skip_while(|(_, ch)| !ch.is_whitespace())
-            .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
-            .unwrap_or(len);
+        let col = line.chars().enumerate().skip(pos.col).skip_while(|(_, ch)| !ch.is_whitespace()).find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index)).unwrap_or(len);
         if col >= len && pos.row + 1 < self.buffer.line_count() {
             self.cursor.move_to(pos.row + 1, 0);
             if let Some(next) = self.buffer.line(pos.row + 1) {
@@ -345,7 +305,6 @@ impl Editor {
             self.cursor.move_to(pos.row, col.min(len));
         }
     }
-
     pub(super) fn move_big_word_back(&mut self) {
         let pos = self.cursor.pos();
         if pos.col == 0 && pos.row > 0 {
@@ -368,7 +327,6 @@ impl Editor {
         }
         self.cursor.move_to(pos.row, run_start.or(previous_run_start).unwrap_or(0));
     }
-
     pub(super) fn move_big_word_end_forward(&mut self) {
         let pos = self.cursor.pos();
         let Some(line) = self.buffer.line(pos.row) else {
@@ -398,7 +356,6 @@ impl Editor {
         }
         self.cursor.move_to(pos.row, col);
     }
-
     pub(super) fn move_big_word_end_backward(&mut self) {
         let pos = self.cursor.pos();
         if pos.col == 0 {
@@ -422,7 +379,6 @@ impl Editor {
         }
         self.cursor.move_to(pos.row, run_start.or(previous_run_start).unwrap_or(0));
     }
-
     pub(super) fn find_matching_bracket(&self) -> Option<Position> {
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row)?;

@@ -1,0 +1,33 @@
+[package]
+name = "ekphos-integrations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Platform, network, media, clipboard, and syntax integrations for Ekphos"
+
+[dependencies]
+ekphos-core.workspace = true
+ekphos-editor.workspace = true
+ekphos-graph.workspace = true
+ekphos-search.workspace = true
+ekphos-vault.workspace = true
+ekphos-vim.workspace = true
+ratatui.workspace = true
+ratatui-image.workspace = true
+crossterm.workspace = true
+image.workspace = true
+htmd.workspace = true
+syntect.workspace = true
+ureq.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+unicode-width.workspace = true
+chrono.workspace = true
+tikv-jemalloc-sys.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+clipboard-rs.workspace = true

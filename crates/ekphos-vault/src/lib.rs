@@ -26,10 +26,7 @@ pub struct FileFingerprint {
 
 impl FileFingerprint {
     fn from_metadata(metadata: &fs::Metadata) -> Self {
-        Self {
-            size: metadata.len(),
-            modified_nanos: metadata.modified().ok().and_then(system_time_nanos),
-        }
+        Self { size: metadata.len(), modified_nanos: metadata.modified().ok().and_then(system_time_nanos) }
     }
 }
 
@@ -117,9 +114,7 @@ impl Vault {
     pub fn validate(&self, id: NoteId) -> Result<FileFingerprint, VaultError> {
         let note = self.notes.get(&id).ok_or(VaultError::NotFound(id))?;
         let path = self.root.join(note.path.as_str());
-        let current = fs::metadata(&path)
-            .map_err(|source| VaultError::Io { path: path.clone(), source })
-            .map(|metadata| FileFingerprint::from_metadata(&metadata))?;
+        let current = fs::metadata(&path).map_err(|source| VaultError::Io { path: path.clone(), source }).map(|metadata| FileFingerprint::from_metadata(&metadata))?;
         if current != note.fingerprint {
             return Err(VaultError::Changed(id));
         }
@@ -142,13 +137,7 @@ impl Vault {
         let path = self.root.join(self.notes.get(&id).ok_or(VaultError::NotFound(id))?.path.as_str());
         let mut note = catalog_note(&self.root, &path).map_err(|source| VaultError::Io { path: path.clone(), source })?;
         note.metadata.id = id;
-        self.notes.insert(
-            id,
-            VaultRecord {
-                path: note.metadata.path.clone(),
-                fingerprint: note.fingerprint,
-            },
-        );
+        self.notes.insert(id, VaultRecord { path: note.metadata.path.clone(), fingerprint: note.fingerprint });
         Ok(note)
     }
 }
@@ -187,15 +176,7 @@ impl Default for BodyCache {
 
 impl BodyCache {
     pub fn new(budget: usize) -> Self {
-        Self {
-            budget,
-            bytes: 0,
-            entries: HashMap::new(),
-            lru: VecDeque::new(),
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-        }
+        Self { budget, bytes: 0, entries: HashMap::new(), lru: VecDeque::new(), hits: 0, misses: 0, evictions: 0 }
     }
 
     /// Return and unpin a cached body, or load exactly one body from the vault.
@@ -239,24 +220,14 @@ impl BodyCache {
     }
 
     pub fn retain_valid(&mut self, vault: &Vault) {
-        let stale: Vec<NoteId> = self
-            .entries
-            .iter()
-            .filter_map(|(&id, entry)| (vault.fingerprint(id) != Some(entry.fingerprint)).then_some(id))
-            .collect();
+        let stale: Vec<NoteId> = self.entries.iter().filter_map(|(&id, entry)| (vault.fingerprint(id) != Some(entry.fingerprint)).then_some(id)).collect();
         for id in stale {
             self.invalidate(id);
         }
     }
 
     pub fn stats(&self) -> BodyCacheStats {
-        BodyCacheStats {
-            hits: self.hits,
-            misses: self.misses,
-            evictions: self.evictions,
-            bytes: self.bytes,
-            entries: self.entries.len(),
-        }
+        BodyCacheStats { hits: self.hits, misses: self.misses, evictions: self.evictions, bytes: self.bytes, entries: self.entries.len() }
     }
 }
 
@@ -266,10 +237,15 @@ pub fn contains_markdown(path: &Path) -> bool {
     };
     entries.flatten().any(|entry| {
         let entry_path = entry.path();
-        if entry_path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            return false;
+        };
+        if file_type.is_symlink() {
+            false
+        } else if file_type.is_dir() {
             !entry_path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) && contains_markdown(&entry_path)
         } else {
-            entry_path.extension().is_some_and(|extension| extension == "md")
+            file_type.is_file() && entry_path.extension().is_some_and(|extension| extension == "md")
         }
     })
 }
@@ -278,13 +254,11 @@ pub fn contains_markdown(path: &Path) -> bool {
 pub fn scan(root: &Path) -> io::Result<Vec<CatalogEntry>> {
     Vault::scan(root).map(|(_, entries)| entries)
 }
-
 fn assign_unique_note_ids(entries: &mut [CatalogEntry]) {
     let mut paths = Vec::new();
     collect_note_paths(entries, &mut paths);
     paths.sort_unstable();
     paths.dedup();
-
     let mut occupied = HashSet::with_capacity(paths.len());
     let mut assignments = HashMap::with_capacity(paths.len());
     for path in paths {
@@ -296,7 +270,6 @@ fn assign_unique_note_ids(entries: &mut [CatalogEntry]) {
     }
     apply_note_ids(entries, &assignments);
 }
-
 fn collect_note_paths(entries: &[CatalogEntry], paths: &mut Vec<VaultPath>) {
     for entry in entries {
         match entry {
@@ -305,24 +278,16 @@ fn collect_note_paths(entries: &[CatalogEntry], paths: &mut Vec<VaultPath>) {
         }
     }
 }
-
 fn collect_notes(entries: &[CatalogEntry], notes: &mut HashMap<NoteId, VaultRecord>) {
     for entry in entries {
         match entry {
             CatalogEntry::Folder(folder) => collect_notes(&folder.children, notes),
             CatalogEntry::Note(note) => {
-                notes.insert(
-                    note.metadata.id,
-                    VaultRecord {
-                        path: note.metadata.path.clone(),
-                        fingerprint: note.fingerprint,
-                    },
-                );
+                notes.insert(note.metadata.id, VaultRecord { path: note.metadata.path.clone(), fingerprint: note.fingerprint });
             }
         }
     }
 }
-
 fn apply_note_ids(entries: &mut [CatalogEntry], assignments: &HashMap<VaultPath, NoteId>) {
     for entry in entries {
         match entry {
@@ -335,7 +300,6 @@ fn apply_note_ids(entries: &mut [CatalogEntry], assignments: &HashMap<VaultPath,
         }
     }
 }
-
 fn scan_entries(root: &Path, directory: &Path) -> io::Result<Vec<CatalogEntry>> {
     let mut items = Vec::new();
     for entry in fs::read_dir(directory)? {
@@ -344,17 +308,20 @@ fn scan_entries(root: &Path, directory: &Path) -> io::Result<Vec<CatalogEntry>> 
             Err(_) => continue,
         };
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) {
                 continue;
             }
             let children = scan_entries(root, &path).unwrap_or_default();
-            items.push(CatalogEntry::Folder(Box::new(CatalogFolder {
-                name: path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default(),
-                absolute_path: path,
-                children,
-            })));
-        } else if path.extension().is_some_and(|extension| extension == "md") {
+            items.push(CatalogEntry::Folder(Box::new(CatalogFolder { name: path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default(), absolute_path: path, children })));
+        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "md") {
             if let Ok(note) = catalog_note(root, &path) {
                 items.push(CatalogEntry::Note(Box::new(note)));
             }
@@ -362,7 +329,6 @@ fn scan_entries(root: &Path, directory: &Path) -> io::Result<Vec<CatalogEntry>> 
     }
     Ok(items)
 }
-
 fn catalog_note(root: &Path, path: &Path) -> io::Result<CatalogNote> {
     let filesystem = fs::metadata(path)?;
     let relative = path.strip_prefix(root).map_err(io::Error::other)?;
@@ -375,24 +341,10 @@ fn catalog_note(root: &Path, path: &Path) -> io::Result<CatalogNote> {
     let modified_time = filesystem.modified().ok();
     let created_time = filesystem.created().ok();
     let has_frontmatter = frontmatter.is_some();
-    let summary = frontmatter
-        .map(|value| FrontmatterSummary {
-            title: value.title,
-            tags: value.tags,
-            date: value.date,
-        })
-        .unwrap_or_default();
+    let summary = frontmatter.map(|value| FrontmatterSummary { title: value.title, tags: value.tags, date: value.date }).unwrap_or_default();
     let title = path.file_stem().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
     Ok(CatalogNote {
-        metadata: NoteMetadata {
-            id: NoteId::for_path(&vault_path),
-            path: vault_path,
-            title,
-            file_size: filesystem.len(),
-            modified_unix_seconds: unix_seconds(modified_time),
-            created_unix_seconds: unix_seconds(created_time),
-            frontmatter: summary,
-        },
+        metadata: NoteMetadata { id: NoteId::for_path(&vault_path), path: vault_path, title, file_size: filesystem.len(), modified_unix_seconds: unix_seconds(modified_time), created_unix_seconds: unix_seconds(created_time), frontmatter: summary },
         modified_time,
         created_time,
         has_frontmatter,
@@ -419,7 +371,6 @@ fn read_frontmatter(path: &Path) -> io::Result<(Option<Frontmatter>, usize)> {
     if prefix != b"---" && !prefix.starts_with(b"---\n") && !prefix.starts_with(b"---\r\n") {
         return Ok((None, 0));
     }
-
     let file = File::open(path)?;
     let mut lines = BufReader::new(file).lines();
     let Some(first) = lines.next() else {
@@ -428,7 +379,6 @@ fn read_frontmatter(path: &Path) -> io::Result<(Option<Frontmatter>, usize)> {
     if first? != "---" {
         return Ok((None, 0));
     }
-
     let mut yaml = String::new();
     let mut end_index = 1usize;
     for line in lines {
@@ -450,12 +400,9 @@ static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Atomically replace a note with a flushed sibling temporary file.
 pub fn save_note(path: &Path, content: &str) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "note has no parent directory"))?;
+    let parent = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "note has no parent directory"))?;
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("note.md");
     let permissions = fs::metadata(path).ok().map(|metadata| metadata.permissions());
-
     let mut last_error = None;
     for _ in 0..16 {
         let counter = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -486,25 +433,18 @@ pub fn save_note(path: &Path, content: &str) -> io::Result<()> {
     }
     Err(last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate temporary note path")))
 }
-
 fn unix_seconds(time: Option<SystemTime>) -> Option<u64> {
     time.and_then(|value| value.duration_since(UNIX_EPOCH).ok().map(|duration| duration.as_secs()))
 }
-
 fn system_time_nanos(time: SystemTime) -> Option<NonZeroU64> {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-        .and_then(NonZeroU64::new)
+    time.duration_since(UNIX_EPOCH).ok().and_then(|duration| u64::try_from(duration.as_nanos()).ok()).and_then(NonZeroU64::new)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
     fn fixture() -> PathBuf {
         let id = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("ekphos-vault-{}-{id}", std::process::id()));
@@ -512,7 +452,6 @@ mod tests {
         fs::write(root.join("folder/note.md"), "---\ntags: [one]\n---\n# Note").unwrap();
         root
     }
-
     fn first_note(entries: &[CatalogEntry]) -> &CatalogNote {
         let CatalogEntry::Folder(folder) = &entries[0] else {
             panic!("expected folder");
@@ -548,28 +487,15 @@ mod tests {
     #[test]
     fn frontmatter_prefix_matches_full_document_parser() {
         let root = fixture();
-        let cases = [
-            ("plain.md", "# Plain\nbody"),
-            ("valid.md", "---\ntitle: Hello\ntags: [a, b]\n---\n# Body\nrest"),
-            ("invalid.md", "---\n: invalid yaml [\n---\nbody"),
-            ("unclosed.md", "---\ntitle: Never closes\nbody"),
-        ];
+        let cases = [("plain.md", "# Plain\nbody"), ("valid.md", "---\ntitle: Hello\ntags: [a, b]\n---\n# Body\nrest"), ("invalid.md", "---\n: invalid yaml [\n---\nbody"), ("unclosed.md", "---\ntitle: Never closes\nbody")];
         for (name, content) in cases {
             let path = root.join(name);
             fs::write(&path, content).unwrap();
             let expected = Frontmatter::parse(content);
             let actual = read_frontmatter(&path).unwrap();
             assert_eq!(actual.1, expected.1, "{name}");
-            assert_eq!(
-                actual.0.as_ref().and_then(|value| value.title.as_deref()),
-                expected.0.as_ref().and_then(|value| value.title.as_deref()),
-                "{name}"
-            );
-            assert_eq!(
-                actual.0.as_ref().map(|value| &value.tags),
-                expected.0.as_ref().map(|value| &value.tags),
-                "{name}"
-            );
+            assert_eq!(actual.0.as_ref().and_then(|value| value.title.as_deref()), expected.0.as_ref().and_then(|value| value.title.as_deref()), "{name}");
+            assert_eq!(actual.0.as_ref().map(|value| &value.tags), expected.0.as_ref().map(|value| &value.tags), "{name}");
         }
         let _ = fs::remove_dir_all(root);
     }
@@ -622,7 +548,6 @@ mod tests {
         let active = cache.take_or_load(&vault, id).unwrap();
         assert_eq!(&*active, oversized);
         assert_eq!(cache.stats().bytes, 0);
-
         cache.insert(id, vault.fingerprint(id).unwrap(), active);
         let stats = cache.stats();
         assert_eq!(stats.entries, 0);
@@ -638,18 +563,29 @@ mod tests {
         let note = first_note(&entries);
         fs::write(root.join(note.metadata.path.as_str()), "changed size").unwrap();
         assert!(matches!(vault.load_body(note.metadata.id), Err(VaultError::Changed(_))));
-
         let path = root.join("save.md");
         fs::write(&path, "old").unwrap();
         let permissions = fs::metadata(&path).unwrap().permissions();
         save_note(&path, "new body").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new body");
         assert_eq!(fs::metadata(&path).unwrap().permissions().readonly(), permissions.readonly());
-        assert!(!fs::read_dir(&root)
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains(".ekphos-")));
+        assert!(!fs::read_dir(&root).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().contains(".ekphos-")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn killed_note_writer_cannot_replace_the_live_note_with_a_partial_sibling() {
+        let root = fixture();
+        let path = root.join("transactional.md");
+        fs::write(&path, "original complete note").unwrap();
+        let interrupted = root.join(format!(".transactional.md.ekphos-{}-killed.tmp", std::process::id()));
+        fs::write(&interrupted, "partial replacement").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original complete note");
+
+        save_note(&path, "next complete note").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "next complete note");
+        assert_eq!(fs::read_to_string(&interrupted).unwrap(), "partial replacement");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -667,5 +603,32 @@ mod tests {
             .unwrap();
         assert!(matches!(vault.load_body(id), Err(VaultError::InvalidEncoding(_))));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scans_ignore_file_directory_and_cyclic_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        let external = root.with_file_name(format!("{}-external", root.file_name().unwrap().to_string_lossy()));
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("outside.md"), "# Outside").unwrap();
+        symlink(&external, root.join("external-link")).unwrap();
+        symlink(root.join("folder/note.md"), root.join("linked-note.md")).unwrap();
+        symlink(&root, root.join("cycle")).unwrap();
+
+        let (_, entries) = Vault::scan(&root).unwrap();
+        let mut paths = Vec::new();
+        collect_note_paths(&entries, &mut paths);
+        assert_eq!(paths.iter().map(VaultPath::as_str).collect::<Vec<_>>(), ["folder/note.md"]);
+
+        let symlink_only = root.join("symlink-only");
+        fs::create_dir_all(&symlink_only).unwrap();
+        symlink(&external, symlink_only.join("external")).unwrap();
+        assert!(!contains_markdown(&symlink_only));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
     }
 }

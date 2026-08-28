@@ -7,11 +7,7 @@ pub enum Command {
     WriteQuit,
     ForceQuit,
     GoToLine(usize),
-    Substitute {
-        pattern: String,
-        replacement: String,
-        flags: SubstituteFlags,
-    },
+    Substitute { pattern: String, replacement: String, flags: SubstituteFlags },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,11 +34,9 @@ impl SubstituteFlags {
 
 pub fn parse_command(input: &str) -> Option<Command> {
     let input = input.trim();
-
     if input.is_empty() {
         return None;
     }
-
     if let Some(rest) = input.strip_prefix("%s") {
         return parse_substitute(rest);
     }
@@ -51,7 +45,6 @@ pub fn parse_command(input: &str) -> Option<Command> {
             return parse_substitute(rest);
         }
     }
-
     match input {
         "w" | "w!" => return Some(Command::Write),
         "q" => return Some(Command::Quit),
@@ -59,38 +52,24 @@ pub fn parse_command(input: &str) -> Option<Command> {
         "q!" => return Some(Command::ForceQuit),
         _ => {}
     }
-
     if let Ok(line) = input.parse::<usize>() {
         return Some(Command::GoToLine(line));
     }
-
     None
 }
-
 fn parse_substitute(input: &str) -> Option<Command> {
     if input.is_empty() {
         return None;
     }
-
     let delimiter = input.chars().next()?;
-    // Slice past the delimiter by its UTF-8 byte length, not a hardcoded 1, so a
-    // multi-byte delimiter char (e.g. `:%s世a世b`) doesn't slice on a non-char
-    // boundary and panic.
     let rest = &input[delimiter.len_utf8()..];
     let parts: Vec<&str> = rest.split(delimiter).collect();
-
     if parts.len() < 2 {
         return None;
     }
-
     let pattern = parts[0].to_string();
     let replacement = parts[1].to_string();
-    let flags = if parts.len() > 2 {
-        SubstituteFlags::parse(parts[2])
-    } else {
-        SubstituteFlags::default()
-    };
-
+    let flags = if parts.len() > 2 { SubstituteFlags::parse(parts[2]) } else { SubstituteFlags::default() };
     Some(Command::Substitute { pattern, replacement, flags })
 }
 
@@ -154,9 +133,6 @@ mod tests {
             if pattern == "foo" && replacement == "bar"
         ));
     }
-
-    // Regression: a multi-byte delimiter used to slice the input at byte index 1,
-    // landing inside the char and panicking. It must parse (or reject) safely.
     #[test]
     fn test_parse_substitute_multibyte_delimiter_no_panic() {
         let cmd = parse_command("%s世foo世bar世g");
@@ -165,7 +141,6 @@ mod tests {
             Some(Command::Substitute { pattern, replacement, .. })
             if pattern == "foo" && replacement == "bar"
         ));
-        // A multi-byte delimiter with too few parts is rejected, still no panic.
         assert_eq!(parse_command("%s€only"), None);
     }
 

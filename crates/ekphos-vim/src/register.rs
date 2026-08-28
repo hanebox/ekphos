@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RegisterMap {
     named: HashMap<char, RegisterContent>,
@@ -14,14 +13,12 @@ pub struct RegisterMap {
     selected: Option<char>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RegisterContent {
     pub text: String,
     pub linewise: bool,
 }
 
-#[allow(dead_code)]
 impl RegisterMap {
     pub fn new() -> Self {
         Self::default()
@@ -93,7 +90,6 @@ impl RegisterMap {
         let content = RegisterContent { text, linewise };
         self.unnamed = content.clone();
         self.numbered[0] = content.clone();
-
         if let Some(reg) = self.selected.take() {
             self.set(reg, content);
         }
@@ -102,12 +98,10 @@ impl RegisterMap {
     pub fn delete(&mut self, text: String, linewise: bool) {
         let content = RegisterContent { text: text.clone(), linewise };
         self.unnamed = content.clone();
-
         if let Some(reg) = self.selected.take() {
             self.set(reg, content);
             return;
         }
-
         if !linewise && !text.contains('\n') {
             self.small_delete = content;
         } else {
@@ -142,7 +136,6 @@ impl RegisterMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     // ==================== Basic Tests ====================
 
     #[test]
@@ -156,7 +149,6 @@ mod tests {
         let regs = RegisterMap::new();
         assert_eq!(regs.get('"').unwrap().text, "");
     }
-
     // ==================== Yank Tests ====================
 
     #[test]
@@ -206,20 +198,13 @@ mod tests {
         assert_eq!(regs.get('"').unwrap().text, "second");
         assert_eq!(regs.get('0').unwrap().text, "second");
     }
-
     // ==================== Named Register Tests ====================
 
     #[test]
     fn test_all_lowercase_named_registers() {
         let mut regs = RegisterMap::new();
         for c in 'a'..='z' {
-            regs.set(
-                c,
-                RegisterContent {
-                    text: c.to_string(),
-                    linewise: false,
-                },
-            );
+            regs.set(c, RegisterContent { text: c.to_string(), linewise: false });
         }
         for c in 'a'..='z' {
             assert_eq!(regs.get(c).unwrap().text, c.to_string());
@@ -229,49 +214,24 @@ mod tests {
     #[test]
     fn test_append_to_named() {
         let mut regs = RegisterMap::new();
-        regs.set(
-            'a',
-            RegisterContent {
-                text: "hello".to_string(),
-                linewise: false,
-            },
-        );
-        regs.set(
-            'A',
-            RegisterContent {
-                text: " world".to_string(),
-                linewise: false,
-            },
-        );
+        regs.set('a', RegisterContent { text: "hello".to_string(), linewise: false });
+        regs.set('A', RegisterContent { text: " world".to_string(), linewise: false });
         assert_eq!(regs.get('a').unwrap().text, "hello world");
     }
 
     #[test]
     fn test_append_to_empty_register() {
         let mut regs = RegisterMap::new();
-        regs.set(
-            'A',
-            RegisterContent {
-                text: "hello".to_string(),
-                linewise: false,
-            },
-        );
+        regs.set('A', RegisterContent { text: "hello".to_string(), linewise: false });
         assert_eq!(regs.get('a').unwrap().text, "hello");
     }
 
     #[test]
     fn test_uppercase_get_returns_lowercase() {
         let mut regs = RegisterMap::new();
-        regs.set(
-            'a',
-            RegisterContent {
-                text: "hello".to_string(),
-                linewise: false,
-            },
-        );
+        regs.set('a', RegisterContent { text: "hello".to_string(), linewise: false });
         assert_eq!(regs.get('A').unwrap().text, "hello");
     }
-
     // ==================== Numbered Register Tests ====================
 
     #[test]
@@ -286,13 +246,7 @@ mod tests {
         let mut regs = RegisterMap::new();
         for i in 0..=9 {
             let c = char::from_digit(i, 10).unwrap();
-            regs.set(
-                c,
-                RegisterContent {
-                    text: i.to_string(),
-                    linewise: false,
-                },
-            );
+            regs.set(c, RegisterContent { text: i.to_string(), linewise: false });
         }
         for i in 0..=9 {
             let c = char::from_digit(i, 10).unwrap();
@@ -320,7 +274,6 @@ mod tests {
         assert_eq!(regs.get('1').unwrap().text, "delete10\n");
         assert_eq!(regs.get('9').unwrap().text, "delete2\n");
     }
-
     // ==================== Small Delete Register Tests ====================
 
     #[test]
@@ -350,7 +303,6 @@ mod tests {
         regs.delete("line1\nline2".to_string(), false);
         assert_eq!(regs.get('1').unwrap().text, "line1\nline2");
     }
-
     // ==================== Selection Tests ====================
 
     #[test]
@@ -375,7 +327,6 @@ mod tests {
         regs.select('b');
         assert_eq!(regs.get_selected(), Some('b'));
     }
-
     // ==================== Get For Paste Tests ====================
 
     #[test]
@@ -389,13 +340,7 @@ mod tests {
     fn test_get_for_paste_selected() {
         let mut regs = RegisterMap::new();
         regs.yank("default".to_string(), false);
-        regs.set(
-            'a',
-            RegisterContent {
-                text: "from_a".to_string(),
-                linewise: false,
-            },
-        );
+        regs.set('a', RegisterContent { text: "from_a".to_string(), linewise: false });
         regs.select('a');
         assert_eq!(regs.get_for_paste().text, "from_a");
     }
@@ -407,7 +352,6 @@ mod tests {
         regs.select('z');
         assert_eq!(regs.get_for_paste().text, "default");
     }
-
     // ==================== Search Register Tests ====================
 
     #[test]
@@ -430,7 +374,6 @@ mod tests {
         regs.set_search("second".to_string());
         assert_eq!(regs.get_search(), "second");
     }
-
     // ==================== Command Register Tests ====================
 
     #[test]
@@ -453,7 +396,6 @@ mod tests {
         regs.set_command("q!".to_string());
         assert_eq!(regs.get_command(), "q!");
     }
-
     // ==================== Clipboard Register Tests ====================
 
     #[test]
@@ -482,7 +424,6 @@ mod tests {
         regs.select('a');
         assert!(!regs.is_clipboard_selected());
     }
-
     // ==================== Special Register Get Tests ====================
 
     #[test]
@@ -514,7 +455,6 @@ mod tests {
         assert!(regs.get('!').is_none());
         assert!(regs.get(' ').is_none());
     }
-
     // ==================== Delete to Named Register Tests ====================
 
     #[test]
@@ -532,7 +472,6 @@ mod tests {
         regs.delete("deleted\n".to_string(), true);
         assert_eq!(regs.get('1').unwrap().text, "");
     }
-
     // ==================== Linewise Flag Tests ====================
 
     #[test]

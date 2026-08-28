@@ -29,10 +29,7 @@ impl Editor {
         let (start, end) = self.cursor.selection_range()?;
         if self.inclusive_selection {
             let line_len = self.buffer.line(end.row).map(|l| l.chars().count()).unwrap_or(0);
-            let end = Position {
-                row: end.row,
-                col: (end.col + 1).min(line_len),
-            };
+            let end = Position { row: end.row, col: (end.col + 1).min(line_len) };
             Some((start, end))
         } else {
             Some((start, end))
@@ -43,8 +40,6 @@ impl Editor {
         let (start, end) = self.effective_selection_range()?;
         Some(self.buffer.get_text_range(start.row, start.col, end.row, end.col))
     }
-
-    // Clipboard
     pub fn copy(&mut self) {
         if let Some(text) = self.selected_text() {
             self.clipboard = Some(text.clone());
@@ -61,17 +56,7 @@ impl Editor {
             self.clipboard_linewise = false;
             let _ = self.clipboard_port.set_text(&deleted);
             self.wrap_cache.invalidate_from(start.row);
-
-            self.history.record(
-                EditOperation::Delete {
-                    start,
-                    end,
-                    deleted_text: deleted,
-                },
-                cursor_before,
-                start,
-            );
-
+            self.history.record(EditOperation::Delete { start, end, deleted_text: deleted }, cursor_before, start);
             self.cursor.move_to(start.row, start.col);
             self.cursor.cancel_selection();
             self.ensure_cursor_visible();
@@ -84,17 +69,13 @@ impl Editor {
             let lines_deleted = end.row - start.row;
             self.buffer.discard_text_range(start.row, start.col, end.row, end.col);
             self.wrap_cache.invalidate_from(start.row);
-
             if lines_deleted > 0 {
                 self.highlight_index.shift_rows_after(end.row + 1, -(lines_deleted as isize));
                 self.row_style_cache.borrow_mut().shift_rows_after(end.row + 1, -(lines_deleted as isize));
             }
             self.update_row_highlights(start.row);
-
             self.cursor.move_to(start.row, start.col);
             self.cursor.cancel_selection();
         }
     }
-
-    // Undo/Redo
 }

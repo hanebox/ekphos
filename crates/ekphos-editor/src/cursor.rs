@@ -63,7 +63,6 @@ impl Selection {
         if !self.active {
             return None;
         }
-
         if self.anchor.row < cursor_pos.row || (self.anchor.row == cursor_pos.row && self.anchor.col <= cursor_pos.col) {
             Some((self.anchor, cursor_pos))
         } else {
@@ -123,11 +122,9 @@ pub fn is_word_char(c: char) -> bool {
 
 pub fn find_word_forward(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col >= len {
         return len;
     }
-
     let mut pos = col;
     let mut leaving_word = true;
     for (index, ch) in line.chars().enumerate().skip(col) {
@@ -149,7 +146,6 @@ pub fn find_word_back(line: &str, col: usize) -> usize {
     if col == 0 {
         return 0;
     }
-
     let mut word_start = 0;
     let mut in_word = false;
     for (index, ch) in line.chars().enumerate().take(col) {
@@ -189,7 +185,6 @@ mod tests {
         cursor.move_to(0, 5);
         cursor.start_selection();
         cursor.move_to(0, 10);
-
         let range = cursor.selection_range();
         assert!(range.is_some());
         let (start, end) = range.unwrap();

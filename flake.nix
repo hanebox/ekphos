@@ -11,17 +11,21 @@
       let
         pkgs = import nixpkgs { inherit system; };
         isDarwin = pkgs.stdenv.isDarwin;
+        manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "ekphos";
-          version = "0.25.10";
+          version = manifest.workspace.package.version;
 
           src = ./.;
 
           cargoLock = {
             lockFile = ./Cargo.lock;
           };
+
+          cargoBuildFlags = [ "--locked" ];
+          cargoTestFlags = [ "--workspace" "--all-targets" "--locked" ];
 
           nativeBuildInputs = with pkgs; [
             pkg-config

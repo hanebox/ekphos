@@ -51,13 +51,7 @@ struct RankedHit {
 
 impl Ord for RankedHit {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        other
-            .hit
-            .score
-            .cmp(&self.hit.score)
-            .then_with(|| self.title_rank.cmp(&other.title_rank))
-            .then_with(|| self.hit.line_number.cmp(&other.hit.line_number))
-            .then_with(|| self.source_rank.cmp(&other.source_rank))
+        other.hit.score.cmp(&self.hit.score).then_with(|| self.title_rank.cmp(&other.title_rank)).then_with(|| self.hit.line_number.cmp(&other.hit.line_number)).then_with(|| self.source_rank.cmp(&other.source_rank))
     }
 }
 
@@ -106,36 +100,27 @@ impl Default for SearchWorker {
 
 impl SearchWorker {
     pub fn new() -> Self {
-        let shared = Arc::new(Shared {
-            request: Mutex::new(RequestState::default()),
-            request_ready: Condvar::new(),
-            result: Mutex::new(None),
-            current_ticket: AtomicU64::new(0),
-            pending: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared { request: Mutex::new(RequestState::default()), request_ready: Condvar::new(), result: Mutex::new(None), current_ticket: AtomicU64::new(0), pending: AtomicBool::new(false) });
         let worker_shared = Arc::clone(&shared);
-        let handle = thread::Builder::new()
-            .name("ekphos-search".to_string())
-            .spawn(move || run_worker(worker_shared))
-            .expect("failed to start search worker");
-        Self { shared, handle: Some(handle) }
+        let handle = thread::Builder::new().name("ekphos-search".to_string()).spawn(move || run_worker(worker_shared)).ok();
+        Self { shared, handle }
     }
 
     pub fn submit(&self, query_id: u64, generation: u64, query: String, sources: Arc<[ContentSearchSource]>, index: Option<Arc<SearchIndex>>) {
+        if self.handle.as_ref().is_none_or(JoinHandle::is_finished) {
+            self.shared.pending.store(false, Ordering::Release);
+            if let Ok(mut result) = self.shared.result.lock() {
+                *result = Some(SearchResponse { query_id, generation, hits: Vec::new() });
+            }
+            return;
+        }
         let ticket = self.shared.current_ticket.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
         self.shared.pending.store(true, Ordering::Release);
         if let Ok(mut result) = self.shared.result.lock() {
             *result = None;
         }
         if let Ok(mut state) = self.shared.request.lock() {
-            state.request = Some(SearchRequest {
-                ticket,
-                query_id,
-                generation,
-                query,
-                sources,
-                index,
-            });
+            state.request = Some(SearchRequest { ticket, query_id, generation, query, sources, index });
             self.shared.request_ready.notify_one();
         }
     }
@@ -173,7 +158,6 @@ impl Drop for SearchWorker {
         }
     }
 }
-
 fn run_worker(shared: Arc<Shared>) {
     loop {
         let request = {
@@ -192,20 +176,16 @@ fn run_worker(shared: Arc<Shared>) {
             }
             state.request.take().expect("request checked above")
         };
-
-        let hits = search_sources(&request.sources, &request.query, request.index.as_deref(), || {
-            shared.current_ticket.load(Ordering::Acquire) != request.ticket
-        });
+        let hits = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search_sources(&request.sources, &request.query, request.index.as_deref(), || shared.current_ticket.load(Ordering::Acquire) != request.ticket))) {
+            Ok(hits) => hits,
+            Err(_) => Some(Vec::new()),
+        };
         if shared.current_ticket.load(Ordering::Acquire) != request.ticket {
             continue;
         }
         if let Some(hits) = hits {
             if let Ok(mut result) = shared.result.lock() {
-                *result = Some(SearchResponse {
-                    query_id: request.query_id,
-                    generation: request.generation,
-                    hits,
-                });
+                *result = Some(SearchResponse { query_id: request.query_id, generation: request.generation, hits });
             }
         }
         if shared.current_ticket.load(Ordering::Acquire) == request.ticket {
@@ -240,7 +220,6 @@ where
     }
     let mut best_hits = BinaryHeap::with_capacity(indexed_candidates.min(result_limit));
     let mut body = String::new();
-
     for (source_rank, source) in sources.iter().enumerate() {
         if is_cancelled() {
             return None;
@@ -252,7 +231,7 @@ where
         if file.read_to_string(&mut body).is_err() {
             continue;
         }
-        let title_matches = source.title.to_lowercase().contains(&query_lower);
+        let title_matches = case_insensitive_position(&source.title, &query_lower).is_some();
         for (line_number, line) in body.lines().enumerate() {
             if is_cancelled() {
                 return None;
@@ -270,25 +249,10 @@ where
             if match_start == 0 {
                 score += 20;
             }
-            if match_start == 0
-                || !line
-                    .chars()
-                    .nth(match_start.saturating_sub(1) as usize)
-                    .is_some_and(|character| character.is_alphanumeric())
-            {
+            if match_start == 0 || !line.chars().nth(match_start.saturating_sub(1) as usize).is_some_and(|character| character.is_alphanumeric()) {
                 score += 10;
             }
-            let ranked = RankedHit {
-                hit: SearchHit {
-                    note_id: source.note_id,
-                    line_number,
-                    match_start,
-                    match_end,
-                    score,
-                },
-                title_rank: title_ranks[source_rank],
-                source_rank,
-            };
+            let ranked = RankedHit { hit: SearchHit { note_id: source.note_id, line_number, match_start, match_end, score }, title_rank: title_ranks[source_rank], source_rank };
             if best_hits.len() < result_limit {
                 best_hits.push(ranked);
             } else if best_hits.peek().is_some_and(|worst| ranked < *worst) {
@@ -296,30 +260,29 @@ where
                 best_hits.push(ranked);
             }
         }
-        // `body` is dropped here before the next note is loaded.
     }
-
     let mut ranked_hits = best_hits.into_vec();
-    ranked_hits.sort_by(|left, right| {
-        right
-            .hit
-            .score
-            .cmp(&left.hit.score)
-            .then_with(|| left.title_rank.cmp(&right.title_rank))
-            .then_with(|| left.hit.line_number.cmp(&right.hit.line_number))
-            .then_with(|| left.source_rank.cmp(&right.source_rank))
-    });
+    ranked_hits.sort_by(|left, right| right.hit.score.cmp(&left.hit.score).then_with(|| left.title_rank.cmp(&right.title_rank)).then_with(|| left.hit.line_number.cmp(&right.hit.line_number)).then_with(|| left.source_rank.cmp(&right.source_rank)));
     Some(ranked_hits.into_iter().map(|ranked| ranked.hit).collect())
 }
 
 pub fn match_range(line: &str, query_lower: &str) -> Option<(u32, u32)> {
-    let line_lower = line.to_lowercase();
-    let byte_position = line_lower.find(query_lower)?;
-    let start = line_lower[..byte_position].chars().count();
+    let byte_position = case_insensitive_position(line, query_lower)?;
+    let start = line[..byte_position].chars().count();
     let end = start.checked_add(query_lower.chars().count())?;
     Some((u32::try_from(start).ok()?, u32::try_from(end).ok()?))
 }
 
+fn case_insensitive_position(text: &str, query_lower: &str) -> Option<usize> {
+    if query_lower.is_empty() {
+        return Some(0);
+    }
+    if query_lower.is_ascii() {
+        text.as_bytes().windows(query_lower.len()).position(|window| window.eq_ignore_ascii_case(query_lower.as_bytes()))
+    } else {
+        text.to_lowercase().find(query_lower)
+    }
+}
 fn candidate_line_count(index: &SearchIndex, query: &str) -> usize {
     let mut candidates = index.postings_for_exact(query).len().min(INDEXED_RESULT_LIMIT);
     let mut terms_scanned = 0usize;
@@ -356,31 +319,10 @@ mod tests {
         let other = root.join("other.md");
         fs::write(&alpha, "αlpha at start\nprefix αlpha suffix\n").unwrap();
         fs::write(&other, "some αlpha later\n").unwrap();
-        let sources = vec![
-            ContentSearchSource {
-                note_id: NoteId::new(1),
-                title: "αlpha".into(),
-                absolute_path: alpha.clone(),
-            },
-            ContentSearchSource {
-                note_id: NoteId::new(2),
-                title: "Other".into(),
-                absolute_path: other.clone(),
-            },
-        ];
+        let sources = vec![ContentSearchSource { note_id: NoteId::new(1), title: "αlpha".into(), absolute_path: alpha.clone() }, ContentSearchSource { note_id: NoteId::new(2), title: "Other".into(), absolute_path: other.clone() }];
         let index_sources = vec![
-            SearchSource {
-                note_id: NoteId::new(1),
-                relative_path: "alpha.md".into(),
-                absolute_path: alpha,
-                fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 },
-            },
-            SearchSource {
-                note_id: NoteId::new(2),
-                relative_path: "other.md".into(),
-                absolute_path: other,
-                fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 },
-            },
+            SearchSource { note_id: NoteId::new(1), relative_path: "alpha.md".into(), absolute_path: alpha, fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 } },
+            SearchSource { note_id: NoteId::new(2), relative_path: "other.md".into(), absolute_path: other, fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 } },
         ];
         let index = SearchIndex::build_from_loader(&root, &index_sources, |source| fs::read_to_string(&source.absolute_path).ok().map(Arc::from)).unwrap();
         let fallback = search_sources(&sources, "αLPHA", None, || false).unwrap();
@@ -402,57 +344,22 @@ mod tests {
         let nested = root.join("nested/Other.md");
         fs::write(&alpha, "alpha exact\nalphabet prefix\nxalpha substring\n東京 unicode\ncafé composed\n").unwrap();
         fs::write(&nested, "later alpha occurrence\n東京駅 prefix\n").unwrap();
-        let sources = vec![
-            ContentSearchSource {
-                note_id: NoteId::new(1),
-                title: "Alpha".into(),
-                absolute_path: alpha.clone(),
-            },
-            ContentSearchSource {
-                note_id: NoteId::new(2),
-                title: "Other".into(),
-                absolute_path: nested.clone(),
-            },
-        ];
+        let sources = vec![ContentSearchSource { note_id: NoteId::new(1), title: "Alpha".into(), absolute_path: alpha.clone() }, ContentSearchSource { note_id: NoteId::new(2), title: "Other".into(), absolute_path: nested.clone() }];
         let index_sources = vec![
-            SearchSource {
-                note_id: NoteId::new(1),
-                relative_path: "Alpha.md".into(),
-                absolute_path: alpha,
-                fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 },
-            },
-            SearchSource {
-                note_id: NoteId::new(2),
-                relative_path: "nested/Other.md".into(),
-                absolute_path: nested,
-                fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 },
-            },
+            SearchSource { note_id: NoteId::new(1), relative_path: "Alpha.md".into(), absolute_path: alpha, fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 } },
+            SearchSource { note_id: NoteId::new(2), relative_path: "nested/Other.md".into(), absolute_path: nested, fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 } },
         ];
         let index = SearchIndex::build_from_loader(&root, &index_sources, |source| fs::read_to_string(&source.absolute_path).ok().map(Arc::from)).unwrap();
-
         for query in ["alpha", "alph", "lpha", "東京", "京駅", "CAFÉ"] {
             let expected = legacy_streaming_search(&sources, query, INDEXED_RESULT_LIMIT);
             let actual = search_sources(&sources, query, Some(&index), || false).unwrap();
             assert_eq!(actual, expected, "query {query}");
         }
-
         let many_path = root.join("Many.md");
         fs::write(&many_path, "needle\n".repeat(600)).unwrap();
-        let many = [ContentSearchSource {
-            note_id: NoteId::new(3),
-            title: "Many".into(),
-            absolute_path: many_path.clone(),
-        }];
-        let many_index_source = [SearchSource {
-            note_id: NoteId::new(3),
-            relative_path: "Many.md".into(),
-            absolute_path: many_path,
-            fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 },
-        }];
-        let many_index = SearchIndex::build_from_loader(&root, &many_index_source, |source| {
-            fs::read_to_string(&source.absolute_path).ok().map(Arc::from)
-        })
-        .unwrap();
+        let many = [ContentSearchSource { note_id: NoteId::new(3), title: "Many".into(), absolute_path: many_path.clone() }];
+        let many_index_source = [SearchSource { note_id: NoteId::new(3), relative_path: "Many.md".into(), absolute_path: many_path, fingerprint: SearchFileFingerprint { size: 1, modified_nanos: 1 } }];
+        let many_index = SearchIndex::build_from_loader(&root, &many_index_source, |source| fs::read_to_string(&source.absolute_path).ok().map(Arc::from)).unwrap();
         assert_eq!(search_sources(&many, "needle", None, || false).unwrap().len(), FALLBACK_RESULT_LIMIT);
         assert_eq!(search_sources(&many, "needle", Some(&many_index), || false).unwrap().len(), 600);
         let _ = fs::remove_dir_all(root);
@@ -465,12 +372,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join("note.md");
         fs::write(&path, "alpha\nbeta\n").unwrap();
-        let sources: Arc<[ContentSearchSource]> = vec![ContentSearchSource {
-            note_id: NoteId::new(7),
-            title: "Note".into(),
-            absolute_path: path,
-        }]
-        .into();
+        let sources: Arc<[ContentSearchSource]> = vec![ContentSearchSource { note_id: NoteId::new(7), title: "Note".into(), absolute_path: path }].into();
         let worker = SearchWorker::new();
         worker.submit(1, 4, "alpha".to_string(), Arc::clone(&sources), None);
         worker.submit(2, 4, "beta".to_string(), sources, None);
@@ -486,7 +388,6 @@ mod tests {
         assert_eq!(response.hits.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
-
     fn legacy_streaming_search(sources: &[ContentSearchSource], query: &str, limit: usize) -> Vec<SearchHit> {
         let query_lower = query.to_lowercase();
         let mut hits = Vec::new();
@@ -505,30 +406,14 @@ mod tests {
                 if match_start == 0 {
                     score += 20;
                 }
-                if match_start == 0
-                    || !chars
-                        .get(match_start.saturating_sub(1) as usize)
-                        .is_some_and(|character| character.is_alphanumeric())
-                {
+                if match_start == 0 || !chars.get(match_start.saturating_sub(1) as usize).is_some_and(|character| character.is_alphanumeric()) {
                     score += 10;
                 }
-                hits.push(SearchHit {
-                    note_id: source.note_id,
-                    line_number: line_number as u32,
-                    match_start,
-                    match_end,
-                    score,
-                });
+                hits.push(SearchHit { note_id: source.note_id, line_number: line_number as u32, match_start, match_end, score });
             }
         }
         let titles: HashMap<_, _> = sources.iter().map(|source| (source.note_id, source.title.as_ref())).collect();
-        hits.sort_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
-                .then_with(|| titles.get(&left.note_id).cmp(&titles.get(&right.note_id)))
-                .then_with(|| left.line_number.cmp(&right.line_number))
-        });
+        hits.sort_by(|left, right| right.score.cmp(&left.score).then_with(|| titles.get(&left.note_id).cmp(&titles.get(&right.note_id))).then_with(|| left.line_number.cmp(&right.line_number)));
         hits.truncate(limit);
         hits
     }

@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crossterm::{
-    cursor::SetCursorStyle,
+    cursor::{SetCursorStyle, Show},
     event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -14,13 +14,47 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use ekphos::app::App;
 use ekphos::{config, event::run_app};
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+struct TerminalCleanupGuard {
+    active: bool,
+}
+
+impl TerminalCleanupGuard {
+    fn new() -> Self {
+        Self { active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TerminalCleanupGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _ = disable_raw_mode();
+        #[cfg(unix)]
+        {
+            if let Ok(mut terminal) = fs::OpenOptions::new().write(true).open("/dev/tty") {
+                let _ = execute!(terminal, SetCursorStyle::DefaultUserShape, Show, LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste, DisableFocusChange);
+                return;
+            }
+        }
+        let mut stderr = io::stderr();
+        let _ = execute!(stderr, SetCursorStyle::DefaultUserShape, Show, LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste, DisableFocusChange);
+    }
+}
 
 fn check_for_updates() -> bool {
     use std::io::Write;
     use std::thread;
     use std::time::Duration;
-
     let config = config::Config::load();
     if !config.check_updates {
         return true;
@@ -32,10 +66,8 @@ fn check_for_updates() -> bool {
     if !is_newer_version(&latest, VERSION) {
         return true;
     }
-
     let skipped = get_skipped_version();
     let already_skipped = skipped.as_ref() == Some(&latest);
-
     println!();
     println!("  A new version of ekphos is available: v{} (current: v{})", latest, VERSION);
     println!();
@@ -46,74 +78,46 @@ fn check_for_updates() -> bool {
     println!();
     println!("  Changelog: https://github.com/hanebox/ekphos/releases");
     println!();
-
     if already_skipped {
         println!("  Please update. Launching in 1 second...");
         let _ = io::stdout().flush();
         thread::sleep(Duration::from_secs(1));
         return true;
     }
-
     print!("  Press Enter to continue, or 'q' to quit and update: ");
     let _ = io::stdout().flush();
-
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_err() {
         return true;
     }
-
     let input = input.trim().to_lowercase();
     if input == "q" || input == "quit" {
         println!();
         return false;
     }
-
-    // User cose to continue, save this version as skipped
     save_skipped_version(&latest);
     true
 }
-
 fn skipped_version_path() -> PathBuf {
     config::Config::config_dir().join(".skipped_update")
 }
-
 fn get_skipped_version() -> Option<String> {
     fs::read_to_string(skipped_version_path()).ok()
 }
-
 fn save_skipped_version(version: &str) {
     let path = skipped_version_path();
     let _ = fs::write(path, version);
 }
 fn get_latest_version() -> Option<String> {
-    let response = ureq::get("https://api.github.com/repos/hanebox/ekphos/releases/latest")
-        .set("User-Agent", "ekphos")
-        .timeout(std::time::Duration::from_secs(3))
-        .call()
-        .ok()?;
-
-    let body = response.into_string().ok()?;
-    let tag_start = body.find("\"tag_name\":")?;
-    let after_tag = &body[tag_start + 11..];
-    let quote_start = after_tag.find('"')? + 1;
-    let quote_end = after_tag[quote_start..].find('"')?;
-    let version = after_tag[quote_start..quote_start + quote_end].trim_start_matches('v');
-
-    Some(version.to_string())
+    ekphos_integrations::release::latest_github_release("hanebox/ekphos", "ekphos", std::time::Duration::from_secs(3))
 }
-
 fn is_newer_version(remote: &str, local: &str) -> bool {
     let parse = |v: &str| -> (u32, u32, u32) {
         let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
-        (
-            parts.first().copied().unwrap_or(0),
-            parts.get(1).copied().unwrap_or(0),
-            parts.get(2).copied().unwrap_or(0),
-        )
+        (parts.first().copied().unwrap_or(0), parts.get(1).copied().unwrap_or(0), parts.get(2).copied().unwrap_or(0))
     };
     parse(remote) > parse(local)
 }
-
 fn print_help() {
     println!("ekphos {}", VERSION);
     println!("A lightweight, fast, terminal-based markdown research tool");
@@ -139,14 +143,11 @@ fn print_help() {
     println!("    ekphos ./my-note.md      Open a specific markdown file");
     println!("    ekphos .                 Open current directory as notes folder");
 }
-
 fn reset_config_and_themes() {
     let config_path = config::Config::config_path();
     let themes_dir = config::Config::themes_dir();
-
     println!("Resetting ekphos configuration...");
     println!();
-
     if config_path.exists() {
         match fs::remove_file(&config_path) {
             Ok(_) => println!("  Deleted: {}", config_path.display()),
@@ -155,7 +156,6 @@ fn reset_config_and_themes() {
     } else {
         println!("  Config file not found (skipped)");
     }
-
     if themes_dir.exists() {
         match fs::remove_dir_all(&themes_dir) {
             Ok(_) => println!("  Deleted: {}", themes_dir.display()),
@@ -164,28 +164,19 @@ fn reset_config_and_themes() {
     } else {
         println!("  Themes directory not found (skipped)");
     }
-
     println!();
     println!("Generating fresh defaults...");
     println!();
-
     let _config = config::Config::load_or_create();
-
     println!("  Created: {}", config_path.display());
     println!("  Created: {}", themes_dir.join("ekphos-dawn.toml").display());
-
     println!();
     println!("Reset complete! Configuration restored to v{} defaults.", VERSION);
 }
-
 fn clean_cache() {
-    let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache"))
-        .join("ekphos");
-
+    let cache_dir = env::var_os("EKPHOS_CACHE_DIR").filter(|path| !path.is_empty()).map(PathBuf::from).unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(|| PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache")).join("ekphos"));
     println!("Cleaning ekphos search cache...");
     println!();
-
     if cache_dir.exists() {
         let total_size = get_dir_size(&cache_dir);
         match fs::remove_dir_all(&cache_dir) {
@@ -198,11 +189,9 @@ fn clean_cache() {
     } else {
         println!("  Cache directory not found (skipped)");
     }
-
     println!();
     println!("Cache cleared! Search index will be rebuilt on next launch.");
 }
-
 fn get_dir_size(path: &PathBuf) -> u64 {
     let mut total = 0;
     if let Ok(entries) = fs::read_dir(path) {
@@ -220,7 +209,6 @@ fn get_dir_size(path: &PathBuf) -> u64 {
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
-
     if bytes >= MB {
         format!("{:.2} MB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
@@ -245,14 +233,10 @@ fn format_size(bytes: u64) -> String {
 #[cfg(unix)]
 fn terminal_writer() -> Box<dyn io::Write> {
     use std::os::unix::io::{AsRawFd, FromRawFd};
-
-    // Duplicate the real stdout so the TUI can keep drawing to the terminal.
     let tui_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
     if tui_fd < 0 {
         return Box::new(io::stdout());
     }
-
-    // Redirect fd 1 -> /dev/null so stray library output can't reach the screen.
     let devnull = match fs::OpenOptions::new().write(true).open("/dev/null") {
         Ok(f) => f,
         Err(_) => {
@@ -264,7 +248,6 @@ fn terminal_writer() -> Box<dyn io::Write> {
         unsafe { libc::close(tui_fd) };
         return Box::new(io::stdout());
     }
-
     // SAFETY: `tui_fd` is an exclusively-owned descriptor returned by `dup`.
     Box::new(unsafe { fs::File::from_raw_fd(tui_fd) })
 }
@@ -273,20 +256,14 @@ fn terminal_writer() -> Box<dyn io::Write> {
 fn terminal_writer() -> Box<dyn io::Write> {
     Box::new(io::stdout())
 }
-
 fn resolve_path(path_str: &str) -> Option<PathBuf> {
-    let expanded = shellexpand::tilde(path_str).to_string();
-    let path = PathBuf::from(&expanded);
+    let path = config::expand_home(path_str);
     let absolute = if path.is_absolute() { path } else { env::current_dir().ok()?.join(path) };
-
     absolute.canonicalize().ok().or(Some(absolute))
 }
-
 fn main() -> io::Result<()> {
-    // Handle CLI arguments
     let args: Vec<String> = env::args().collect();
     let mut initial_path: Option<PathBuf> = None;
-
     if args.len() > 1 {
         match args[1].as_str() {
             "-v" | "--version" => {
@@ -334,49 +311,26 @@ fn main() -> io::Result<()> {
             },
         }
     }
-
     if !check_for_updates() {
         return Ok(());
     }
-
     // Setup terminal. On Unix this also redirects stdout to /dev/null and draws
     // through a dup of the terminal, so stray library output can't corrupt the UI.
     enable_raw_mode()?;
-
+    let mut cleanup = TerminalCleanupGuard::new();
     let mut app = App::new_with_path(initial_path);
-
     let mut writer = terminal_writer();
-    execute!(
-        writer,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste,
-        EnableFocusChange,
-        SetCursorStyle::SteadyBlock
-    )?;
+    execute!(writer, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange, SetCursorStyle::SteadyBlock)?;
     let backend = CrosstermBackend::new(writer);
     let mut terminal = Terminal::new(backend)?;
-
-    // Main loop
     let result = run_app(&mut terminal, &mut app);
-
     app.save_last_opened_note_to_cache();
-
-    // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        SetCursorStyle::DefaultUserShape,
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        DisableBracketedPaste,
-        DisableFocusChange
-    )?;
+    execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape, LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste, DisableFocusChange)?;
     terminal.show_cursor()?;
-
+    cleanup.disarm();
     if let Err(err) = result {
         eprintln!("Error: {err:?}");
     }
-
     Ok(())
 }

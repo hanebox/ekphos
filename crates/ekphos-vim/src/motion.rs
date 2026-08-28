@@ -4,7 +4,6 @@ use ekphos_editor::Position;
 
 use crate::char_to_byte_index;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Motion {
     Left,
@@ -43,51 +42,29 @@ pub enum Motion {
 }
 
 impl Motion {
-    #[allow(dead_code)]
     pub fn is_linewise(&self) -> bool {
-        matches!(
-            self,
-            Motion::Up
-                | Motion::Down
-                | Motion::DocumentStart
-                | Motion::DocumentEnd
-                | Motion::GoToLine(_)
-                | Motion::ParagraphForward
-                | Motion::ParagraphBackward
-                | Motion::ScreenTop
-                | Motion::ScreenMiddle
-                | Motion::ScreenBottom
-        )
+        matches!(self, Motion::Up | Motion::Down | Motion::DocumentStart | Motion::DocumentEnd | Motion::GoToLine(_) | Motion::ParagraphForward | Motion::ParagraphBackward | Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom)
     }
 
-    #[allow(dead_code)]
     pub fn is_exclusive(&self) -> bool {
-        matches!(
-            self,
-            Motion::Left | Motion::Right | Motion::WordForward | Motion::BigWordForward | Motion::WordBackward | Motion::BigWordBackward
-        )
+        matches!(self, Motion::Left | Motion::Right | Motion::WordForward | Motion::BigWordForward | Motion::WordBackward | Motion::BigWordBackward)
     }
 }
 
-#[allow(dead_code)]
 pub fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-#[allow(dead_code)]
 pub fn find_word_forward(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col >= len {
         return len;
     }
-
     let mut pos = col;
     let mut chars = line.chars().skip(col).peekable();
     let start_char = *chars.peek().expect("column is within the line");
     let is_word = is_word_char(start_char);
     let is_space = start_char.is_whitespace();
-
     if is_space {
         while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
             chars.next();
@@ -112,34 +89,26 @@ pub fn find_word_forward(line: &str, col: usize) -> usize {
             pos += 1;
         }
     }
-
     pos
 }
 
-#[allow(dead_code)]
 pub fn find_word_back(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col == 0 || len == 0 {
         return 0;
     }
-
     let mut pos = col.min(len).saturating_sub(1);
     let byte_end = char_to_byte_index(line, pos + 1);
     let mut chars = line[..byte_end].chars().rev().peekable();
-
     while pos > 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
         chars.next();
         pos -= 1;
     }
-
     if pos == 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
         return 0;
     }
-
     let is_word = chars.peek().is_some_and(|ch| is_word_char(*ch));
     chars.next();
-
     while pos > 0 {
         let Some(&prev) = chars.peek() else {
             break;
@@ -151,24 +120,19 @@ pub fn find_word_back(line: &str, col: usize) -> usize {
         chars.next();
         pos -= 1;
     }
-
     pos
 }
 
-#[allow(dead_code)]
 pub fn find_word_end_forward(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col >= len.saturating_sub(1) {
         return len.saturating_sub(1);
     }
-
     let mut chars = line.chars().enumerate().skip(col + 1);
     let Some((mut pos, current)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
         return len.saturating_sub(1);
     };
     let is_word = is_word_char(current);
-
     for (next_pos, next) in chars {
         let next_is_word = is_word_char(next);
         if next.is_whitespace() || next_is_word != is_word {
@@ -176,68 +140,52 @@ pub fn find_word_end_forward(line: &str, col: usize) -> usize {
         }
         pos = next_pos;
     }
-
     pos
 }
 
-#[allow(dead_code)]
 pub fn find_big_word_forward(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col >= len {
         return len;
     }
-
     let mut pos = col;
     let mut chars = line.chars().skip(col).peekable();
-
     while chars.peek().is_some_and(|ch| !ch.is_whitespace()) {
         chars.next();
         pos += 1;
     }
-
     while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
         chars.next();
         pos += 1;
     }
-
     pos
 }
 
-#[allow(dead_code)]
 pub fn find_big_word_back(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col == 0 || len == 0 {
         return 0;
     }
-
     let mut pos = col.min(len).saturating_sub(1);
     let byte_end = char_to_byte_index(line, pos + 1);
     let mut chars = line[..byte_end].chars().rev().peekable();
-
     while pos > 0 && chars.peek().is_some_and(|ch| ch.is_whitespace()) {
         chars.next();
         pos -= 1;
     }
-
     chars.next();
     while pos > 0 && chars.peek().is_some_and(|ch| !ch.is_whitespace()) {
         chars.next();
         pos -= 1;
     }
-
     pos
 }
 
-#[allow(dead_code)]
 pub fn find_big_word_end_forward(line: &str, col: usize) -> usize {
     let len = line.chars().count();
-
     if col >= len.saturating_sub(1) {
         return len.saturating_sub(1);
     }
-
     let mut chars = line.chars().enumerate().skip(col + 1);
     let Some((mut pos, _)) = chars.find(|(_, ch)| !ch.is_whitespace()) else {
         return len.saturating_sub(1);
@@ -248,20 +196,16 @@ pub fn find_big_word_end_forward(line: &str, col: usize) -> usize {
         }
         pos = next_pos;
     }
-
     pos.min(len.saturating_sub(1))
 }
 
-#[allow(dead_code)]
 pub fn find_first_non_blank(line: &str) -> usize {
     line.chars().position(|c| !c.is_whitespace()).unwrap_or(0)
 }
 
-#[allow(dead_code)]
 pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> {
     let line = lines.get(pos.row)?;
     let current = line.chars().nth(pos.col)?;
-
     let (open, close, forward) = match current {
         '(' => ('(', ')', true),
         ')' => ('(', ')', false),
@@ -273,7 +217,6 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
         '>' => ('<', '>', false),
         _ => return None,
     };
-
     let mut depth = 1;
     if forward {
         for (row, line) in lines.iter().enumerate().skip(pos.row) {
@@ -315,44 +258,34 @@ pub fn find_matching_bracket(lines: &[&str], pos: Position) -> Option<Position> 
     }
 }
 
-#[allow(dead_code)]
 pub fn find_paragraph_forward(lines: &[&str], row: usize) -> usize {
     let mut r = row;
-
     while r < lines.len() && !lines[r].trim().is_empty() {
         r += 1;
     }
-
     while r < lines.len() && lines[r].trim().is_empty() {
         r += 1;
     }
-
     r.min(lines.len().saturating_sub(1))
 }
 
-#[allow(dead_code)]
 pub fn find_paragraph_backward(lines: &[&str], row: usize) -> usize {
     if row == 0 {
         return 0;
     }
-
     let mut r = row;
-
     while r > 0 && lines[r].trim().is_empty() {
         r -= 1;
     }
-
     while r > 0 && !lines[r - 1].trim().is_empty() {
         r -= 1;
     }
-
     r
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     // ==================== Word Forward Tests ====================
 
     #[test]
@@ -402,7 +335,6 @@ mod tests {
         assert_eq!(find_word_forward("var123 next", 0), 7);
         assert_eq!(find_word_forward("123abc def", 0), 7);
     }
-
     // ==================== Word Back Tests ====================
 
     #[test]
@@ -438,7 +370,6 @@ mod tests {
     fn test_word_back_col_beyond_line() {
         assert_eq!(find_word_back("hello", 100), 0);
     }
-
     // ==================== Word End Forward Tests ====================
 
     #[test]
@@ -468,7 +399,6 @@ mod tests {
     fn test_word_end_forward_multiple_spaces() {
         assert_eq!(find_word_end_forward("hello    world", 4), 13);
     }
-
     // ==================== Big Word Forward Tests ====================
 
     #[test]
@@ -491,7 +421,6 @@ mod tests {
     fn test_big_word_forward_at_end() {
         assert_eq!(find_big_word_forward("hello", 5), 5);
     }
-
     // ==================== Big Word Back Tests ====================
 
     #[test]
@@ -514,7 +443,6 @@ mod tests {
     fn test_big_word_back_at_start() {
         assert_eq!(find_big_word_back("hello", 0), 0);
     }
-
     // ==================== Big Word End Forward Tests ====================
 
     #[test]
@@ -531,7 +459,6 @@ mod tests {
     fn test_big_word_end_forward_at_end() {
         assert_eq!(find_big_word_end_forward("hello", 4), 4);
     }
-
     // ==================== First Non Blank Tests ====================
 
     #[test]
@@ -566,7 +493,6 @@ mod tests {
     fn test_first_non_blank_empty() {
         assert_eq!(find_first_non_blank(""), 0);
     }
-
     // ==================== Matching Bracket Tests ====================
 
     #[test]
@@ -642,7 +568,6 @@ mod tests {
         assert_eq!(find_matching_bracket(&lines, Position::new(0, 1)), Some(Position::new(0, 4)));
         assert_eq!(find_matching_bracket(&lines, Position::new(0, 2)), Some(Position::new(0, 3)));
     }
-
     // ==================== Paragraph Tests ====================
 
     #[test]
@@ -692,7 +617,6 @@ mod tests {
         let lines = vec!["line1", "", "", "line2"];
         assert_eq!(find_paragraph_backward(&lines, 3), 3);
     }
-
     // ==================== Motion Classification Tests ====================
 
     #[test]
@@ -726,7 +650,6 @@ mod tests {
         assert!(!Motion::Up.is_exclusive());
         assert!(!Motion::Down.is_exclusive());
     }
-
     // ==================== is_word_char Tests ====================
 
     #[test]

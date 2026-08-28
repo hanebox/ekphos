@@ -12,7 +12,6 @@ pub enum InputAction {
 
 pub fn process_key(key: KeyEvent) -> InputAction {
     use super::cursor::CursorMove;
-
     match key.code {
         KeyCode::Char(c) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {

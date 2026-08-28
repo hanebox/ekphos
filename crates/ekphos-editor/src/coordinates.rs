@@ -1,22 +1,17 @@
 use super::*;
 
 impl Editor {
-    // Scrolling
     pub fn update_scroll(&mut self, view_height: usize) {
         self.view_height = view_height;
         if view_height == 0 {
             return;
         }
-
         let (cursor_row, cursor_col) = self.cursor();
         let line_count = self.buffer.line_count();
-
         let effective_scrolloff = self.scrolloff.min(view_height / 2);
-
         if cursor_row < self.scroll_offset + effective_scrolloff {
             self.scroll_offset = cursor_row.saturating_sub(effective_scrolloff);
         }
-
         if self.line_wrap_enabled && self.view_width > 0 {
             let (cursor_visual_offset, _) = self.cursor_wrapped_position();
             while self.scroll_offset < cursor_row {
@@ -30,11 +25,8 @@ impl Editor {
         } else if cursor_row + effective_scrolloff >= self.scroll_offset + view_height {
             self.scroll_offset = cursor_row.saturating_add(effective_scrolloff).saturating_sub(view_height.saturating_sub(1));
         }
-
-        // Clamp to valid range
         let max_scroll = line_count.saturating_sub(1);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
-
         if self.view_width > 0 {
             let effective_width = self.view_width.saturating_sub(1);
             if cursor_col < self.h_scroll_offset {
@@ -44,7 +36,6 @@ impl Editor {
             }
         }
     }
-
     pub(super) fn visual_lines_for_row(&self, row: usize, content_width: usize) -> usize {
         let line = match self.buffer.line(row) {
             Some(l) => l,
@@ -53,48 +44,33 @@ impl Editor {
         if line.is_empty() {
             return 1;
         }
-
         let mut chars = line.chars().peekable();
         let mut visual_lines = 1;
-
         while chars.peek().is_some() {
             let mut x: usize = 0;
-            if visual_lines > 1 && chars.next_if_eq(&' ').is_some() {
-                if chars.peek().is_none() {
-                    break;
-                }
+            if visual_lines > 1 && chars.next_if_eq(&' ').is_some() && chars.peek().is_none() {
+                break;
             }
-
             while chars.peek().is_some() && x < content_width {
                 let ch = chars.next().expect("peeked above");
                 let ch_width = char_display_width(ch, self.tab_width) as usize;
                 x += ch_width;
             }
-
             if chars.peek().is_some() {
                 visual_lines += 1;
             }
         }
-
         visual_lines
     }
-
     pub(super) fn visual_lines_in_range(&self, start_row: usize, end_row: usize) -> usize {
         let content_x_offset = self.content_x_offset() as usize;
-        let content_width = self
-            .view_width
-            .saturating_sub(content_x_offset)
-            .saturating_sub(self.right_padding as usize)
-            .max(1);
-
+        let content_width = self.view_width.saturating_sub(content_x_offset).saturating_sub(self.right_padding as usize).max(1);
         let mut visual_lines = 0;
         for row in start_row..=end_row.min(self.buffer.line_count().saturating_sub(1)) {
             visual_lines += self.visual_lines_for_row(row, content_width);
         }
-
         visual_lines
     }
-
     pub(super) fn ensure_cursor_visible(&mut self) {
         if self.view_height > 0 {
             self.update_scroll(self.view_height);
@@ -119,13 +95,9 @@ impl Editor {
         if self.h_scroll_offset == 0 {
             return 0;
         }
-
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
-        line.chars()
-            .take(self.h_scroll_offset)
-            .map(|ch| char_display_width(ch, self.tab_width) as usize)
-            .sum()
+        line.chars().take(self.h_scroll_offset).map(|ch| char_display_width(ch, self.tab_width) as usize).sum()
     }
 
     pub fn line_number_gutter_width(&self) -> u16 {
@@ -153,7 +125,6 @@ impl Editor {
         let mut display_col: usize = 0;
         let mut line_display_width: usize = 0;
         let mut line_len = 0;
-
         for (i, ch) in line.chars().enumerate() {
             let ch_width = char_display_width(ch, self.tab_width) as usize;
             if i < pos.col {
@@ -162,7 +133,6 @@ impl Editor {
             line_display_width += ch_width;
             line_len = i + 1;
         }
-
         let is_at_line_end = pos.col >= line_len;
         (display_col, is_at_line_end, line_display_width)
     }
@@ -184,18 +154,13 @@ impl Editor {
         if line.is_empty() || content_width == 0 {
             return 0;
         }
-
         let mut chars = line.chars().enumerate().peekable();
         let mut visual_line = 0;
         let mut is_wrapped_continuation = false;
-
         while chars.peek().is_some() {
-            if is_wrapped_continuation && chars.next_if(|(_, ch)| *ch == ' ').is_some() {
-                if chars.peek().is_none() {
-                    break;
-                }
+            if is_wrapped_continuation && chars.next_if(|(_, ch)| *ch == ' ').is_some() && chars.peek().is_none() {
+                break;
             }
-
             if visual_line == target_visual_line {
                 let mut x = 0;
                 let mut last_col = 0;
@@ -213,7 +178,6 @@ impl Editor {
                 }
                 return last_col;
             }
-
             let mut x = 0;
             while chars.peek().is_some() && x < content_width {
                 let (_, ch) = chars.next().expect("peeked above");
@@ -222,7 +186,6 @@ impl Editor {
             is_wrapped_continuation = true;
             visual_line += 1;
         }
-
         line.chars().count()
     }
 
@@ -233,22 +196,18 @@ impl Editor {
         }
         let content_x_offset = self.content_x_offset() as usize;
         let content_width = self.view_width.saturating_sub(content_x_offset).saturating_sub(self.right_padding as usize);
-
         if content_width == 0 {
             return (0, 0);
         }
-
         let pos = self.cursor.pos();
         let line = self.buffer.line(pos.row).unwrap_or("");
         let line_len = line.chars().count();
         if line_len == 0 {
             return (0, 0);
         }
-
         let mut chars = line.chars().enumerate().peekable();
         let mut visual_line: usize = 0;
         let mut is_wrapped_continuation = false;
-
         while chars.peek().is_some() {
             let mut x: usize = 0;
             if is_wrapped_continuation && chars.peek().is_some_and(|(_, ch)| *ch == ' ') {
@@ -265,41 +224,32 @@ impl Editor {
                     }
                 }
             }
-
             while chars.peek().is_some() && x < content_width {
                 let (col, ch) = chars.next().expect("peeked above");
                 let ch_width = char_display_width(ch, self.tab_width) as usize;
-
                 if col == pos.col {
                     return (visual_line, x);
                 }
-
                 x += ch_width;
             }
-
             if pos.col >= line_len && chars.peek().is_none() {
                 return (visual_line, x);
             }
-
             is_wrapped_continuation = true;
             visual_line += 1;
         }
-
         (visual_line.saturating_sub(1), 0)
     }
     pub fn line_wrapped_height(&self, row: usize) -> usize {
         let content_x_offset = self.content_x_offset() as usize;
         let content_width = self.view_width.saturating_sub(content_x_offset).saturating_sub(self.right_padding as usize);
-
         if content_width == 0 {
             return 1;
         }
-
         let line = self.buffer.line(row).unwrap_or("");
         if line.is_empty() {
             return 1;
         }
-
         let mut display_width: usize = 0;
         for ch in line.chars() {
             display_width += char_display_width(ch, self.tab_width) as usize;
@@ -338,11 +288,7 @@ impl Editor {
     }
 
     pub fn content_x_offset(&self) -> u16 {
-        let gutter_width = if self.line_number_mode != LineNumberMode::None {
-            self.line_number_width
-        } else {
-            0
-        };
+        let gutter_width = if self.line_number_mode != LineNumberMode::None { self.line_number_width } else { 0 };
         self.left_padding + gutter_width
     }
 
@@ -352,29 +298,22 @@ impl Editor {
             let col = visual_x + self.h_scroll_offset;
             return (row, col);
         }
-
         let content_x_offset = self.content_x_offset() as usize;
         let content_width = self.view_width.saturating_sub(content_x_offset).saturating_sub(self.right_padding as usize);
         if content_width == 0 {
             return (self.scroll_offset, 0);
         }
-
         let line_count = self.buffer.line_count();
         let mut visual_lines_consumed = 0;
         let mut row = self.scroll_offset;
-
         while row < line_count {
             let row_height = self.visual_lines_for_row(row, content_width);
             if visual_y < visual_lines_consumed + row_height {
-                return (
-                    row,
-                    self.col_at_visual_pos(row, visual_y.saturating_sub(visual_lines_consumed), visual_x, content_width),
-                );
+                return (row, self.col_at_visual_pos(row, visual_y.saturating_sub(visual_lines_consumed), visual_x, content_width));
             }
             visual_lines_consumed += row_height;
             row += 1;
         }
-
         if line_count > 0 {
             let last_row = line_count - 1;
             let last_col = self.buffer.line_len(last_row);

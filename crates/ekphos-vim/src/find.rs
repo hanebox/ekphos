@@ -18,11 +18,6 @@ impl FindState {
         if self.forward {
             for (i, c) in line.chars().enumerate().skip(col + 1) {
                 if c == self.char {
-                    // `t` stops on the char *before* the match; `f` stops on the
-                    // match. `i >= col + 1`, so `i - 1` never underflows. (When the
-                    // match is adjacent, `i - 1 == col`, i.e. no movement — vim's
-                    // behavior. The operator-pending range is handled by the caller,
-                    // which treats these as inclusive motions.)
                     return Some(if self.till { i - 1 } else { i });
                 }
             }
@@ -36,22 +31,15 @@ impl FindState {
             for c in line[..byte_end].chars().rev() {
                 i -= 1;
                 if c == self.char {
-                    // `T` stops on the char *after* the match; `F` stops on the
-                    // match. `i < col`, so `i + 1 <= col` (never past the cursor).
                     return Some(if self.till { i + 1 } else { i });
                 }
             }
         }
-
         None
     }
 
     pub fn reversed(&self) -> Self {
-        Self {
-            char: self.char,
-            forward: !self.forward,
-            till: self.till,
-        }
+        Self { char: self.char, forward: !self.forward, till: self.till }
     }
 }
 
@@ -74,8 +62,6 @@ impl PendingFind {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==================== Find Forward (f) Tests ====================
 
     #[test]
     fn test_find_forward_basic() {
@@ -132,8 +118,6 @@ mod tests {
         assert_eq!(find.find_in_line("hello!", 0), Some(5));
     }
 
-    // ==================== Find Backward (F) Tests ====================
-
     #[test]
     fn test_find_backward_basic() {
         let find = FindState::new('o', false, false);
@@ -171,8 +155,6 @@ mod tests {
         assert_eq!(find.find_in_line("hello", 4), None);
     }
 
-    // ==================== Till Forward (t) Tests ====================
-
     #[test]
     fn test_till_forward_basic() {
         let find = FindState::new('o', true, true);
@@ -191,24 +173,17 @@ mod tests {
         let result = find.find_in_line("hello", 0);
         assert!(result.is_some());
     }
-
-    // Regression: `t`/`T` to an adjacent target must stop on the char before/after
-    // it (no movement), not jump onto the target itself.
     #[test]
     fn test_till_forward_adjacent_stops_before_target() {
         let find = FindState::new('e', true, true);
-        // 'e' is at col 1, adjacent to the cursor at col 0 -> stop at col 0.
         assert_eq!(find.find_in_line("hello", 0), Some(0));
     }
 
     #[test]
     fn test_till_backward_adjacent_stops_after_target() {
         let find = FindState::new('b', false, true);
-        // 'b' is at col 1, adjacent to the cursor at col 2 -> stop at col 2.
         assert_eq!(find.find_in_line("abc", 2), Some(2));
     }
-
-    // ==================== Till Backward (T) Tests ====================
 
     #[test]
     fn test_till_backward_basic() {
@@ -222,8 +197,6 @@ mod tests {
         let result = find.find_in_line("hello", 4);
         assert!(result.is_some());
     }
-
-    // ==================== Not Found Tests ====================
 
     #[test]
     fn test_find_not_found_forward() {
@@ -248,8 +221,6 @@ mod tests {
         let find = FindState::new('z', false, true);
         assert_eq!(find.find_in_line("hello world", 10), None);
     }
-
-    // ==================== Reversed Tests ====================
 
     #[test]
     fn test_reversed_forward_to_backward() {
@@ -290,8 +261,6 @@ mod tests {
         assert_eq!(double_reversed.till, find.till);
     }
 
-    // ==================== PendingFind Tests ====================
-
     #[test]
     fn test_pending_find_forward() {
         let pending = PendingFind::new(true, false);
@@ -327,8 +296,6 @@ mod tests {
         assert!(!find.forward);
         assert!(find.till);
     }
-
-    // ==================== Edge Cases ====================
 
     #[test]
     fn test_find_same_char_at_position() {

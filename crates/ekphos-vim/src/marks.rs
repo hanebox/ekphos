@@ -3,7 +3,6 @@
 use ekphos_editor::Position;
 use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MarkMap {
     marks: HashMap<char, Position>,
@@ -37,22 +36,18 @@ impl MarkMap {
         self.last_jump = Some(pos);
     }
 
-    #[allow(dead_code)]
     pub fn set_last_change(&mut self, pos: Position) {
         self.last_change = Some(pos);
     }
 
-    #[allow(dead_code)]
     pub fn set_last_insert(&mut self, pos: Position) {
         self.last_insert = Some(pos);
     }
 
-    #[allow(dead_code)]
     pub fn delete(&mut self, mark: char) {
         self.marks.remove(&mark);
     }
 
-    #[allow(dead_code)]
     pub fn list(&self) -> Vec<(char, Position)> {
         let mut result: Vec<_> = self.marks.iter().map(|(&c, &p)| (c, p)).collect();
         result.sort_by_key(|(c, _)| *c);
@@ -63,7 +58,6 @@ impl MarkMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     // ==================== Basic Set/Get Tests ====================
 
     #[test]
@@ -86,7 +80,6 @@ mod tests {
         marks.set('a', Position::new(20, 10));
         assert_eq!(marks.get('a'), Some(Position::new(20, 10)));
     }
-
     // ==================== Lowercase Mark Tests ====================
 
     #[test]
@@ -113,7 +106,6 @@ mod tests {
         marks.set('z', Position::new(99, 99));
         assert_eq!(marks.get('z'), Some(Position::new(99, 99)));
     }
-
     // ==================== Uppercase Mark Tests ====================
 
     #[test]
@@ -142,7 +134,6 @@ mod tests {
         assert_eq!(marks.get('a'), Some(Position::new(1, 1)));
         assert_eq!(marks.get('A'), Some(Position::new(2, 2)));
     }
-
     // ==================== Invalid Mark Tests ====================
 
     #[test]
@@ -165,7 +156,6 @@ mod tests {
         marks.set(' ', Position::new(10, 5));
         assert_eq!(marks.get(' '), None);
     }
-
     // ==================== Special Marks Tests ====================
 
     #[test]
@@ -219,7 +209,6 @@ mod tests {
         marks.set_last_jump(Position::new(2, 2));
         assert_eq!(marks.get('\''), Some(Position::new(2, 2)));
     }
-
     // ==================== Delete Mark Tests ====================
 
     #[test]
@@ -246,7 +235,6 @@ mod tests {
         assert_eq!(marks.get('a'), None);
         assert_eq!(marks.get('b'), Some(Position::new(2, 2)));
     }
-
     // ==================== List Marks Tests ====================
 
     #[test]
@@ -294,7 +282,6 @@ mod tests {
         let list = marks.list();
         assert_eq!(list.len(), 1);
     }
-
     // ==================== Position Tests ====================
 
     #[test]
@@ -310,7 +297,6 @@ mod tests {
         marks.set('a', Position::new(1000000, 1000000));
         assert_eq!(marks.get('a'), Some(Position::new(1000000, 1000000)));
     }
-
     // ==================== Edge Cases ====================
 
     #[test]

@@ -2,7 +2,7 @@
 # A lightweight, terminal-based markdown research tool
 
 BINARY_NAME := ekphos
-VERSION := 0.25.10
+VERSION := $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' Cargo.toml | head -n 1)
 BUILD_DIR := target
 RELEASE_DIR := $(BUILD_DIR)/release
 DEBUG_DIR := $(BUILD_DIR)/debug
@@ -22,7 +22,7 @@ ifeq ($(UNAME_S),Linux)
     PLATFORM := linux
 endif
 
-.PHONY: all build release debug clean install uninstall help test check fmt lint run
+.PHONY: all build release debug clean install uninstall help test check fmt lint run package smoke verify print-version
 
 # Default target
 all: release
@@ -30,13 +30,13 @@ all: release
 # Build release version
 release:
 	@echo "Building release version..."
-	cargo build --release
+	cargo build --release --locked
 	@echo "Binary available at $(RELEASE_DIR)/$(BINARY_NAME)"
 
 # Build debug version
 debug:
 	@echo "Building debug version..."
-	cargo build
+	cargo build --locked
 	@echo "Binary available at $(DEBUG_DIR)/$(BINARY_NAME)"
 
 # Alias for release
@@ -52,11 +52,11 @@ run-release:
 
 # Run tests
 test:
-	cargo test --workspace --all-targets
+	cargo test --workspace --all-targets --no-fail-fast --locked
 
 # Check code without building
 check:
-	cargo check --workspace --all-targets
+	cargo check --workspace --all-targets --locked
 
 # Format code
 fmt:
@@ -69,6 +69,20 @@ fmt-check:
 # Lint with clippy
 lint:
 	scripts/clippy-ratchet.sh
+
+# Package every workspace crate in publish order and smoke-test installation.
+package:
+	scripts/package-workspace.sh
+
+# Exercise the built CLI without consulting user configuration.
+smoke: release
+	@$(RELEASE_DIR)/$(BINARY_NAME) --version | grep -Fx "$(BINARY_NAME) $(VERSION)"
+
+# Safe release gate used by clean exported-source verification.
+verify: fmt-check check lint test release package smoke
+
+print-version:
+	@echo $(VERSION)
 
 # Clean build artifacts
 clean:
@@ -151,6 +165,9 @@ help:
 	@echo "  check        Check code without building"
 	@echo "  fmt          Format code with rustfmt"
 	@echo "  lint         Lint code with clippy"
+	@echo "  package      Package/install-smoke every workspace crate"
+	@echo "  smoke        Build and verify the CLI version"
+	@echo "  verify       Run the complete local release gate"
 	@echo "  clean        Remove build artifacts"
 	@echo "  install      Install to $(BINDIR) (requires sudo)"
 	@echo "  uninstall    Remove from $(BINDIR) (requires sudo)"

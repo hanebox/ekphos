@@ -1,0 +1,8 @@
+.git
+.github
+.claude
+.DS_Store
+target
+dist
+pkg
+benchmarks

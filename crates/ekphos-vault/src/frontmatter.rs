@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Frontmatter {
     pub title: Option<String>,
@@ -22,12 +21,9 @@ impl Frontmatter {
             None => return (None, 0), // No closing delimiter
         };
         let lines: Vec<&str> = content.lines().collect();
-
         let yaml_content: String = lines[1..end_index].join("\n");
-
         let frontmatter = serde_yaml::from_str::<Frontmatter>(&yaml_content).ok();
         let content_start_line = end_index + 1;
-
         (frontmatter, content_start_line)
     }
 }
@@ -45,7 +41,6 @@ date: 2024-01-15
 ---
 # Heading
 Content here"#;
-
         let (fm, start) = Frontmatter::parse(content);
         assert!(fm.is_some());
         let fm = fm.unwrap();
@@ -88,7 +83,6 @@ tags:
   - tui
 ---
 Content"#;
-
         let (fm, start) = Frontmatter::parse(content);
         assert!(fm.is_some());
         let fm = fm.unwrap();

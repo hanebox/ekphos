@@ -58,11 +58,7 @@ pub struct TextBuffer {
 
 impl Default for TextBuffer {
     fn default() -> Self {
-        Self {
-            before: vec![Arc::new(String::new())],
-            after: Vec::new(),
-            cached_snapshot: RefCell::new(None),
-        }
+        Self { before: vec![Arc::new(String::new())], after: Vec::new(), cached_snapshot: RefCell::new(None) }
     }
 }
 
@@ -71,11 +67,7 @@ impl TextBuffer {
         if lines.is_empty() {
             return Self::default();
         }
-        Self {
-            before: lines.into_iter().map(Arc::new).collect(),
-            after: Vec::new(),
-            cached_snapshot: RefCell::new(None),
-        }
+        Self { before: lines.into_iter().map(Arc::new).collect(), after: Vec::new(), cached_snapshot: RefCell::new(None) }
     }
 
     #[inline]
@@ -91,7 +83,6 @@ impl TextBuffer {
     fn gap_pos(&self) -> usize {
         self.before.len()
     }
-
     fn move_gap_to(&mut self, row: usize) {
         let current = self.gap_pos();
         match row.cmp(&current) {
@@ -142,7 +133,6 @@ impl TextBuffer {
         if let Some(snapshot) = self.cached_snapshot.borrow().as_ref() {
             return snapshot.clone();
         }
-
         let lines: Arc<[Arc<String>]> = self.before.iter().chain(self.after.iter().rev()).cloned().collect();
         let text_bytes = lines.iter().map(|line| line.len()).sum::<usize>() + lines.len().saturating_sub(1);
         let snapshot = EditorSnapshot { lines, text_bytes };
@@ -151,9 +141,7 @@ impl TextBuffer {
     }
 
     pub fn retained_bytes(&self) -> usize {
-        (self.before.capacity() + self.after.capacity()) * std::mem::size_of::<Arc<String>>()
-            + self.before.iter().chain(self.after.iter()).map(|line| line.capacity()).sum::<usize>()
-            + self.cached_snapshot.borrow().as_ref().map_or(0, EditorSnapshot::reference_bytes)
+        (self.before.capacity() + self.after.capacity()) * std::mem::size_of::<Arc<String>>() + self.before.iter().chain(self.after.iter()).map(|line| line.capacity()).sum::<usize>() + self.cached_snapshot.borrow().as_ref().map_or(0, EditorSnapshot::reference_bytes)
     }
 
     pub fn insert_char(&mut self, row: usize, col: usize, c: char) {
@@ -237,7 +225,6 @@ impl TextBuffer {
         }
         self.before.pop().map(|line| Arc::try_unwrap(line).unwrap_or_else(|line| (*line).clone()))
     }
-
     fn discard_line(&mut self, row: usize) {
         if row >= self.line_count() {
             return;
@@ -258,33 +245,23 @@ impl TextBuffer {
             }
             return String::new();
         }
-
-        let first_bytes = self
-            .line(start_row)
-            .map_or(0, |line| line.len().saturating_sub(char_to_byte_index(line, start_col)));
-        let middle_bytes = ((start_row + 1)..end_row)
-            .filter_map(|row| self.line(row))
-            .map(|line| line.len().saturating_add(1))
-            .sum::<usize>();
+        let first_bytes = self.line(start_row).map_or(0, |line| line.len().saturating_sub(char_to_byte_index(line, start_col)));
+        let middle_bytes = ((start_row + 1)..end_row).filter_map(|row| self.line(row)).map(|line| line.len().saturating_add(1)).sum::<usize>();
         let last_bytes = self.line(end_row).map_or(0, |line| char_to_byte_index(line, end_col));
         let mut result = String::with_capacity(first_bytes.saturating_add(1).saturating_add(middle_bytes).saturating_add(last_bytes));
-
         if let Some(line) = self.line(start_row) {
             result.push_str(&line[char_to_byte_index(line, start_col)..]);
             result.push('\n');
         }
-
         for row in (start_row + 1)..end_row {
             if let Some(line) = self.line(row) {
                 result.push_str(line);
                 result.push('\n');
             }
         }
-
         if let Some(line) = self.line(end_row) {
             result.push_str(&line[..char_to_byte_index(line, end_col)]);
         }
-
         result
     }
 
@@ -293,22 +270,15 @@ impl TextBuffer {
         self.discard_text_range(start_row, start_col, end_row, end_col);
         deleted
     }
-
     pub(super) fn discard_text_range(&mut self, start_row: usize, start_col: usize, end_row: usize, end_col: usize) {
         if start_row == end_row {
             self.delete_range(start_row, start_col, end_col);
         } else {
             self.move_gap_to(end_row + 1);
-
-            let end_remainder: String = self
-                .line(end_row)
-                .map(|line| line[char_to_byte_index(line, end_col)..].to_owned())
-                .unwrap_or_default();
-
+            let end_remainder: String = self.line(end_row).map(|line| line[char_to_byte_index(line, end_col)..].to_owned()).unwrap_or_default();
             for _ in (start_row + 1)..=end_row {
                 self.discard_line(start_row + 1);
             }
-
             if let Some(line) = self.line_mut(start_row) {
                 let byte_idx = char_to_byte_index(line, start_col);
                 line.truncate(byte_idx);
@@ -316,7 +286,6 @@ impl TextBuffer {
             }
         }
     }
-
     fn invalidate_snapshot(&mut self) {
         self.cached_snapshot.get_mut().take();
     }
@@ -396,10 +365,8 @@ mod tests {
         let mut buffer = TextBuffer::from_lines(vec!["first".into(), "second".into()]);
         let old = buffer.snapshot();
         let old_second = Arc::clone(&old.lines[1]);
-
         buffer.insert_char(0, 5, '!');
         let new = buffer.snapshot();
-
         assert_eq!(old.line(0), Some("first"));
         assert_eq!(new.line(0), Some("first!"));
         assert!(!Arc::ptr_eq(&old.lines[0], &new.lines[0]));

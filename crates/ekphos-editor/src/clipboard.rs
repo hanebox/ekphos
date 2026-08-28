@@ -37,10 +37,7 @@ pub struct MemoryClipboard {
 
 impl MemoryClipboard {
     pub fn with_text(text: impl Into<String>) -> Self {
-        Self {
-            text: Mutex::new(Some(text.into())),
-            html: Mutex::new(None),
-        }
+        Self { text: Mutex::new(Some(text.into())), html: Mutex::new(None) }
     }
 
     pub fn set_html(&self, html: impl Into<String>) {
@@ -52,25 +49,14 @@ impl MemoryClipboard {
 
 impl Clipboard for MemoryClipboard {
     fn set_text(&self, text: &str) -> ClipboardResult<()> {
-        let mut value = self
-            .text
-            .lock()
-            .map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))?;
+        let mut value = self.text.lock().map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))?;
         *value = Some(text.to_string());
         Ok(())
     }
-
     fn get_text(&self) -> ClipboardResult<Option<String>> {
-        self.text
-            .lock()
-            .map(|value| value.clone())
-            .map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))
+        self.text.lock().map(|value| value.clone()).map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))
     }
-
     fn get_html(&self) -> ClipboardResult<Option<String>> {
-        self.html
-            .lock()
-            .map(|value| value.clone())
-            .map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))
+        self.html.lock().map(|value| value.clone()).map_err(|_| ClipboardError::ReadError("in-memory clipboard lock poisoned".to_string()))
     }
 }

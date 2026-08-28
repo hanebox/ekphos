@@ -28,7 +28,6 @@ use images::*;
 use inline::*;
 pub use layout::render_content;
 pub(crate) use links::detect_bare_url_len;
-use links::*;
 use search_highlights::*;
 pub(crate) use tables::cell_visible_width;
 use tables::*;
@@ -46,13 +45,7 @@ struct RenderContext<'a> {
 
 impl<'a> RenderContext<'a> {
     fn new(theme: &'a Theme, area: Rect, is_cursor: bool, selected_link: usize, has_link: bool) -> Self {
-        Self {
-            theme,
-            area,
-            is_cursor,
-            selected_link,
-            has_link,
-        }
+        Self { theme, area, is_cursor, selected_link, has_link }
     }
 }
 
@@ -112,7 +105,6 @@ mod tests {
         let one_row = Block::default().borders(image_frame_borders(1, 4)).inner(Rect::new(0, 0, 12, 1));
         let partial = Block::default().borders(image_frame_borders(2, 4)).inner(Rect::new(0, 0, 12, 2));
         let complete = Block::default().borders(image_frame_borders(4, 4)).inner(Rect::new(0, 0, 12, 4));
-
         assert_eq!(one_row, Rect::new(1, 0, 10, 1));
         assert_eq!(partial, Rect::new(1, 1, 10, 1));
         assert_eq!(complete, Rect::new(1, 1, 10, 2));
@@ -122,14 +114,10 @@ mod tests {
     fn bottom_item_is_clipped_to_the_remaining_viewport_height() {
         let viewport = Rect::new(0, 0, 80, 22);
         let last_item_height = visible_item_height(20, viewport.height, 5);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(20), Constraint::Length(last_item_height)])
-            .split(viewport);
+        let chunks = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(20), Constraint::Length(last_item_height)]).split(viewport);
         let visible_item = chunks[1].intersection(viewport);
         let visible_image = Rect::new(chunks[1].x + 2, chunks[1].y + 1, 12, 4).intersection(viewport);
         let image_area = Block::default().borders(image_frame_borders(visible_image.height, 4)).inner(visible_image);
-
         assert_eq!(last_item_height, 2);
         assert_eq!(chunks[0].height, 20);
         assert_eq!(chunks[1].height, 2);
@@ -257,25 +245,20 @@ mod tests {
         assert_eq!(capped[1], TABLE_COLUMN_MIN_WIDTH);
         assert_eq!(capped[2], TABLE_COLUMN_MIN_WIDTH);
     }
-
     // --- distribute_spans_across_lines ---
     // Tests use Style::default() for "plain" spans and a non-default modifier
     // (BOLD) as a proxy for any styled span (links/bold/code/etc.), matching
     // how `parse_inline_formatting` emits them.
-
     fn plain_color() -> ratatui::style::Color {
         ratatui::style::Color::Reset
     }
-
     fn plain(content: &'static str) -> Span<'static> {
         Span::styled(content.to_string(), Style::default())
     }
-
     fn atomic(content: &'static str) -> Span<'static> {
         // Any non-default style qualifies the span as "atomic" to our logic.
         Span::styled(content.to_string(), Style::default().add_modifier(Modifier::BOLD))
     }
-
     fn line_text(line: &[Span<'static>]) -> String {
         line.iter().map(|s| s.content.as_ref()).collect()
     }
@@ -379,7 +362,6 @@ mod tests {
         assert_eq!(lines.len(), 1, "got {:?}", lines.iter().map(|l| line_text(l)).collect::<Vec<_>>());
         assert_eq!(line_text(&lines[0]), "two kernels: gate+up, then down");
     }
-
     // Issue #59: a code line whose aligned trailing comment is wide CJK text wraps to
     // multiple rows. The layout row budget must equal what render_code_line actually
     // draws, or the wrapped tail is clipped and the comment text vanishes in view mode.
@@ -396,38 +378,19 @@ mod tests {
         // it, pushing the comment to wrap). The old calc_wrapped_height collapsed that
         // padding and budgeted a single row here — the regression this guards.
         let inner_width: u16 = 70;
-
         // Spans built exactly as render_code_line does for an un-highlighted line.
-        let spans = vec![
-            plain("  "),
-            Span::styled("│ ", Style::default()),
-            Span::styled(expand_tabs(&line), Style::default()),
-        ];
+        let spans = vec![plain("  "), Span::styled("│ ", Style::default()), Span::styled(expand_tabs(&line), Style::default())];
         let rendered_rows = wrap_line_for_cursor(spans, inner_width as usize - 1, &theme).len();
-
         assert!(rendered_rows >= 2, "scenario must wrap to multiple rows, got {rendered_rows}");
-        assert_eq!(
-            code_line_height(&line, None, inner_width, &theme) as usize,
-            rendered_rows,
-            "row budget must equal the rendered row count, else the wrapped tail is clipped",
-        );
+        assert_eq!(code_line_height(&line, None, inner_width, &theme) as usize, rendered_rows, "row budget must equal the rendered row count, else the wrapped tail is clipped",);
     }
 
     #[test]
     fn code_line_wrap_preserves_cjk_tail() {
         let theme = Theme::default();
         let line = cjk_aligned_comment_line();
-        let spans = vec![
-            plain("  "),
-            Span::styled("│ ", Style::default()),
-            Span::styled(expand_tabs(&line), Style::default()),
-        ];
-        let joined: String = wrap_line_for_cursor(spans, 59, &theme)
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .map(|s| s.content.as_ref())
-            .collect();
-
+        let spans = vec![plain("  "), Span::styled("│ ", Style::default()), Span::styled(expand_tabs(&line), Style::default())];
+        let joined: String = wrap_line_for_cursor(spans, 59, &theme).iter().flat_map(|l| l.spans.iter()).map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("函数结束"), "wrap lost the CJK head: {joined:?}");
         assert!(joined.contains("变成了悬垂指针"), "wrap lost the CJK tail: {joined:?}");
     }
@@ -436,7 +399,6 @@ mod tests {
     fn wrapped_click_maps_to_second_row_logical_column() {
         let theme = Theme::default();
         let spans = vec![plain("  "), atomic("a"), plain(" padding padding "), atomic("b")];
-
         // With 10 content columns, the renderer produces:
         //   row 0: "  a padding"
         //   row 1: "  padding b"
@@ -444,7 +406,6 @@ mod tests {
         // of the unwrapped coordinate space before `b`.
         let b_col = rendered_col_for_wrapped_click(spans.clone(), 12, 1, 10, &theme);
         assert_eq!(b_col, Some(20));
-
         // The same x coordinate on row 0 maps to the first row, not to `b`.
         let first_row_col = rendered_col_for_wrapped_click(spans, 12, 0, 10, &theme);
         assert_eq!(first_row_col, Some(10));
@@ -454,7 +415,6 @@ mod tests {
     fn wrapped_click_maps_each_half_of_wide_character() {
         let theme = Theme::default();
         let spans = vec![plain("  "), plain("padding padding "), atomic("界")];
-
         // `界` is two terminal cells and wraps onto the continuation row.
         assert_eq!(rendered_col_for_wrapped_click(spans.clone(), 12, 1, 10, &theme), Some(18));
         assert_eq!(rendered_col_for_wrapped_click(spans, 12, 1, 11, &theme), Some(19));

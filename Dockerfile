@@ -1,14 +1,17 @@
 
 # Multi-stage build: build the release binary, then copy into a minimal runtime image
-FROM rust:slim AS builder
+FROM rust:1.91.0-slim-trixie AS builder
 WORKDIR /usr/src/ekphos
+
+# jemalloc's native build uses make; the slim Rust image does not include it.
+RUN apt-get update && apt-get install -y --no-install-recommends make && rm -rf /var/lib/apt/lists/*
 
 # Copy manifest first to cache dependencies layer
 COPY Cargo.toml ./
 # Replace with the full source and build the real binary
 
 COPY . .
-RUN cargo build --release
+RUN cargo build --release --locked
 
 
 ## Runtime image (SSH server with forced ekphos CLI on login)
@@ -64,4 +67,3 @@ VOLUME ["/config", "/data"]
 
 ENV RUST_LOG=info
 CMD ["/usr/local/bin/start-sshd.sh"]
-

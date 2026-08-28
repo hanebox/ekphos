@@ -53,17 +53,7 @@ pub struct SearchCacheHeader {
 
 impl Default for SearchCacheHeader {
     fn default() -> Self {
-        Self {
-            magic: INDEX_MAGIC,
-            format_version: INDEX_VERSION,
-            vault_identity: 0,
-            endian_marker: ENDIAN_MARKER,
-            pointer_width: usize::BITS as u8,
-            note_id_width: u32::BITS as u8,
-            line_number_width: u32::BITS as u8,
-            reserved: 0,
-            files: Vec::new(),
-        }
+        Self { magic: INDEX_MAGIC, format_version: INDEX_VERSION, vault_identity: 0, endian_marker: ENDIAN_MARKER, pointer_width: usize::BITS as u8, note_id_width: u32::BITS as u8, line_number_width: u32::BITS as u8, reserved: 0, files: Vec::new() }
     }
 }
 
@@ -114,11 +104,7 @@ pub struct SearchIndex {
 
 impl Default for SearchIndex {
     fn default() -> Self {
-        Self {
-            header: SearchCacheHeader::default(),
-            terms: Vec::new(),
-            postings: PostingStorage::Heap(Vec::new()),
-        }
+        Self { header: SearchCacheHeader::default(), terms: Vec::new(), postings: PostingStorage::Heap(Vec::new()) }
     }
 }
 
@@ -154,13 +140,11 @@ pub struct PostingIter<'a> {
 
 impl Iterator for PostingIter<'_> {
     type Item = PackedPosting;
-
     fn next(&mut self) -> Option<Self::Item> {
         let posting = self.list.get(self.position)?;
         self.position += 1;
         Some(posting)
     }
-
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.list.len.saturating_sub(self.position);
         (remaining, Some(remaining))
@@ -176,7 +160,6 @@ impl PostingStorage {
             Self::Mapped { len, .. } => *len,
         }
     }
-
     fn get(&self, index: usize) -> PackedPosting {
         match self {
             Self::Heap(postings) => postings[index],
@@ -189,14 +172,12 @@ impl PostingStorage {
             }
         }
     }
-
     fn heap_bytes(&self) -> usize {
         match self {
             Self::Heap(postings) => postings.capacity() * std::mem::size_of::<PackedPosting>(),
             Self::Mapped { .. } => 0,
         }
     }
-
     fn mapped_bytes(&self) -> usize {
         match self {
             Self::Heap(_) => 0,
@@ -254,9 +235,6 @@ pub fn load_index(path: &Path) -> Option<SearchIndex> {
     if file_len > MAX_CACHE_BYTES as usize || file_len < 16 {
         return None;
     }
-    // SAFETY: the mapping is read-only, the file descriptor remains valid for
-    // the mapping operation, and every offset is checked before the mapping is
-    // exposed through `PostingStorage`.
     let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
     let (index, expected_checksum) = index_from_mapping(Arc::new(mmap))?;
     let (byte_offset, posting_bytes) = match &index.postings {
@@ -290,12 +268,9 @@ pub fn save_index(index: &SearchIndex, path: &Path) -> io::Result<()> {
     if !index.validate() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid search index"));
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "search cache has no parent directory"))?;
+    let parent = path.parent().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "search cache has no parent directory"))?;
     fs::create_dir_all(parent)?;
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("search_index.bin");
-
     let mut last_error = None;
     for _ in 0..16 {
         let counter = CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -348,18 +323,13 @@ impl SearchIndex {
         if self.header.vault_identity != vault_identity(notes_dir) {
             return Self::build_from_loader(notes_dir, sources, load);
         }
-
         let current_files = cached_files(sources);
-        let unchanged_ids: HashSet<u32> = current_files
-            .iter()
-            .filter_map(|current| self.header.files.iter().any(|cached| cached == current).then_some(current.note_id))
-            .collect();
+        let unchanged_ids: HashSet<u32> = current_files.iter().filter_map(|current| self.header.files.iter().any(|cached| cached == current).then_some(current.note_id)).collect();
         let mut terms = self.to_term_map();
         for postings in terms.values_mut() {
             postings.retain(|posting| unchanged_ids.contains(&posting.note_id));
         }
         terms.retain(|_, postings| !postings.is_empty());
-
         for source in sources {
             if !unchanged_ids.contains(&source.note_id.get()) {
                 if let Some(body) = load(source) {
@@ -376,11 +346,7 @@ impl SearchIndex {
 
     pub fn postings_for_exact(&self, term: &str) -> PostingList<'_> {
         let Ok(index) = self.terms.binary_search_by(|entry| entry.term.as_ref().cmp(term)) else {
-            return PostingList {
-                storage: &self.postings,
-                start: 0,
-                len: 0,
-            };
+            return PostingList { storage: &self.postings, start: 0, len: 0 };
         };
         self.postings_for_entry(&self.terms[index])
     }
@@ -389,10 +355,7 @@ impl SearchIndex {
     /// contiguous posting slices.
     pub fn postings_for_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = (&'a str, PostingList<'a>)> + 'a {
         let start = self.terms.partition_point(|entry| entry.term.as_ref() < prefix);
-        self.terms[start..]
-            .iter()
-            .take_while(move |entry| entry.term.starts_with(prefix))
-            .map(|entry| (entry.term.as_ref(), self.postings_for_entry(entry)))
+        self.terms[start..].iter().take_while(move |entry| entry.term.starts_with(prefix)).map(|entry| (entry.term.as_ref(), self.postings_for_entry(entry)))
     }
 
     pub fn term_count(&self) -> usize {
@@ -419,7 +382,6 @@ impl SearchIndex {
     pub fn mapped_cache_bytes(&self) -> usize {
         self.postings.mapped_bytes()
     }
-
     fn from_terms(notes_dir: &Path, sources: &[SearchSource], mut terms: BTreeMap<String, Vec<PackedPosting>>) -> Result<Self, SearchIndexError> {
         let mut dictionary = Vec::with_capacity(terms.len());
         let posting_count = terms.values().map(Vec::len).sum();
@@ -430,42 +392,20 @@ impl SearchIndex {
             let postings_start = u32::try_from(contiguous.len()).map_err(|_| SearchIndexError::PostingTableOverflow)?;
             let postings_len = u32::try_from(postings.len()).map_err(|_| SearchIndexError::PostingTableOverflow)?;
             contiguous.extend_from_slice(postings);
-            dictionary.push(TermEntry {
-                term: term.clone().into_boxed_str(),
-                postings_start,
-                postings_len,
-            });
+            dictionary.push(TermEntry { term: term.clone().into_boxed_str(), postings_start, postings_len });
         }
         u32::try_from(contiguous.len()).map_err(|_| SearchIndexError::PostingTableOverflow)?;
-        let index = Self {
-            header: SearchCacheHeader {
-                vault_identity: vault_identity(notes_dir),
-                files: cached_files(sources),
-                ..SearchCacheHeader::default()
-            },
-            terms: dictionary,
-            postings: PostingStorage::Heap(contiguous),
-        };
+        let index = Self { header: SearchCacheHeader { vault_identity: vault_identity(notes_dir), files: cached_files(sources), ..SearchCacheHeader::default() }, terms: dictionary, postings: PostingStorage::Heap(contiguous) };
         debug_assert!(index.validate());
         Ok(index)
     }
-
     fn to_term_map(&self) -> BTreeMap<String, Vec<PackedPosting>> {
-        self.terms
-            .iter()
-            .map(|entry| (entry.term.to_string(), self.postings_for_entry(entry).iter().collect()))
-            .collect()
+        self.terms.iter().map(|entry| (entry.term.to_string(), self.postings_for_entry(entry).iter().collect())).collect()
     }
-
     fn postings_for_entry(&self, entry: &TermEntry) -> PostingList<'_> {
         let start = entry.postings_start as usize;
-        PostingList {
-            storage: &self.postings,
-            start,
-            len: entry.postings_len as usize,
-        }
+        PostingList { storage: &self.postings, start, len: entry.postings_len as usize }
     }
-
     fn validate(&self) -> bool {
         if self.header.magic != INDEX_MAGIC
             || self.header.format_version != INDEX_VERSION
@@ -490,12 +430,7 @@ impl SearchIndex {
                 return false;
             }
             if matches!(self.postings, PostingStorage::Heap(_)) {
-                let mut postings = PostingList {
-                    storage: &self.postings,
-                    start: expected_start,
-                    len: end - expected_start,
-                }
-                .iter();
+                let mut postings = PostingList { storage: &self.postings, start: expected_start, len: end - expected_start }.iter();
                 if let Some(mut previous) = postings.next() {
                     for posting in postings {
                         if previous >= posting {
@@ -510,20 +445,11 @@ impl SearchIndex {
         expected_start == self.postings.len()
     }
 }
-
 fn cached_files(sources: &[SearchSource]) -> Vec<CachedFile> {
-    let mut files: Vec<_> = sources
-        .iter()
-        .map(|source| CachedFile {
-            note_id: source.note_id.get(),
-            relative_path: source.relative_path.clone(),
-            fingerprint: source.fingerprint,
-        })
-        .collect();
+    let mut files: Vec<_> = sources.iter().map(|source| CachedFile { note_id: source.note_id.get(), relative_path: source.relative_path.clone(), fingerprint: source.fingerprint }).collect();
     files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
     files
 }
-
 fn index_from_mapping(mmap: Arc<Mmap>) -> Option<(SearchIndex, u64)> {
     if mmap.get(..8)? != INDEX_MAGIC {
         return None;
@@ -538,28 +464,11 @@ fn index_from_mapping(mmap: Arc<Mmap>) -> Option<(SearchIndex, u64)> {
     }
     metadata.header.files.shrink_to_fit();
     metadata.terms.shrink_to_fit();
-    Some((
-        SearchIndex {
-            header: metadata.header,
-            terms: metadata.terms,
-            postings: PostingStorage::Mapped {
-                mmap,
-                byte_offset: metadata_end,
-                len: posting_count,
-            },
-        },
-        metadata.postings_checksum,
-    ))
+    Some((SearchIndex { header: metadata.header, terms: metadata.terms, postings: PostingStorage::Mapped { mmap, byte_offset: metadata_end, len: posting_count } }, metadata.postings_checksum))
 }
-
 fn write_index(writer: &mut impl Write, index: &SearchIndex) -> io::Result<()> {
     let posting_count = u32::try_from(index.posting_count()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "search posting table is too large"))?;
-    let metadata = CacheMetadata {
-        header: index.header.clone(),
-        terms: index.terms.clone(),
-        posting_count,
-        postings_checksum: checksum_postings(index),
-    };
+    let metadata = CacheMetadata { header: index.header.clone(), terms: index.terms.clone(), posting_count, postings_checksum: checksum_postings(index) };
     let encoded = bincode_options().serialize(&metadata).map_err(io::Error::other)?;
     writer.write_all(&INDEX_MAGIC)?;
     writer.write_all(&(encoded.len() as u64).to_le_bytes())?;
@@ -571,7 +480,6 @@ fn write_index(writer: &mut impl Write, index: &SearchIndex) -> io::Result<()> {
     }
     Ok(())
 }
-
 fn checksum_postings(index: &SearchIndex) -> u64 {
     let mut checksum = 0xcbf2_9ce4_8422_2325u64;
     for position in 0..index.posting_count() {
@@ -583,7 +491,6 @@ fn checksum_postings(index: &SearchIndex) -> u64 {
     }
     checksum
 }
-
 fn checksum_file_range(file: &File, offset: usize, len: usize) -> io::Result<u64> {
     let mut file = file.try_clone()?;
     file.seek(SeekFrom::Start(offset as u64))?;
@@ -601,23 +508,15 @@ fn checksum_file_range(file: &File, offset: usize, len: usize) -> io::Result<u64
     }
     Ok(checksum)
 }
-
 fn index_body(terms: &mut BTreeMap<String, Vec<PackedPosting>>, note_id: NoteId, body: &str) -> Result<(), SearchIndexError> {
     for (line_number, line) in body.lines().enumerate() {
         let line_number = u32::try_from(line_number).map_err(|_| SearchIndexError::LineNumberOverflow { note_id, line_number })?;
-        for word in line
-            .split(|character: char| !character.is_alphanumeric())
-            .filter(|word| (1..=50).contains(&word.chars().count()))
-        {
-            terms.entry(word.to_lowercase()).or_default().push(PackedPosting {
-                note_id: note_id.get(),
-                line_number,
-            });
+        for word in line.split(|character: char| !character.is_alphanumeric()).filter(|word| (1..=50).contains(&word.chars().count())) {
+            terms.entry(word.to_lowercase()).or_default().push(PackedPosting { note_id: note_id.get(), line_number });
         }
     }
     Ok(())
 }
-
 fn bincode_options() -> impl Options {
     bincode::DefaultOptions::new().with_fixint_encoding().with_limit(MAX_CACHE_BYTES)
 }
@@ -627,17 +526,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
-
     fn source(id: u32, path: &str, fingerprint: u64) -> SearchSource {
-        SearchSource {
-            note_id: NoteId::new(id),
-            relative_path: path.into(),
-            absolute_path: PathBuf::from(path),
-            fingerprint: SearchFileFingerprint {
-                size: fingerprint,
-                modified_nanos: fingerprint,
-            },
-        }
+        SearchSource { note_id: NoteId::new(id), relative_path: path.into(), absolute_path: PathBuf::from(path), fingerprint: SearchFileFingerprint { size: fingerprint, modified_nanos: fingerprint } }
     }
 
     #[test]
@@ -646,7 +536,6 @@ mod tests {
         let sources = [source(9, "b.md", 1), source(3, "a.md", 1)];
         let bodies = HashMap::from([(9, Arc::<str>::from("alpha alpha alphabet")), (3, Arc::<str>::from("Alpha"))]);
         let index = SearchIndex::build_from_loader(Path::new("vault"), &sources, |source| bodies.get(&source.note_id.get()).cloned()).unwrap();
-
         let exact = index.postings_for_exact("alpha");
         assert_eq!(exact.len(), 2);
         let first = exact.get(0).unwrap();
@@ -676,24 +565,20 @@ mod tests {
         assert_eq!(loaded.header.vault_identity, vault_identity(&root));
         assert_eq!(loaded.header.files.len(), 1);
         drop(loaded);
-
         let mut raw_corruption = fs::read(&path).unwrap();
         *raw_corruption.last_mut().unwrap() ^= 0xff;
         fs::write(&path, raw_corruption).unwrap();
         assert!(load_index(&path).is_none());
         save_index(&index, &path).unwrap();
-
         let mut older = index.clone();
         older.header.format_version = INDEX_VERSION - 1;
         let file = File::create(&path).unwrap();
         write_index(&mut BufWriter::new(file), &older).unwrap();
         assert!(load_index(&path).is_none());
-
         save_index(&index, &path).unwrap();
         let bytes = fs::read(&path).unwrap();
         fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
         assert!(load_index(&path).is_none());
-
         let stale = [source(1, "note.md", 8)];
         save_index(&index, &path).unwrap();
         assert!(load_index_for(&path, &root, &stale).is_none());
@@ -701,11 +586,47 @@ mod tests {
         assert!(load_index(&path).is_none());
         fs::write(&path, vec![0xff; 128]).unwrap();
         assert!(load_index(&path).is_none());
-        assert!(fs::read_dir(&root)
-            .unwrap()
-            .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
+        assert!(fs::read_dir(&root).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[derive(Serialize)]
+    struct ReleasedV02510SearchIndex {
+        version: u32,
+        terms: HashMap<String, Vec<(usize, usize, usize)>>,
+        lines: Vec<Vec<String>>,
+        file_meta: HashMap<String, (u64, usize)>,
+        notes_dir: String,
+    }
+
+    #[test]
+    fn released_v02510_cache_is_rejected_and_rebuilt_without_touching_notes() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("ekphos-released-search-cache-{unique}"));
+        fs::create_dir_all(&root).unwrap();
+        let note = root.join("note.md");
+        fs::write(&note, "# Source\nsearchable source remains intact\n").unwrap();
+        let path = root.join("search_index.bin");
+        let released = ReleasedV02510SearchIndex {
+            version: 2,
+            terms: HashMap::from([("searchable".to_string(), vec![(0, 1, 0)])]),
+            lines: vec![vec!["# Source".to_string(), "searchable source remains intact".to_string()]],
+            file_meta: HashMap::from([("note.md".to_string(), (1, 0))]),
+            notes_dir: root.to_string_lossy().into_owned(),
+        };
+        bincode::serialize_into(File::create(&path).unwrap(), &released).unwrap();
+        assert!(load_index(&path).is_none());
+
+        let sources = [source(0, "note.md", 1)];
+        let rebuilt = SearchIndex::build_from_loader(&root, &sources, |_| fs::read_to_string(&note).ok().map(Arc::from)).unwrap();
+        save_index(&rebuilt, &path).unwrap();
+        assert!(load_index_for(&path, &root, &sources).is_some());
+        assert_eq!(fs::read_to_string(&note).unwrap(), "# Source\nsearchable source remains intact\n");
+
+        let orphan = root.join(format!(".search_index.bin.ekphos-{}-killed.tmp", std::process::id()));
+        fs::write(&orphan, b"partial replacement").unwrap();
+        assert!(load_index_for(&path, &root, &sources).is_some());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -714,7 +635,6 @@ mod tests {
         let initial_sources = [source(11, "a.md", 1), source(22, "b.md", 1)];
         let initial = HashMap::from([(11, Arc::<str>::from("alpha")), (22, Arc::<str>::from("beta"))]);
         let index = SearchIndex::build_from_loader(root, &initial_sources, |source| initial.get(&source.note_id.get()).cloned()).unwrap();
-
         let current_sources = [source(11, "a.md", 1), source(33, "renamed.md", 2), source(44, "new.md", 1)];
         let current = HashMap::from([(33, Arc::<str>::from("gamma")), (44, Arc::<str>::from("delta"))]);
         let mut loaded = Vec::new();
@@ -724,7 +644,6 @@ mod tests {
                 current.get(&source.note_id.get()).cloned()
             })
             .unwrap();
-
         assert_eq!(loaded, [NoteId::new(33), NoteId::new(44)]);
         assert_eq!(updated.postings_for_exact("alpha").get(0).unwrap().note_id(), NoteId::new(11));
         assert!(updated.postings_for_exact("beta").is_empty());

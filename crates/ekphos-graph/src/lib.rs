@@ -29,9 +29,7 @@ pub fn fit_zoom_for_bounds(graph_width: f32, graph_height: f32, view_width: f32,
     }
     let available_width = (view_width - 2.0).max(1.0);
     let available_height = (view_height - 2.0).max(1.0);
-    (available_width / graph_width)
-        .min(available_height / graph_height)
-        .clamp(GRAPH_MIN_ZOOM, GRAPH_MAX_ZOOM)
+    (available_width / graph_width).min(available_height / graph_height).clamp(GRAPH_MIN_ZOOM, GRAPH_MAX_ZOOM)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -95,16 +93,6 @@ pub struct GraphSourceMetadata {
     pub tags: Vec<String>,
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone)]
-struct GraphSourceNote {
-    note_id: NoteId,
-    title: String,
-    path: String,
-    tags: Vec<String>,
-    content: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphFileFingerprint {
     pub size: u64,
@@ -155,14 +143,12 @@ impl CompactAdjacency {
         }
         Self { offsets, neighbors }
     }
-
     fn get(&self, node: usize) -> &[u32] {
         let Some((&start, &end)) = self.offsets.get(node).zip(self.offsets.get(node + 1)) else {
             return &[];
         };
         &self.neighbors[start as usize..end as usize]
     }
-
     fn retained_bytes(&self) -> usize {
         self.offsets.capacity() * std::mem::size_of::<u32>() + self.neighbors.capacity() * std::mem::size_of::<u32>()
     }
@@ -179,31 +165,9 @@ pub struct GraphIndex {
 }
 
 impl GraphIndex {
-    #[cfg(test)]
-    fn build(sources: Vec<GraphSourceNote>) -> Self {
-        let mut bodies = HashMap::with_capacity(sources.len());
-        let metadata = sources
-            .into_iter()
-            .map(|source| {
-                bodies.insert(source.note_id, source.content);
-                GraphSourceMetadata {
-                    note_id: source.note_id,
-                    title: source.title,
-                    path: source.path,
-                    tags: source.tags,
-                }
-            })
-            .collect();
-        Self::build_from_loader(metadata, |note_id| bodies.remove(&note_id))
-    }
-
     pub fn retained_bytes(&self) -> usize {
         self.nodes.capacity() * std::mem::size_of::<GraphIndexNode>()
-            + self
-                .nodes
-                .iter()
-                .map(|node| node.title.capacity() + node.path.capacity() + node.tags.iter().map(String::capacity).sum::<usize>())
-                .sum::<usize>()
+            + self.nodes.iter().map(|node| node.title.capacity() + node.path.capacity() + node.tags.iter().map(String::capacity).sum::<usize>()).sum::<usize>()
             + self.edges.capacity() * std::mem::size_of::<GraphIndexEdge>()
             + self.outgoing.retained_bytes()
             + self.incoming.retained_bytes()
@@ -274,12 +238,7 @@ pub fn load_layout_cache(path: &Path, fingerprint: u64, nodes: &[GraphNode]) -> 
     }
     let by_note: HashMap<_, _> = cache.positions.into_iter().map(|(note_id, x, y)| (note_id, (x, y))).collect();
     let mut positions = Vec::with_capacity(nodes.len());
-    positions.extend(nodes.iter().filter_map(|node| {
-        by_note
-            .get(&node.note_id)
-            .filter(|(x, y)| x.is_finite() && y.is_finite())
-            .map(|&(x, y)| (node.note_id, x, y))
-    }));
+    positions.extend(nodes.iter().filter_map(|node| by_note.get(&node.note_id).filter(|(x, y)| x.is_finite() && y.is_finite()).map(|&(x, y)| (node.note_id, x, y))));
     (positions.len() == nodes.len()).then_some(positions)
 }
 
@@ -290,11 +249,7 @@ pub fn save_layout_cache(path: &Path, fingerprint: u64, nodes: &[GraphNode]) {
     if fs::create_dir_all(parent).is_err() {
         return;
     }
-    let cache = GraphLayoutCache {
-        version: LAYOUT_CACHE_VERSION,
-        fingerprint,
-        positions: nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect(),
-    };
+    let cache = GraphLayoutCache { version: LAYOUT_CACHE_VERSION, fingerprint, positions: nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect() };
     let temp_path = sibling_temp_path(path);
     let Ok(file) = fs::File::create(&temp_path) else {
         return;
@@ -310,13 +265,11 @@ pub fn save_layout_cache(path: &Path, fingerprint: u64, nodes: &[GraphNode]) {
         let _ = fs::remove_file(temp_path);
     }
 }
-
 fn sibling_temp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}.tmp", std::process::id()));
     path.with_file_name(name)
 }
-
 fn sync_parent(path: &Path) {
     if let Some(parent) = path.parent() {
         if let Ok(directory) = fs::File::open(parent) {
@@ -369,10 +322,7 @@ impl GraphFilter {
                 Some(FilterTerm { exclude, kind })
             })
             .collect();
-        Self {
-            query: query.to_string(),
-            terms,
-        }
+        Self { query: query.to_string(), terms }
     }
 
     pub fn matches(&self, node: &GraphIndexNode) -> bool {
@@ -395,7 +345,6 @@ impl GraphFilter {
         })
     }
 }
-
 fn tokenize_filter(query: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -445,12 +394,7 @@ impl GraphIndex {
             .iter()
             .map(|source| {
                 let targets = load_body(source.note_id).map_or_else(Vec::new, |content| extract_wiki_targets(&content));
-                CachedFileSummary {
-                    normalized_path: normalize_wiki_path(&source.path),
-                    fingerprint: GraphFileFingerprint { size: 0, modified_nanos: 0 },
-                    targets,
-                    tags: source.tags.clone(),
-                }
+                CachedFileSummary { normalized_path: normalize_wiki_path(&source.path), fingerprint: GraphFileFingerprint { size: 0, modified_nanos: 0 }, targets, tags: source.tags.clone() }
             })
             .collect();
         Self::build_from_summaries(sources, &summaries)
@@ -461,14 +405,11 @@ impl GraphIndex {
     pub fn load_or_build(sources: Vec<GraphSourceFile>, cache_path: &Path, mut cancelled: impl FnMut() -> bool) -> Option<GraphBuildOutcome> {
         let loaded = load_index_cache(cache_path);
         let cache_valid = loaded.is_some();
-        let mut cached: HashMap<String, CachedFileSummary> = loaded
-            .map(|cache| cache.files.into_iter().map(|file| (file.normalized_path.clone(), file)).collect())
-            .unwrap_or_default();
+        let mut cached: HashMap<String, CachedFileSummary> = loaded.map(|cache| cache.files.into_iter().map(|file| (file.normalized_path.clone(), file)).collect()).unwrap_or_default();
         let mut metadata = Vec::with_capacity(sources.len());
         let mut summaries = Vec::with_capacity(sources.len());
         let mut reused_files = 0;
         let mut parsed_files = 0;
-
         for source in sources {
             if cancelled() {
                 return None;
@@ -482,18 +423,10 @@ impl GraphIndex {
                 _ => {
                     let content = fs::read_to_string(&source.absolute_path).unwrap_or_default();
                     parsed_files += 1;
-                    CachedFileSummary {
-                        normalized_path,
-                        fingerprint: source.fingerprint,
-                        targets: extract_wiki_targets(&content),
-                        tags: source.metadata.tags.clone(),
-                    }
+                    CachedFileSummary { normalized_path, fingerprint: source.fingerprint, targets: extract_wiki_targets(&content), tags: source.metadata.tags.clone() }
                 }
             };
-            metadata.push(GraphSourceMetadata {
-                tags: summary.tags.clone(),
-                ..source.metadata
-            });
+            metadata.push(GraphSourceMetadata { tags: summary.tags.clone(), ..source.metadata });
             summaries.push(summary);
         }
         if cancelled() {
@@ -501,21 +434,10 @@ impl GraphIndex {
         }
         let index = Self::build_from_summaries(metadata, &summaries);
         if parsed_files > 0 || !cached.is_empty() || !cache_valid {
-            save_index_cache(
-                cache_path,
-                &GraphIndexCache {
-                    version: INDEX_CACHE_VERSION,
-                    files: summaries,
-                },
-            );
+            save_index_cache(cache_path, &GraphIndexCache { version: INDEX_CACHE_VERSION, files: summaries });
         }
-        Some(GraphBuildOutcome {
-            index,
-            reused_files,
-            parsed_files,
-        })
+        Some(GraphBuildOutcome { index, reused_files, parsed_files })
     }
-
     fn build_from_summaries(sources: Vec<GraphSourceMetadata>, summaries: &[CachedFileSummary]) -> Self {
         let node_count = sources.len();
         if node_count > u32::MAX as usize || summaries.len() != node_count {
@@ -524,7 +446,6 @@ impl GraphIndex {
         let mut root_titles = HashMap::with_capacity(node_count);
         let mut all_titles = HashMap::with_capacity(node_count);
         let mut paths = HashMap::with_capacity(node_count);
-
         for (idx, source) in sources.iter().enumerate() {
             let title_key = source.title.to_lowercase();
             all_titles.entry(title_key.clone()).or_insert(idx);
@@ -533,7 +454,6 @@ impl GraphIndex {
             }
             paths.entry(normalize_wiki_path(&source.path)).or_insert(idx);
         }
-
         let mut directed = HashSet::new();
         for (from, summary) in summaries.iter().enumerate() {
             let mut targets_for_note = HashSet::new();
@@ -552,7 +472,6 @@ impl GraphIndex {
                 }
             }
         }
-
         let mut pairs: HashMap<(usize, usize), (bool, bool)> = HashMap::new();
         for &(from, to) in &directed {
             let key = if from < to { (from, to) } else { (to, from) };
@@ -563,67 +482,33 @@ impl GraphIndex {
                 entry.1 = true;
             }
         }
-
         let mut pair_items: Vec<_> = pairs.into_iter().collect();
         pair_items.sort_by_key(|(key, _)| *key);
         let mut edges = Vec::with_capacity(pair_items.len());
         let mut outgoing = vec![Vec::new(); node_count];
         let mut incoming = vec![Vec::new(); node_count];
-
         for ((low, high), (low_to_high, high_to_low)) in pair_items {
             let edge = if low_to_high && high_to_low {
                 outgoing[low].push(high);
                 incoming[high].push(low);
                 outgoing[high].push(low);
                 incoming[low].push(high);
-                GraphIndexEdge {
-                    from: low as u32,
-                    to: high as u32,
-                    bidirectional: true,
-                }
+                GraphIndexEdge { from: low as u32, to: high as u32, bidirectional: true }
             } else if low_to_high {
                 outgoing[low].push(high);
                 incoming[high].push(low);
-                GraphIndexEdge {
-                    from: low as u32,
-                    to: high as u32,
-                    bidirectional: false,
-                }
+                GraphIndexEdge { from: low as u32, to: high as u32, bidirectional: false }
             } else {
                 outgoing[high].push(low);
                 incoming[low].push(high);
-                GraphIndexEdge {
-                    from: high as u32,
-                    to: low as u32,
-                    bidirectional: false,
-                }
+                GraphIndexEdge { from: high as u32, to: low as u32, bidirectional: false }
             };
             edges.push(edge);
         }
-
-        let nodes: Vec<_> = sources
-            .into_iter()
-            .enumerate()
-            .map(|(idx, source)| GraphIndexNode {
-                note_id: source.note_id,
-                title: source.title,
-                path: source.path,
-                tags: source.tags,
-                in_degree: incoming[idx].len(),
-                out_degree: outgoing[idx].len(),
-            })
-            .collect();
+        let nodes: Vec<_> = sources.into_iter().enumerate().map(|(idx, source)| GraphIndexNode { note_id: source.note_id, title: source.title, path: source.path, tags: source.tags, in_degree: incoming[idx].len(), out_degree: outgoing[idx].len() }).collect();
         let note_to_node = nodes.iter().enumerate().map(|(idx, node)| (node.note_id, idx as u32)).collect();
         let fingerprint = graph_fingerprint(&nodes, &edges);
-
-        Self {
-            nodes,
-            edges,
-            outgoing: CompactAdjacency::from_nested(outgoing),
-            incoming: CompactAdjacency::from_nested(incoming),
-            note_to_node,
-            fingerprint,
-        }
+        Self { nodes, edges, outgoing: CompactAdjacency::from_nested(outgoing), incoming: CompactAdjacency::from_nested(incoming), note_to_node, fingerprint }
     }
 
     pub fn node_for_note(&self, note_id: NoteId) -> Option<usize> {
@@ -634,20 +519,11 @@ impl GraphIndex {
         self.node_for_note(note_id).and_then(|node| self.nodes.get(node))
     }
 
-    pub fn project(
-        &self,
-        mode: GraphMode,
-        root_note: NoteId,
-        depth_limit: usize,
-        scope: GraphLinkScope,
-        filter: &GraphFilter,
-        show_orphans: bool,
-    ) -> GraphProjection {
+    pub fn project(&self, mode: GraphMode, root_note: NoteId, depth_limit: usize, scope: GraphLinkScope, filter: &GraphFilter, show_orphans: bool) -> GraphProjection {
         let root = self.node_for_note(root_note);
         let mut included = vec![false; self.nodes.len()];
         let mut depths = vec![usize::MAX; self.nodes.len()];
         let mut relations = vec![GraphRelation::Neutral; self.nodes.len()];
-
         match mode {
             GraphMode::Global => {
                 for (idx, node) in self.nodes.iter().enumerate() {
@@ -697,7 +573,6 @@ impl GraphIndex {
                 }
             }
         }
-
         let mut old_to_new = vec![usize::MAX; self.nodes.len()];
         let projected_node_count = included.iter().filter(|&&is_included| is_included).count();
         let mut nodes = Vec::with_capacity(projected_node_count);
@@ -712,30 +587,20 @@ impl GraphIndex {
                 y: 0.0,
                 home_x: 0.0,
                 home_y: 0.0,
-                depth: if mode == GraphMode::Local {
-                    u16::try_from(depths[idx]).unwrap_or(u16::MAX)
-                } else {
-                    0
-                },
+                depth: if mode == GraphMode::Local { u16::try_from(depths[idx]).unwrap_or(u16::MAX) } else { 0 },
                 relation: if mode == GraphMode::Local { relations[idx] } else { GraphRelation::Neutral },
                 in_degree: u32::try_from(indexed.in_degree).unwrap_or(u32::MAX),
                 out_degree: u32::try_from(indexed.out_degree).unwrap_or(u32::MAX),
             });
         }
-
         let mut edges = Vec::with_capacity(self.edges.len().min(projected_node_count.saturating_mul(4)));
         for edge in &self.edges {
             let from = old_to_new[edge.from as usize];
             let to = old_to_new[edge.to as usize];
             if from != usize::MAX && to != usize::MAX {
-                edges.push(GraphEdge {
-                    from: from as u32,
-                    to: to as u32,
-                    bidirectional: edge.bidirectional,
-                });
+                edges.push(GraphEdge { from: from as u32, to: to as u32, bidirectional: edge.bidirectional });
             }
         }
-
         GraphProjection {
             root_node: root.and_then(|idx| {
                 let projected = old_to_new[idx];
@@ -748,7 +613,6 @@ impl GraphIndex {
         }
     }
 }
-
 fn load_index_cache(path: &Path) -> Option<GraphIndexCache> {
     let file = fs::File::open(path).ok()?;
     if file.metadata().ok()?.len() > 256 * 1024 * 1024 {
@@ -759,14 +623,11 @@ fn load_index_cache(path: &Path) -> Option<GraphIndexCache> {
         return None;
     }
     let mut paths = HashSet::with_capacity(cache.files.len());
-    if cache.files.iter().any(|file| {
-        file.normalized_path.is_empty() || normalize_wiki_path(&file.normalized_path) != file.normalized_path || !paths.insert(file.normalized_path.as_str())
-    }) {
+    if cache.files.iter().any(|file| file.normalized_path.is_empty() || normalize_wiki_path(&file.normalized_path) != file.normalized_path || !paths.insert(file.normalized_path.as_str())) {
         return None;
     }
     Some(cache)
 }
-
 fn save_index_cache(path: &Path, cache: &GraphIndexCache) {
     let Some(parent) = path.parent() else {
         return;
@@ -789,7 +650,6 @@ fn save_index_cache(path: &Path, cache: &GraphIndexCache) {
         let _ = fs::remove_file(temp_path);
     }
 }
-
 fn inherited_relation(parent: GraphRelation, edge: GraphRelation) -> GraphRelation {
     match parent {
         GraphRelation::Root | GraphRelation::Neutral => edge,
@@ -798,7 +658,6 @@ fn inherited_relation(parent: GraphRelation, edge: GraphRelation) -> GraphRelati
         _ => GraphRelation::Bidirectional,
     }
 }
-
 fn merge_relation(existing: GraphRelation, next: GraphRelation) -> GraphRelation {
     match (existing, next) {
         (GraphRelation::Neutral, value) => value,
@@ -808,11 +667,9 @@ fn merge_relation(existing: GraphRelation, next: GraphRelation) -> GraphRelation
         _ => GraphRelation::Bidirectional,
     }
 }
-
 fn normalize_wiki_path(path: &str) -> String {
     path.trim().trim_end_matches(".md").replace('\\', "/")
 }
-
 fn extract_wiki_targets(content: &str) -> Vec<String> {
     let mut targets = Vec::new();
     let mut seen = HashSet::new();
@@ -824,7 +681,6 @@ fn extract_wiki_targets(content: &str) -> Vec<String> {
     });
     targets
 }
-
 fn graph_fingerprint(nodes: &[GraphIndexNode], edges: &[GraphIndexEdge]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     let mut write = |bytes: &[u8]| {
@@ -859,28 +715,13 @@ pub fn apply_local_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
         node.home_x = 0.0;
         node.home_y = 0.0;
     }
-
     let max_depth = nodes.iter().map(|node| node.depth).max().unwrap_or(0);
-    for relation in [
-        GraphRelation::Incoming,
-        GraphRelation::Outgoing,
-        GraphRelation::Bidirectional,
-        GraphRelation::Neutral,
-    ] {
+    for relation in [GraphRelation::Incoming, GraphRelation::Outgoing, GraphRelation::Bidirectional, GraphRelation::Neutral] {
         let mut next_radius = 58.0;
         let mut previous_depth = 0u16;
         for depth in 1..=max_depth {
-            let mut indices: Vec<usize> = nodes
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, node)| (node.depth == depth && node.relation == relation).then_some(idx))
-                .collect();
-            indices.sort_by(|&left, &right| {
-                nodes[right]
-                    .degree()
-                    .cmp(&nodes[left].degree())
-                    .then_with(|| graph_node_path(index, &nodes[left]).cmp(graph_node_path(index, &nodes[right])))
-            });
+            let mut indices: Vec<usize> = nodes.iter().enumerate().filter_map(|(idx, node)| (node.depth == depth && node.relation == relation).then_some(idx)).collect();
+            indices.sort_by(|&left, &right| nodes[right].degree().cmp(&nodes[left].degree()).then_with(|| graph_node_path(index, &nodes[left]).cmp(graph_node_path(index, &nodes[right]))));
             if indices.is_empty() {
                 continue;
             }
@@ -892,13 +733,7 @@ pub fn apply_local_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
                     let (top, bottom): (Vec<_>, Vec<_>) = indices.into_iter().enumerate().partition(|(rank, _)| rank % 2 == 0);
                     let top: Vec<_> = top.into_iter().map(|(_, idx)| idx).collect();
                     let bottom: Vec<_> = bottom.into_iter().map(|(_, idx)| idx).collect();
-                    layout_radial_fan(nodes, &top, next_radius, -std::f32::consts::FRAC_PI_2, 0.82).max(layout_radial_fan(
-                        nodes,
-                        &bottom,
-                        next_radius,
-                        std::f32::consts::FRAC_PI_2,
-                        0.82,
-                    ))
+                    layout_radial_fan(nodes, &top, next_radius, -std::f32::consts::FRAC_PI_2, 0.82).max(layout_radial_fan(nodes, &bottom, next_radius, std::f32::consts::FRAC_PI_2, 0.82))
                 }
                 GraphRelation::Neutral => layout_radial_fan(nodes, &indices, next_radius, -std::f32::consts::FRAC_PI_2, std::f32::consts::TAU),
                 GraphRelation::Root => next_radius,
@@ -909,7 +744,6 @@ pub fn apply_local_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
     }
     normalize_positions(nodes);
 }
-
 fn layout_radial_fan(nodes: &mut [GraphNode], indices: &[usize], inner_radius: f32, center_angle: f32, arc_span: f32) -> f32 {
     const NODE_SPACING: f32 = 18.0;
     const RING_GAP: f32 = 18.0;
@@ -922,11 +756,7 @@ fn layout_radial_fan(nodes: &mut [GraphNode], indices: &[usize], inner_radius: f
         let capacity = ((radius * arc_span / NODE_SPACING).floor() as usize).max(4);
         let take = capacity.min(indices.len() - offset);
         let full_circle = arc_span >= std::f32::consts::TAU - 0.01;
-        let used_span = if full_circle {
-            std::f32::consts::TAU
-        } else {
-            (((take.saturating_sub(1)) as f32 * NODE_SPACING) / radius).min(arc_span)
-        };
+        let used_span = if full_circle { std::f32::consts::TAU } else { (((take.saturating_sub(1)) as f32 * NODE_SPACING) / radius).min(arc_span) };
         for rank in 0..take {
             let angle = if take == 1 {
                 center_angle
@@ -961,7 +791,6 @@ pub fn apply_global_seed_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
     if nodes.is_empty() {
         return;
     }
-
     let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, node) in nodes.iter().enumerate() {
         let key = visual_group_key(graph_node_path(index, node));
@@ -973,28 +802,17 @@ pub fn apply_global_seed_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
     }
     let mut groups: Vec<_> = grouped.into_iter().collect();
     groups.sort_by(|(left_key, left), (right_key, right)| right.len().cmp(&left.len()).then_with(|| left_key.cmp(right_key)));
-
     let group_count = groups.len();
     let outer_radius = (nodes.len() as f32).sqrt() * 18.0;
     let golden_ratio = 0.618_034_f32;
     let mut sector_start = -std::f32::consts::FRAC_PI_2;
     for (_, mut indices) in groups {
-        indices.sort_by(|&left, &right| {
-            nodes[right]
-                .degree()
-                .cmp(&nodes[left].degree())
-                .then_with(|| graph_node_path(index, &nodes[left]).cmp(graph_node_path(index, &nodes[right])))
-        });
+        indices.sort_by(|&left, &right| nodes[right].degree().cmp(&nodes[left].degree()).then_with(|| graph_node_path(index, &nodes[left]).cmp(graph_node_path(index, &nodes[right]))));
         let sector_span = std::f32::consts::TAU * indices.len() as f32 / nodes.len() as f32;
-        let sector_padding = if sector_span < std::f32::consts::TAU - 0.001 {
-            (sector_span * 0.06).min(0.10)
-        } else {
-            0.0
-        };
+        let sector_padding = if sector_span < std::f32::consts::TAU - 0.001 { (sector_span * 0.06).min(0.10) } else { 0.0 };
         let usable_span = (sector_span - sector_padding * 2.0).max(sector_span * 0.72);
         let sector_center = sector_start + sector_span / 2.0;
         let denominator = indices.len().saturating_sub(1).max(1) as f32;
-
         for (rank, idx) in indices.into_iter().enumerate() {
             let radial_fraction = if rank == 0 {
                 if group_count == 1 {
@@ -1021,7 +839,6 @@ pub fn apply_global_seed_layout(index: &GraphIndex, nodes: &mut [GraphNode]) {
     }
     normalize_positions(nodes);
 }
-
 fn visual_group_key(path: &str) -> &str {
     let Some((parent, _)) = path.rsplit_once('/') else {
         return "";
@@ -1055,7 +872,6 @@ pub fn apply_global_layout_cancelable(index: &GraphIndex, nodes: &mut [GraphNode
         56
     };
     let mut velocity = vec![(0.0f32, 0.0f32); count];
-
     for iteration in 0..iterations {
         if cancelled() {
             return false;
@@ -1075,7 +891,6 @@ pub fn apply_global_layout_cancelable(index: &GraphIndex, nodes: &mut [GraphNode
                 velocity[idx].1 += fy;
             }
         }
-
         let spring_strength = if count > 2_000 { 0.007 } else { 0.012 };
         for edge in edges {
             let from = edge.from_index();
@@ -1094,7 +909,6 @@ pub fn apply_global_layout_cancelable(index: &GraphIndex, nodes: &mut [GraphNode
             velocity[to].0 -= fx;
             velocity[to].1 -= fy;
         }
-
         let temperature = 10.0 * (1.0 - iteration as f32 / iterations as f32).max(0.08);
         let (center_x, center_y) = center(nodes);
         let anchor_strength = if count > 2_000 { 0.016 } else { 0.010 };
@@ -1117,7 +931,6 @@ pub fn apply_global_layout_cancelable(index: &GraphIndex, nodes: &mut [GraphNode
     normalize_positions(nodes);
     !cancelled()
 }
-
 fn graph_node_path<'a>(index: &'a GraphIndex, node: &GraphNode) -> &'a str {
     index.metadata_for_note(node.note_id).map_or("", |metadata| metadata.path.as_str())
 }
@@ -1130,9 +943,7 @@ fn enforce_circular_aspect(nodes: &mut [GraphNode]) {
         return;
     }
     let (center_x, center_y) = center(nodes);
-    let (variance_x, variance_y) = nodes
-        .iter()
-        .fold((0.0, 0.0), |(x, y), node| (x + (node.x - center_x).powi(2), y + (node.y - center_y).powi(2)));
+    let (variance_x, variance_y) = nodes.iter().fold((0.0, 0.0), |(x, y), node| (x + (node.x - center_x).powi(2), y + (node.y - center_y).powi(2)));
     let spread_x = (variance_x / nodes.len() as f32).sqrt().max(0.001);
     let spread_y = (variance_y / nodes.len() as f32).sqrt().max(0.001);
     let aspect = spread_x / (spread_y * TERMINAL_X_ASPECT);
@@ -1148,7 +959,6 @@ fn enforce_circular_aspect(nodes: &mut [GraphNode]) {
         }
     }
 }
-
 fn apply_pair_repulsion(nodes: &[GraphNode], velocity: &mut [(f32, f32)], left: usize, right: usize, strength: f32) {
     let mut dx = nodes[right].x - nodes[left].x;
     let mut dy = nodes[right].y - nodes[left].y;
@@ -1166,7 +976,6 @@ fn apply_pair_repulsion(nodes: &[GraphNode], velocity: &mut [(f32, f32)], left: 
     velocity[right].0 += fx;
     velocity[right].1 += fy;
 }
-
 fn resolve_collisions(nodes: &mut [GraphNode]) {
     const CELL: f32 = 10.0;
     for _ in 0..3 {
@@ -1197,12 +1006,10 @@ fn resolve_collisions(nodes: &mut [GraphNode]) {
         }
     }
 }
-
 fn center(nodes: &[GraphNode]) -> (f32, f32) {
     let (x, y) = nodes.iter().fold((0.0, 0.0), |(x, y), node| (x + node.x, y + node.y));
     (x / nodes.len() as f32, y / nodes.len() as f32)
 }
-
 fn normalize_positions(nodes: &mut [GraphNode]) {
     if nodes.is_empty() {
         return;
@@ -1235,7 +1042,6 @@ impl QuadTree {
         }
         Self { root }
     }
-
     fn force_on(&self, index: usize, x: f32, y: f32, theta: f32, strength: f32) -> (f32, f32) {
         self.root.force_on(index, x, y, theta, strength)
     }
@@ -1255,24 +1061,13 @@ struct Quad {
 
 impl Quad {
     fn new(x: f32, y: f32, size: f32) -> Self {
-        Self {
-            x,
-            y,
-            size,
-            mass: 0,
-            center_x: 0.0,
-            center_y: 0.0,
-            point: None,
-            children: None,
-        }
+        Self { x, y, size, mass: 0, center_x: 0.0, center_y: 0.0, point: None, children: None }
     }
-
     fn insert(&mut self, index: usize, x: f32, y: f32, depth: usize) {
         let old_mass = self.mass as f32;
         self.mass += 1;
         self.center_x = (self.center_x * old_mass + x) / self.mass as f32;
         self.center_y = (self.center_y * old_mass + y) / self.mass as f32;
-
         if self.children.is_none() && self.point.is_none() {
             self.point = Some((index, x, y));
             return;
@@ -1288,17 +1083,10 @@ impl Quad {
         }
         self.insert_child(index, x, y, depth + 1);
     }
-
     fn subdivide(&mut self) {
         let half = self.size / 2.0;
-        self.children = Some(Box::new([
-            Quad::new(self.x, self.y, half),
-            Quad::new(self.x + half, self.y, half),
-            Quad::new(self.x, self.y + half, half),
-            Quad::new(self.x + half, self.y + half, half),
-        ]));
+        self.children = Some(Box::new([Quad::new(self.x, self.y, half), Quad::new(self.x + half, self.y, half), Quad::new(self.x, self.y + half, half), Quad::new(self.x + half, self.y + half, half)]));
     }
-
     fn insert_child(&mut self, index: usize, x: f32, y: f32, depth: usize) {
         let half = self.size / 2.0;
         let right = usize::from(x >= self.x + half);
@@ -1307,7 +1095,6 @@ impl Quad {
             children[right + bottom].insert(index, x, y, depth);
         }
     }
-
     fn force_on(&self, index: usize, x: f32, y: f32, theta: f32, strength: f32) -> (f32, f32) {
         if self.mass == 0 || (self.mass == 1 && self.point.map(|point| point.0) == Some(index)) {
             return (0.0, 0.0);
@@ -1335,26 +1122,39 @@ impl Quad {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-    fn source(index: usize, path: &str, content: &str) -> GraphSourceNote {
-        GraphSourceNote {
-            note_id: NoteId::from_index(index).unwrap(),
-            title: path.rsplit('/').next().unwrap_or(path).to_string(),
-            path: path.to_string(),
-            tags: Vec::new(),
-            content: content.to_string(),
-        }
+    #[derive(Debug, Clone)]
+    struct GraphSourceNote {
+        note_id: NoteId,
+        title: String,
+        path: String,
+        tags: Vec<String>,
+        content: String,
     }
 
+    impl GraphIndex {
+        fn build(sources: Vec<GraphSourceNote>) -> Self {
+            let mut bodies = HashMap::with_capacity(sources.len());
+            let metadata = sources
+                .into_iter()
+                .map(|source| {
+                    bodies.insert(source.note_id, source.content);
+                    GraphSourceMetadata { note_id: source.note_id, title: source.title, path: source.path, tags: source.tags }
+                })
+                .collect();
+            Self::build_from_loader(metadata, |note_id| bodies.remove(&note_id))
+        }
+    }
+    fn source(index: usize, path: &str, content: &str) -> GraphSourceNote {
+        GraphSourceNote { note_id: NoteId::from_index(index).unwrap(), title: path.rsplit('/').next().unwrap_or(path).to_string(), path: path.to_string(), tags: Vec::new(), content: content.to_string() }
+    }
     fn temp_dir(label: &str) -> PathBuf {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("ekphos-graph-{label}-{}-{id}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         path
     }
-
     fn cached_source(root: &Path, index: usize, path: &str, content: &str, revision: u64) -> GraphSourceFile {
         let absolute_path = root.join(format!("{path}.md"));
         if let Some(parent) = absolute_path.parent() {
@@ -1362,52 +1162,24 @@ mod tests {
         }
         fs::write(&absolute_path, content).unwrap();
         GraphSourceFile {
-            metadata: GraphSourceMetadata {
-                note_id: NoteId::from_index(index).unwrap(),
-                title: path.rsplit('/').next().unwrap_or(path).to_string(),
-                path: path.to_string(),
-                tags: vec![format!("tag-{index}")],
-            },
+            metadata: GraphSourceMetadata { note_id: NoteId::from_index(index).unwrap(), title: path.rsplit('/').next().unwrap_or(path).to_string(), path: path.to_string(), tags: vec![format!("tag-{index}")] },
             absolute_path,
-            fingerprint: GraphFileFingerprint {
-                size: content.len() as u64,
-                modified_nanos: revision,
-            },
+            fingerprint: GraphFileFingerprint { size: content.len() as u64, modified_nanos: revision },
         }
     }
-
     fn assert_index_parity(legacy_sources: Vec<GraphSourceNote>, cached_sources: Vec<GraphSourceFile>, cache_path: &Path) {
         let legacy = GraphIndex::build(legacy_sources);
         let cached = GraphIndex::load_or_build(cached_sources, cache_path, || false).unwrap().index;
         assert_eq!(cached.edges, legacy.edges);
         assert_eq!(cached.fingerprint, legacy.fingerprint);
-        assert_eq!(
-            cached
-                .nodes
-                .iter()
-                .map(|node| (&node.title, &node.path, node.in_degree, node.out_degree))
-                .collect::<Vec<_>>(),
-            legacy
-                .nodes
-                .iter()
-                .map(|node| (&node.title, &node.path, node.in_degree, node.out_degree))
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(cached.nodes.iter().map(|node| (&node.title, &node.path, node.in_degree, node.out_degree)).collect::<Vec<_>>(), legacy.nodes.iter().map(|node| (&node.title, &node.path, node.in_degree, node.out_degree)).collect::<Vec<_>>());
         for mode in [GraphMode::Local, GraphMode::Global] {
             for scope in [GraphLinkScope::All, GraphLinkScope::Incoming, GraphLinkScope::Outgoing] {
                 let legacy_projection = legacy.project(mode, NoteId::new(0), 3, scope, &GraphFilter::default(), true);
                 let cached_projection = cached.project(mode, NoteId::new(0), 3, scope, &GraphFilter::default(), true);
                 assert_eq!(
-                    cached_projection
-                        .nodes
-                        .iter()
-                        .map(|node| (node.note_id, node.depth, node.relation, node.in_degree, node.out_degree))
-                        .collect::<Vec<_>>(),
-                    legacy_projection
-                        .nodes
-                        .iter()
-                        .map(|node| (node.note_id, node.depth, node.relation, node.in_degree, node.out_degree))
-                        .collect::<Vec<_>>()
+                    cached_projection.nodes.iter().map(|node| (node.note_id, node.depth, node.relation, node.in_degree, node.out_degree)).collect::<Vec<_>>(),
+                    legacy_projection.nodes.iter().map(|node| (node.note_id, node.depth, node.relation, node.in_degree, node.out_degree)).collect::<Vec<_>>()
                 );
                 assert_eq!(cached_projection.edges, legacy_projection.edges);
             }
@@ -1416,23 +1188,13 @@ mod tests {
         let mut cached_layout = cached.project(GraphMode::Local, NoteId::new(0), 3, GraphLinkScope::All, &GraphFilter::default(), true);
         apply_local_layout(&legacy, &mut legacy_layout.nodes);
         apply_local_layout(&cached, &mut cached_layout.nodes);
-        assert_eq!(
-            cached_layout.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect::<Vec<_>>(),
-            legacy_layout.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect::<Vec<_>>()
-        );
+        assert_eq!(cached_layout.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect::<Vec<_>>(), legacy_layout.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect::<Vec<_>>());
     }
 
     #[test]
     fn index_deduplicates_and_marks_reverse_links() {
         let index = GraphIndex::build(vec![source(0, "A", "[[B]] [[B#Heading|alias]]"), source(1, "B", "[[A]]")]);
-        assert_eq!(
-            index.edges,
-            vec![GraphIndexEdge {
-                from: 0,
-                to: 1,
-                bidirectional: true
-            }]
-        );
+        assert_eq!(index.edges, vec![GraphIndexEdge { from: 0, to: 1, bidirectional: true }]);
         assert_eq!(index.nodes[0].out_degree, 1);
         assert_eq!(index.nodes[0].in_degree, 1);
     }
@@ -1446,42 +1208,17 @@ mod tests {
     #[test]
     fn bare_duplicate_title_prefers_vault_root_note() {
         let index = GraphIndex::build(vec![source(0, "A", ""), source(1, "folder/A", ""), source(2, "Source", "[[A]]")]);
-        assert_eq!(
-            index.edges,
-            vec![GraphIndexEdge {
-                from: 2,
-                to: 0,
-                bidirectional: false,
-            }]
-        );
+        assert_eq!(index.edges, vec![GraphIndexEdge { from: 2, to: 0, bidirectional: false }]);
     }
 
     #[test]
     fn local_projection_honors_depth_and_direction() {
-        let index = GraphIndex::build(vec![
-            source(0, "A", "[[B]]"),
-            source(1, "B", "[[C]]"),
-            source(2, "C", ""),
-            source(3, "D", "[[A]]"),
-        ]);
+        let index = GraphIndex::build(vec![source(0, "A", "[[B]]"), source(1, "B", "[[C]]"), source(2, "C", ""), source(3, "D", "[[A]]")]);
         let filter = GraphFilter::default();
         let out = index.project(GraphMode::Local, NoteId::new(0), 2, GraphLinkScope::Outgoing, &filter, true);
-        assert_eq!(
-            out.nodes
-                .iter()
-                .filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str()))
-                .collect::<Vec<_>>(),
-            vec!["A", "B", "C"]
-        );
+        assert_eq!(out.nodes.iter().filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str())).collect::<Vec<_>>(), vec!["A", "B", "C"]);
         let incoming = index.project(GraphMode::Local, NoteId::new(0), 1, GraphLinkScope::Incoming, &filter, true);
-        assert_eq!(
-            incoming
-                .nodes
-                .iter()
-                .filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str()))
-                .collect::<Vec<_>>(),
-            vec!["A", "D"]
-        );
+        assert_eq!(incoming.nodes.iter().filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str())).collect::<Vec<_>>(), vec!["A", "D"]);
     }
 
     #[test]
@@ -1521,7 +1258,6 @@ mod tests {
         let index = GraphIndex::build(sources);
         let mut projection = index.project(GraphMode::Local, NoteId::new(0), 1, GraphLinkScope::All, &GraphFilter::default(), true);
         apply_local_layout(&index, &mut projection.nodes);
-
         let root = projection.nodes.iter().find(|node| node.relation == GraphRelation::Root).unwrap();
         let incoming: Vec<_> = projection.nodes.iter().filter(|node| node.relation == GraphRelation::Incoming).collect();
         let outgoing: Vec<_> = projection.nodes.iter().filter(|node| node.relation == GraphRelation::Outgoing).collect();
@@ -1535,9 +1271,7 @@ mod tests {
 
     #[test]
     fn large_layout_is_finite_and_deterministic() {
-        let sources: Vec<_> = (0..300)
-            .map(|idx| source(idx, &format!("N{idx}"), &format!("[[N{}]]", (idx + 1) % 300)))
-            .collect();
+        let sources: Vec<_> = (0..300).map(|idx| source(idx, &format!("N{idx}"), &format!("[[N{}]]", (idx + 1) % 300))).collect();
         let index = GraphIndex::build(sources);
         let mut first = index.project(GraphMode::Global, NoteId::new(0), 1, GraphLinkScope::All, &GraphFilter::default(), true);
         let mut second = first.clone();
@@ -1549,9 +1283,7 @@ mod tests {
             assert!((left.y - right.y).abs() < 0.001);
         }
         let (center_x, center_y) = center(&first.nodes);
-        let (variance_x, variance_y) = first.nodes.iter().fold((0.0, 0.0), |acc, node| {
-            (acc.0 + (node.x - center_x).powi(2), acc.1 + (node.y - center_y).powi(2))
-        });
+        let (variance_x, variance_y) = first.nodes.iter().fold((0.0, 0.0), |acc, node| (acc.0 + (node.x - center_x).powi(2), acc.1 + (node.y - center_y).powi(2)));
         let visual_aspect = variance_x.sqrt() / (variance_y.sqrt() * TERMINAL_X_ASPECT);
         assert!((0.95..=1.05).contains(&visual_aspect));
     }
@@ -1567,20 +1299,9 @@ mod tests {
 
     #[test]
     fn local_filter_keeps_the_root_for_context() {
-        let index = GraphIndex::build(vec![
-            source(0, "Root", "[[Matching]] [[Hidden]]"),
-            source(1, "Matching", ""),
-            source(2, "Hidden", ""),
-        ]);
+        let index = GraphIndex::build(vec![source(0, "Root", "[[Matching]] [[Hidden]]"), source(1, "Matching", ""), source(2, "Hidden", "")]);
         let projection = index.project(GraphMode::Local, NoteId::new(0), 1, GraphLinkScope::All, &GraphFilter::parse("matching"), true);
-        assert_eq!(
-            projection
-                .nodes
-                .iter()
-                .filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str()))
-                .collect::<Vec<_>>(),
-            vec!["Root", "Matching"]
-        );
+        assert_eq!(projection.nodes.iter().filter_map(|node| index.metadata_for_note(node.note_id).map(|metadata| metadata.title.as_str())).collect::<Vec<_>>(), vec!["Root", "Matching"]);
         assert_eq!(projection.edges.len(), 1);
     }
 
@@ -1605,15 +1326,21 @@ mod tests {
         let loaded = load_layout_cache(&path, index.fingerprint, &projection.nodes).unwrap();
         assert_eq!(loaded.len(), 2);
         assert!(load_layout_cache(&path, index.fingerprint.wrapping_add(1), &projection.nodes).is_none());
-        let stale = GraphLayoutCache {
-            version: LAYOUT_CACHE_VERSION + 1,
-            fingerprint: index.fingerprint,
-            positions: projection.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect(),
-        };
+        let stale = GraphLayoutCache { version: LAYOUT_CACHE_VERSION + 1, fingerprint: index.fingerprint, positions: projection.nodes.iter().map(|node| (node.note_id, node.x, node.y)).collect() };
         bincode::serialize_into(fs::File::create(&path).unwrap(), &stale).unwrap();
         assert!(load_layout_cache(&path, index.fingerprint, &projection.nodes).is_none());
         std::fs::write(&path, b"not a graph layout cache").unwrap();
         assert!(load_layout_cache(&path, index.fingerprint, &projection.nodes).is_none());
+        save_layout_cache(&path, index.fingerprint, &projection.nodes);
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(load_layout_cache(&path, index.fingerprint, &projection.nodes).is_none());
+        save_layout_cache(&path, index.fingerprint, &projection.nodes);
+        assert_eq!(load_layout_cache(&path, index.fingerprint, &projection.nodes).unwrap().len(), 2);
+        let interrupted = sibling_temp_path(&path);
+        fs::write(&interrupted, b"partial replacement").unwrap();
+        assert_eq!(load_layout_cache(&path, index.fingerprint, &projection.nodes).unwrap().len(), 2);
+        fs::remove_file(interrupted).unwrap();
         assert!(!sibling_temp_path(&path).exists());
         let _ = std::fs::remove_file(path);
     }
@@ -1630,11 +1357,7 @@ mod tests {
         for (case_index, specs) in cases.into_iter().enumerate() {
             let root = temp_dir(&format!("parity-{case_index}"));
             let legacy = specs.iter().enumerate().map(|(index, (path, content))| source(index, path, content)).collect();
-            let cached = specs
-                .iter()
-                .enumerate()
-                .map(|(index, (path, content))| cached_source(&root, index, path, content, 1))
-                .collect();
+            let cached = specs.iter().enumerate().map(|(index, (path, content))| cached_source(&root, index, path, content, 1)).collect();
             assert_index_parity(legacy, cached, &root.join("graph_index.bin"));
             fs::remove_dir_all(root).unwrap();
         }
@@ -1646,22 +1369,12 @@ mod tests {
         let specs: Vec<_> = (0..600)
             .map(|index| {
                 let path = format!("folder-{}/N{index:04}", index % 12);
-                let content = format!(
-                    "[[folder-{}/N{:04}]] [[folder-{}/N{:04}]]",
-                    (index + 1) % 12,
-                    (index + 1) % 600,
-                    (index + 7) % 12,
-                    (index + 7) % 600
-                );
+                let content = format!("[[folder-{}/N{:04}]] [[folder-{}/N{:04}]]", (index + 1) % 12, (index + 1) % 600, (index + 7) % 12, (index + 7) % 600);
                 (path, content)
             })
             .collect();
         let legacy = specs.iter().enumerate().map(|(index, (path, content))| source(index, path, content)).collect();
-        let cached = specs
-            .iter()
-            .enumerate()
-            .map(|(index, (path, content))| cached_source(&root, index, path, content, 1))
-            .collect();
+        let cached = specs.iter().enumerate().map(|(index, (path, content))| cached_source(&root, index, path, content, 1)).collect();
         assert_index_parity(legacy, cached, &root.join("graph_index.bin"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -1670,21 +1383,12 @@ mod tests {
     fn extraction_cache_reuses_unchanged_and_replaces_changed_deleted_and_renamed_files() {
         let root = temp_dir("incremental-cache");
         let cache = root.join("graph_index.bin");
-        let first = vec![
-            cached_source(&root, 0, "A", "[[B]]", 1),
-            cached_source(&root, 1, "B", "", 1),
-            cached_source(&root, 2, "Old", "[[A]]", 1),
-        ];
+        let first = vec![cached_source(&root, 0, "A", "[[B]]", 1), cached_source(&root, 1, "B", "", 1), cached_source(&root, 2, "Old", "[[A]]", 1)];
         let built = GraphIndex::load_or_build(first.clone(), &cache, || false).unwrap();
         assert_eq!((built.parsed_files, built.reused_files), (3, 0));
         let warm = GraphIndex::load_or_build(first, &cache, || false).unwrap();
         assert_eq!((warm.parsed_files, warm.reused_files), (0, 3));
-
-        let changed = vec![
-            cached_source(&root, 0, "A", "[[B]] [[Renamed]]", 2),
-            cached_source(&root, 1, "B", "", 1),
-            cached_source(&root, 2, "Renamed", "[[A]]", 2),
-        ];
+        let changed = vec![cached_source(&root, 0, "A", "[[B]] [[Renamed]]", 2), cached_source(&root, 1, "B", "", 1), cached_source(&root, 2, "Renamed", "[[A]]", 2)];
         let rebuilt = GraphIndex::load_or_build(changed, &cache, || false).unwrap();
         assert_eq!((rebuilt.parsed_files, rebuilt.reused_files), (2, 1));
         assert_eq!(rebuilt.index.edges.len(), 2);
@@ -1701,14 +1405,16 @@ mod tests {
         fs::write(&cache, b"corrupt graph cache").unwrap();
         let corrupt = GraphIndex::load_or_build(sources.clone(), &cache, || false).unwrap();
         assert_eq!(corrupt.parsed_files, 1);
-
-        save_index_cache(
-            &cache,
-            &GraphIndexCache {
-                version: INDEX_CACHE_VERSION + 1,
-                files: Vec::new(),
-            },
-        );
+        let bytes = fs::read(&cache).unwrap();
+        fs::write(&cache, &bytes[..bytes.len() / 2]).unwrap();
+        let truncated = GraphIndex::load_or_build(sources.clone(), &cache, || false).unwrap();
+        assert_eq!(truncated.parsed_files, 1);
+        let interrupted = sibling_temp_path(&cache);
+        fs::write(&interrupted, b"partial replacement").unwrap();
+        let live = GraphIndex::load_or_build(sources.clone(), &cache, || false).unwrap();
+        assert_eq!(live.reused_files, 1);
+        fs::remove_file(interrupted).unwrap();
+        save_index_cache(&cache, &GraphIndexCache { version: INDEX_CACHE_VERSION + 1, files: Vec::new() });
         let stale = GraphIndex::load_or_build(sources, &cache, || false).unwrap();
         assert_eq!(stale.parsed_files, 1);
         assert!(load_index_cache(&cache).is_some());
@@ -1717,9 +1423,7 @@ mod tests {
 
     #[test]
     fn compact_adjacency_uses_fixed_width_contiguous_storage() {
-        let sources: Vec<_> = (0..1_000)
-            .map(|index| source(index, &format!("N{index}"), &format!("[[N{}]]", (index + 1) % 1_000)))
-            .collect();
+        let sources: Vec<_> = (0..1_000).map(|index| source(index, &format!("N{index}"), &format!("[[N{}]]", (index + 1) % 1_000))).collect();
         let index = GraphIndex::build(sources);
         let nested_usize_floor = index.nodes.len() * 2 * std::mem::size_of::<Vec<usize>>() + index.edges.len() * 2 * std::mem::size_of::<usize>();
         let compact_bytes = index.outgoing.retained_bytes() + index.incoming.retained_bytes();
@@ -1735,10 +1439,7 @@ mod tests {
         let note_count = 10_000usize;
         let sources: Vec<_> = (0..note_count)
             .map(|idx| {
-                let links = (1..=5)
-                    .map(|offset| format!("[[N{}]]", (idx + offset) % note_count))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let links = (1..=5).map(|offset| format!("[[N{}]]", (idx + offset) % note_count)).collect::<Vec<_>>().join(" ");
                 source(idx, &format!("N{idx}"), &links)
             })
             .collect();
@@ -1747,12 +1448,10 @@ mod tests {
         let index_elapsed = started.elapsed();
         assert_eq!(index.nodes.len(), note_count);
         assert!(index.edges.len() >= 49_900);
-
         let local_started = std::time::Instant::now();
         let mut local = index.project(GraphMode::Local, NoteId::new(0), 2, GraphLinkScope::All, &GraphFilter::default(), true);
         apply_local_layout(&index, &mut local.nodes);
         let local_elapsed = local_started.elapsed();
-
         let global_started = std::time::Instant::now();
         let mut global = index.project(GraphMode::Global, NoteId::new(0), 1, GraphLinkScope::All, &GraphFilter::default(), true);
         apply_global_layout(&index, &mut global.nodes, &global.edges);
