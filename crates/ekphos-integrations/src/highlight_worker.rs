@@ -220,6 +220,7 @@ fn compute_snapshot_highlights(snapshot: &EditorSnapshot, colors: &HighlightColo
     let mut highlights = Vec::with_capacity(row_end.saturating_sub(rows.start).saturating_mul(2));
     let frontmatter_end = ekphos_core::markdown::frontmatter_end_in_lines(snapshot.iter_lines());
     let mut in_code_block = false;
+    let mut in_math_block = false;
     for (row, line) in snapshot.iter_lines().take(row_end).enumerate() {
         if is_cancelled() {
             return None;
@@ -246,6 +247,19 @@ fn compute_snapshot_highlights(snapshot: &EditorSnapshot, colors: &HighlightColo
         if in_code_block {
             if rows.contains(&row) {
                 highlights.push(HighlightRange::new(row, 0, bytecount_chars(line), Style::default().fg(colors.code_color), HighlightType::CodeBlock));
+            }
+            continue;
+        }
+        if ekphos_core::markdown::is_display_math_delimiter(line) {
+            in_math_block = !in_math_block;
+            if rows.contains(&row) {
+                highlights.push(HighlightRange::new(row, 0, bytecount_chars(line), Style::default().fg(colors.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+            }
+            continue;
+        }
+        if in_math_block {
+            if rows.contains(&row) {
+                highlights.push(HighlightRange::new(row, 0, bytecount_chars(line), Style::default().fg(colors.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
             }
             continue;
         }
@@ -284,6 +298,7 @@ fn highlight_markdown_line(row: usize, line: &str, colors: &HighlightColors, hig
     highlight_details_tags_fast(row, line, colors, highlights);
     highlight_list_marker_fast(row, line, trimmed, colors, highlights);
     highlight_inline_code_fast(row, line, colors, highlights);
+    highlight_math_fast(row, line, colors, highlights);
     highlight_links_fast(row, line, colors, highlights);
     let highlight_start = highlights.len();
     highlight_bold_fast(row, line, colors, highlights, highlight_start);
@@ -384,6 +399,19 @@ fn highlight_inline_code_fast(row: usize, line: &str, colors: &HighlightColors, 
             open = Some(col);
         }
     }
+}
+
+#[inline]
+fn highlight_math_fast(row: usize, line: &str, colors: &HighlightColors, highlights: &mut Vec<HighlightRange>) {
+    if ekphos_core::markdown::display_math_body(line).is_some() {
+        highlights.push(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(colors.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+        return;
+    }
+    ekphos_core::markdown::visit_inline_math(line, |expression| {
+        let start = line[..expression.range.start].chars().count();
+        let end = start + line[expression.range].chars().count();
+        highlights.push(HighlightRange::new(row, start, end, Style::default().fg(colors.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+    });
 }
 
 #[inline]
@@ -716,6 +744,17 @@ mod tests {
         assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Bold), "Bold markers inside inline code should not be highlighted");
         let (highlights, _) = compute_all_highlights("`[text](url)`", &colors);
         assert!(highlights.iter().all(|h| h.highlight_type != HighlightType::Link), "Link inside inline code should not be highlighted");
+    }
+
+    #[test]
+    fn math_highlighting_covers_inline_and_display_source_but_not_code() {
+        let colors = HighlightColors::default();
+        let content = "Inline $x_1 + \\alpha$\n$$\n\\frac{1}{2}\n$$\n```md\n$not_math$\n```";
+        let (highlights, _) = compute_all_highlights(content, &colors);
+        assert!(highlights.iter().any(|highlight| highlight.row == 0 && highlight.highlight_type == HighlightType::Math));
+        assert!(highlights.iter().any(|highlight| highlight.row == 2 && highlight.highlight_type == HighlightType::Math));
+        assert!(highlights.iter().filter(|highlight| highlight.row == 5).all(|highlight| highlight.highlight_type == HighlightType::CodeBlock));
+        assert!(highlights.iter().all(|highlight| !(highlight.row == 0 && highlight.highlight_type == HighlightType::Italic)));
     }
 
     #[test]

@@ -58,6 +58,101 @@ pub fn fence_marker(line: &str) -> Option<FenceMarker> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineMath<'a> {
+    /// Byte range including the opening and closing `$` delimiters.
+    pub range: Range<usize>,
+    pub source: &'a str,
+}
+
+fn byte_is_escaped(source: &str, index: usize) -> bool {
+    source.as_bytes()[..index].iter().rev().take_while(|byte| **byte == b'\\').count() % 2 == 1
+}
+
+/// Parse an inline math expression beginning exactly at `start`.
+///
+/// Delimiters next to whitespace are rejected, matching the behavior users
+/// expect from Markdown math extensions and avoiding most accidental dollar
+/// signs in prose. Code-span exclusion is handled by [`visit_inline_math`].
+pub fn inline_math_at(source: &str, start: usize) -> Option<InlineMath<'_>> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'$') || byte_is_escaped(source, start) || bytes.get(start + 1) == Some(&b'$') {
+        return None;
+    }
+    let body_start = start + 1;
+    let first = source.get(body_start..)?.chars().next()?;
+    if first.is_whitespace() || first == '$' {
+        return None;
+    }
+    let mut cursor = body_start;
+    while let Some(relative_end) = source[cursor..].find('$') {
+        let end = cursor + relative_end;
+        if byte_is_escaped(source, end) {
+            cursor = end + 1;
+            continue;
+        }
+        if bytes.get(end + 1) == Some(&b'$') {
+            cursor = end + 2;
+            continue;
+        }
+        let body = &source[body_start..end];
+        if body.contains('\n') || body.chars().next_back().is_some_and(char::is_whitespace) {
+            cursor = end + 1;
+            continue;
+        }
+        return Some(InlineMath { range: start..end + 1, source: body });
+    }
+    None
+}
+
+/// Visit inline math on one source line, excluding inline-code spans.
+pub fn visit_inline_math<'a>(source: &'a str, mut visit: impl FnMut(InlineMath<'a>)) {
+    let mut cursor = 0;
+    while cursor < source.len() {
+        let remaining = &source[cursor..];
+        let next_math = remaining.find('$');
+        let next_tick = remaining.find('`');
+        if let Some(tick) = next_tick {
+            if next_math.is_none() || tick < next_math.unwrap() {
+                let opening = cursor + tick;
+                let Some(closing) = source[opening + 1..].find('`') else {
+                    break;
+                };
+                cursor = opening + 1 + closing + 1;
+                continue;
+            }
+        }
+        let Some(relative_start) = next_math else {
+            break;
+        };
+        let start = cursor + relative_start;
+        if let Some(math) = inline_math_at(source, start) {
+            cursor = math.range.end;
+            visit(math);
+        } else {
+            cursor = start + 1;
+        }
+    }
+}
+
+pub fn inline_math(source: &str) -> Vec<InlineMath<'_>> {
+    let mut expressions = Vec::new();
+    visit_inline_math(source, |expression| expressions.push(expression));
+    expressions
+}
+
+/// Return the expression from a single-line display-math block (`$$...$$`).
+pub fn display_math_body(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let body = trimmed.strip_prefix("$$")?.strip_suffix("$$")?.trim();
+    (!body.is_empty()).then_some(body)
+}
+
+/// Recognize a standalone display-math delimiter line.
+pub fn is_display_math_delimiter(line: &str) -> bool {
+    line.trim() == "$$"
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiLink<'a> {
     pub range: Range<usize>,
     pub raw: &'a str,
@@ -272,6 +367,23 @@ mod tests {
         let links = document_wiki_links_with_tilde_fences(content, frontmatter_end(content), true);
         assert_eq!(links.iter().map(|item| item.link.target).collect::<Vec<_>>(), vec!["one", "two"]);
         assert_eq!(links.iter().map(|item| item.row).collect::<Vec<_>>(), vec![3, 10]);
+    }
+
+    #[test]
+    fn inline_math_respects_boundaries_escapes_and_code() {
+        let source = r"before $x_1 + \alpha$ `code $ignored$` \$cash and $y^2$ after";
+        let expressions = inline_math(source);
+        assert_eq!(expressions.iter().map(|expression| expression.source).collect::<Vec<_>>(), vec![r"x_1 + \alpha", "y^2"]);
+        assert!(inline_math("$ spaced $").is_empty());
+        assert!(inline_math("$$display$$").is_empty());
+    }
+
+    #[test]
+    fn display_math_recognizes_fences_and_single_line_bodies() {
+        assert!(is_display_math_delimiter("  $$  "));
+        assert_eq!(display_math_body("$$ \\frac{1}{2} $$"), Some("\\frac{1}{2}"));
+        assert_eq!(display_math_body("$$"), None);
+        assert_eq!(display_math_body("price $$5"), None);
     }
 
     #[test]

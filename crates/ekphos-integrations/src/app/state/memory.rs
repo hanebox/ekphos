@@ -140,6 +140,14 @@ fn content_item_bytes(item: &ContentItem) -> usize {
     match item {
         ContentItem::TableRow { cells, .. } => cells.len() * std::mem::size_of::<DocumentRange>(),
         ContentItem::Details { content_lines, .. } => content_lines.len() * std::mem::size_of::<u32>(),
-        ContentItem::TextLine { .. } | ContentItem::Image { .. } | ContentItem::CodeLine { .. } | ContentItem::CodeFence { .. } | ContentItem::TaskItem { .. } | ContentItem::FrontmatterLine { .. } | ContentItem::TagBadges | ContentItem::FrontmatterDelimiter { .. } => 0,
+        ContentItem::TextLine { .. }
+        | ContentItem::MathBlock { .. }
+        | ContentItem::Image { .. }
+        | ContentItem::CodeLine { .. }
+        | ContentItem::CodeFence { .. }
+        | ContentItem::TaskItem { .. }
+        | ContentItem::FrontmatterLine { .. }
+        | ContentItem::TagBadges
+        | ContentItem::FrontmatterDelimiter { .. } => 0,
     }
 }

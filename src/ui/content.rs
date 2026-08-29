@@ -71,6 +71,22 @@ mod tests {
     }
 
     #[test]
+    fn display_math_scales_to_the_configured_target_height() {
+        assert_eq!(fit_math_size(Size::new(20, 2), Size::new(80, 6), 6), Size::new(60, 6));
+        assert_eq!(fit_math_size(Size::new(100, 10), Size::new(30, 6), 6), Size::new(30, 3));
+    }
+
+    #[test]
+    fn ready_inline_math_reserves_its_rendered_cell_width() {
+        let states = vec![InlineMathRenderState::Ready { image_key: "math:test".to_string(), width: 5 }];
+        let source = inline_math_layout_source("Energy $E = mc^2$.", &states);
+        assert_eq!(source, "Energy □□□□□.");
+        let spans = parse_inline_formatting_with_math::<fn(&str) -> bool>("Energy $E = mc^2$.", &Theme::default(), None, None, &states);
+        let placeholder = spans.iter().find(|span| is_inline_math_placeholder(span.content.as_ref())).unwrap();
+        assert_eq!(UnicodeWidthStr::width(placeholder.content.as_ref()), 5);
+    }
+
+    #[test]
     fn inline_thumbnail_rows_use_configured_height() {
         assert_eq!(inline_thumbnails_height(0, 80, 8), 0);
         assert_eq!(inline_thumbnails_height(1, 80, 8), 8);
@@ -216,6 +232,15 @@ mod tests {
         assert_eq!(cell_visible_width("🟡"), 2);
         // ASCII control: still matches char count.
         assert_eq!(cell_visible_width("In-Progress"), 11);
+    }
+
+    #[test]
+    fn inline_math_hides_delimiters_without_interpreting_inner_markdown() {
+        let theme = Theme::default();
+        let spans = parse_inline_formatting::<fn(&str) -> bool>("Euler: $e^{i_1\\pi}+1=0$.", &theme, None, None);
+        let rendered = spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+        assert_eq!(rendered, "Euler: e^{i_1\\pi}+1=0.");
+        assert_eq!(cell_visible_width("Euler: $e^{i_1\\pi}+1=0$."), UnicodeWidthStr::width(rendered.as_str()));
     }
 
     #[test]

@@ -16,6 +16,10 @@ const IMAGE_WORKERS: usize = 2;
 const IMAGE_QUEUE_CAPACITY: usize = 32;
 const MAX_PENDING_IMAGE_REQUESTS: usize = 16;
 const WORKER_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+const MAX_MATH_SOURCE_BYTES: usize = 16 * 1024;
+const MATH_FONT_SIZE: f32 = 40.0;
+const MATH_PADDING: f32 = 4.0;
+const MATH_DEVICE_PIXEL_RATIO: f32 = 2.0;
 
 pub trait NetworkImageService: Send + Sync {
     fn fetch(&self, url: &str) -> Option<DynamicImage>;
@@ -52,6 +56,7 @@ pub struct ImageServiceStats {
 enum ImageSource {
     Local(PathBuf),
     Remote(String),
+    Math { latex: String, color: [u8; 3] },
 }
 
 struct ImageRequest {
@@ -143,6 +148,10 @@ impl ImageService {
 
     pub fn request_remote(&mut self, key: &str, url: &str) -> bool {
         self.request(key, ImageSource::Remote(url.to_string()))
+    }
+
+    pub fn request_math(&mut self, key: &str, latex: String, color: [u8; 3]) -> bool {
+        self.request(key, ImageSource::Math { latex, color })
     }
     fn request(&mut self, key: &str, source: ImageSource) -> bool {
         if self.decoded.contains_key(key) || self.pending.contains_key(key) || self.failures.contains_key(key) || self.pending.len() >= MAX_PENDING_IMAGE_REQUESTS {
@@ -341,8 +350,8 @@ fn image_worker_loop(receiver: Arc<Mutex<Receiver<WorkerMessage>>>, sender: Sync
     }
 }
 fn load_request(request: &ImageRequest, network: &dyn NetworkImageService) -> Result<DynamicImage, String> {
-    let image = match &request.source {
-        ImageSource::Local(path) => decode_path(path)?,
+    let (image, preserve_resolution) = match &request.source {
+        ImageSource::Local(path) => (decode_path(path)?, false),
         ImageSource::Remote(url) => {
             if request.cache_path.is_file() {
                 match decode_path(&request.cache_path) {
@@ -356,11 +365,51 @@ fn load_request(request: &ImageRequest, network: &dyn NetworkImageService) -> Re
             validate_image(&image)?;
             let image = resize_for_cache(image);
             write_cached_image(&request.cache_path, &image)?;
-            image
+            (image, false)
+        }
+        ImageSource::Math { latex, color } => {
+            if request.cache_path.is_file() {
+                match decode_path(&request.cache_path) {
+                    Ok(image) => return Ok(image),
+                    Err(_) => {
+                        let _ = std::fs::remove_file(&request.cache_path);
+                    }
+                }
+            }
+            let image = render_math_image(latex, *color)?;
+            validate_image(&image)?;
+            write_cached_image(&request.cache_path, &image)?;
+            (image, true)
         }
     };
     validate_image(&image)?;
-    Ok(resize_for_cache(image))
+    Ok(if preserve_resolution { image } else { resize_for_cache(image) })
+}
+
+fn render_math_image(latex: &str, color: [u8; 3]) -> Result<DynamicImage, String> {
+    let latex = latex.trim();
+    if latex.is_empty() {
+        return Err("empty math expression".to_string());
+    }
+    if latex.len() > MAX_MATH_SOURCE_BYTES {
+        return Err("math expression exceeds source limit".to_string());
+    }
+    let foreground = ratex_types::Color::rgb(color[0] as f32 / 255.0, color[1] as f32 / 255.0, color[2] as f32 / 255.0);
+    let ast = ratex_parser::parse(latex).map_err(|error| format!("math parse error: {error}"))?;
+    let layout_options = ratex_layout::LayoutOptions::default().with_color(foreground);
+    let layout = ratex_layout::layout(&ast, &layout_options);
+    let display_list = ratex_layout::to_display_list(&layout);
+    let pixel_width = display_list.width * f64::from(MATH_FONT_SIZE * MATH_DEVICE_PIXEL_RATIO) + f64::from(2.0 * MATH_PADDING * MATH_DEVICE_PIXEL_RATIO);
+    let pixel_height = display_list.total_height() * f64::from(MATH_FONT_SIZE * MATH_DEVICE_PIXEL_RATIO) + f64::from(2.0 * MATH_PADDING * MATH_DEVICE_PIXEL_RATIO);
+    if !pixel_width.is_finite() || !pixel_height.is_finite() || pixel_width <= 0.0 || pixel_height <= 0.0 {
+        return Err("math expression has invalid dimensions".to_string());
+    }
+    if pixel_width > f64::from(MAX_IMAGE_DIMENSION) || pixel_height > f64::from(MAX_IMAGE_DIMENSION) || pixel_width * pixel_height * 4.0 > MAX_DECODED_IMAGE_BYTES as f64 {
+        return Err("rendered math expression exceeds image limits".to_string());
+    }
+    let options = ratex_render::RenderOptions { font_size: MATH_FONT_SIZE, padding: MATH_PADDING, background_color: ratex_types::Color::new(0.0, 0.0, 0.0, 0.0), font_dir: String::new(), device_pixel_ratio: MATH_DEVICE_PIXEL_RATIO };
+    let png = ratex_render::render_to_png(&display_list, &options)?;
+    decode_memory(&png)
 }
 
 fn fetch_remote_image(url: &str) -> Option<DynamicImage> {
@@ -478,6 +527,20 @@ mod tests {
     fn every_previously_default_image_decoder_remains_enabled() {
         let disabled: Vec<_> = ImageFormat::all().filter(ImageFormat::can_read).filter(|format| !format.reading_enabled()).collect();
         assert!(disabled.is_empty(), "disabled image decoders: {disabled:?}");
+    }
+
+    #[test]
+    fn math_renderer_produces_a_transparent_high_resolution_image() {
+        let image = render_math_image(r"\frac{-b \pm \sqrt{b^2-4ac}}{2a}", [230, 230, 230]).unwrap();
+        assert!(image.width() > 100);
+        assert!(image.height() > 40);
+        assert_eq!(image.to_rgba8().get_pixel(0, 0).0[3], 0);
+    }
+
+    #[test]
+    fn math_renderer_rejects_unbounded_source_before_layout() {
+        let oversized = "x".repeat(MAX_MATH_SOURCE_BYTES + 1);
+        assert!(render_math_image(&oversized, [255, 255, 255]).is_err());
     }
 
     #[test]

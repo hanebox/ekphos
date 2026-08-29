@@ -2,7 +2,16 @@ use super::*;
 
 pub(super) use ekphos_integrations::text::calc_formatting_shrinkage;
 
+pub(super) const INLINE_MATH_MARKER: char = '\u{2063}';
+
 pub(super) fn parse_inline_formatting<'a, F>(text: &'a str, theme: &Theme, selected_link: Option<usize>, wiki_link_validator: Option<F>) -> Vec<Span<'a>>
+where
+    F: Fn(&str) -> bool,
+{
+    parse_inline_formatting_with_math(text, theme, selected_link, wiki_link_validator, &[])
+}
+
+pub(super) fn parse_inline_formatting_with_math<'a, F>(text: &'a str, theme: &Theme, selected_link: Option<usize>, wiki_link_validator: Option<F>, math_states: &[InlineMathRenderState]) -> Vec<Span<'a>>
 where
     F: Fn(&str) -> bool,
 {
@@ -10,6 +19,7 @@ where
     let mut chars = text.char_indices().peekable();
     let mut current_start = 0;
     let mut link_index = 0;
+    let mut math_index = 0;
     let mut removed_preview_image = false;
     let content_theme = &theme.content;
     while let Some((i, c)) = chars.next() {
@@ -27,6 +37,24 @@ where
                     chars.next();
                 }
                 current_start = i + url_len;
+                continue;
+            }
+        }
+        if c == '$' {
+            if let Some(math) = ekphos_core::markdown::inline_math_at(text, i) {
+                if i > current_start {
+                    spans.push(Span::styled(&text[current_start..i], Style::default().fg(content_theme.text)));
+                }
+                if let Some(InlineMathRenderState::Ready { width, .. }) = math_states.get(math_index) {
+                    spans.push(Span::styled(inline_math_placeholder(*width), Style::default().fg(content_theme.text)));
+                } else {
+                    spans.push(Span::styled(math.source, Style::default().fg(theme.secondary).add_modifier(Modifier::ITALIC)));
+                }
+                math_index += 1;
+                while chars.peek().is_some_and(|&(next, _)| next < math.range.end) {
+                    chars.next();
+                }
+                current_start = math.range.end;
                 continue;
             }
         }
@@ -276,4 +304,31 @@ where
         spans.push(Span::styled(text, Style::default().fg(content_theme.text)));
     }
     spans
+}
+
+pub(super) fn inline_math_placeholder(width: u16) -> String {
+    format!("{INLINE_MATH_MARKER}{}", "□".repeat(width.max(1) as usize))
+}
+
+pub(super) fn is_inline_math_placeholder(text: &str) -> bool {
+    text.starts_with(INLINE_MATH_MARKER)
+}
+
+pub(super) fn inline_math_layout_source(text: &str, states: &[InlineMathRenderState]) -> String {
+    if states.is_empty() {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut previous_end = 0;
+    for (index, expression) in ekphos_core::markdown::inline_math(text).into_iter().enumerate() {
+        result.push_str(&text[previous_end..expression.range.start]);
+        if let Some(InlineMathRenderState::Ready { width, .. }) = states.get(index) {
+            result.push_str(&"□".repeat(usize::from((*width).max(1))));
+        } else {
+            result.push_str(expression.source);
+        }
+        previous_end = expression.range.end;
+    }
+    result.push_str(&text[previous_end..]);
+    result
 }

@@ -25,7 +25,9 @@ pub(super) fn render_content_line<F>(
     context: RenderContext<'_>,
     wiki_link_validator: Option<F>,
     fold_state: Option<bool>, // None = not foldable, Some(true) = folded, Some(false) = expanded
-) where
+    math_states: &[InlineMathRenderState],
+) -> Vec<InlineMathPlacement>
+where
     F: Fn(&str) -> bool,
 {
     let RenderContext { theme, area, is_cursor, selected_link, has_link } = context;
@@ -55,13 +57,13 @@ pub(super) fn render_content_line<F>(
     } else if line.starts_with("- ") {
         let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![Span::styled(cursor_indicator, Style::default().fg(theme.warning)), Span::styled("• ", Style::default().fg(content_theme.list_marker))];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("- "), theme, selected, wiki_link_validator));
+        spans.extend(parse_inline_formatting_with_math(line.trim_start_matches("- "), theme, selected, wiki_link_validator, math_states));
         Line::from(spans)
     } else if line.starts_with("> ") {
         let selected = if is_cursor { Some(selected_link) } else { None };
         let content = line.trim_start_matches("> ");
         let mut spans = vec![Span::styled(cursor_indicator, Style::default().fg(theme.warning)), Span::styled("┃ ", Style::default().fg(content_theme.blockquote))];
-        let formatted = parse_inline_formatting(content, theme, selected, wiki_link_validator);
+        let formatted = parse_inline_formatting_with_math(content, theme, selected, wiki_link_validator, math_states);
         for span in formatted {
             let mut style = span.style;
             if style.fg.is_none() || style.fg == Some(content_theme.text) {
@@ -76,12 +78,12 @@ pub(super) fn render_content_line<F>(
     } else if line.starts_with("* ") {
         let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![Span::styled(cursor_indicator, Style::default().fg(theme.warning)), Span::styled("• ", Style::default().fg(content_theme.list_marker))];
-        spans.extend(parse_inline_formatting(line.trim_start_matches("* "), theme, selected, wiki_link_validator));
+        spans.extend(parse_inline_formatting_with_math(line.trim_start_matches("* "), theme, selected, wiki_link_validator, math_states));
         Line::from(spans)
     } else {
         let selected = if is_cursor { Some(selected_link) } else { None };
         let mut spans = vec![Span::styled(cursor_indicator, Style::default().fg(theme.warning))];
-        spans.extend(parse_inline_formatting(line, theme, selected, wiki_link_validator));
+        spans.extend(parse_inline_formatting_with_math(line, theme, selected, wiki_link_validator, math_states));
         Line::from(spans)
     };
     let final_line = if has_link {
@@ -91,7 +93,8 @@ pub(super) fn render_content_line<F>(
     } else {
         styled_line
     };
-    let wrapped_lines = wrap_line_for_cursor(final_line.spans, available_width, theme);
+    let mut wrapped_lines = wrap_line_for_cursor(final_line.spans, available_width, theme);
+    let placements = extract_inline_math_placements(&mut wrapped_lines, math_states, area);
     let bg_style = if is_cursor { Style::default().bg(theme.selection) } else { Style::default() };
     for (i, wrapped_line) in wrapped_lines.iter().enumerate() {
         let line_area = Rect { x: area.x, y: area.y.saturating_add(i as u16), width: area.width, height: 1 };
@@ -100,6 +103,7 @@ pub(super) fn render_content_line<F>(
             f.render_widget(paragraph, line_area);
         }
     }
+    placements
 }
 
 pub(super) fn render_code_line(f: &mut Frame, theme: &Theme, line: &str, highlighted_spans: Option<Vec<Span<'static>>>, area: Rect, is_cursor: bool) {
@@ -133,7 +137,7 @@ pub(super) fn render_code_fence(f: &mut Frame, theme: &Theme, _lang: &str, area:
     f.render_widget(paragraph, area);
 }
 
-pub(super) fn render_task_item<F>(f: &mut Frame, text: &str, checked: bool, indent: usize, context: RenderContext<'_>, wiki_link_validator: Option<F>)
+pub(super) fn render_task_item<F>(f: &mut Frame, text: &str, checked: bool, indent: usize, context: RenderContext<'_>, wiki_link_validator: Option<F>, math_states: &[InlineMathRenderState]) -> Vec<InlineMathPlacement>
 where
     F: Fn(&str) -> bool,
 {
@@ -156,7 +160,7 @@ where
     } else {
         None
     };
-    let mut text_spans = parse_inline_formatting(&expanded_text, theme, link_selected, wiki_link_validator);
+    let mut text_spans = parse_inline_formatting_with_math(&expanded_text, theme, link_selected, wiki_link_validator, math_states);
     if checked {
         text_spans = text_spans
             .into_iter()
@@ -175,7 +179,8 @@ where
     }
     spans.extend([Span::styled("[", bracket_style), Span::styled(if checked { "x" } else { " " }, checkbox_style), Span::styled("]", bracket_style), Span::styled(" ", Style::default())]);
     spans.extend(text_spans);
-    let wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
+    let mut wrapped_lines = wrap_line_for_cursor(spans, available_width, theme);
+    let placements = extract_inline_math_placements(&mut wrapped_lines, math_states, area);
     let bg_style = if is_cursor { Style::default().bg(theme.selection) } else { Style::default() };
     for (i, wrapped_line) in wrapped_lines.iter().enumerate() {
         let line_area = Rect { x: area.x, y: area.y.saturating_add(i as u16), width: area.width, height: 1 };
@@ -184,6 +189,29 @@ where
             f.render_widget(paragraph, line_area);
         }
     }
+    placements
+}
+
+fn extract_inline_math_placements(lines: &mut [Line<'_>], states: &[InlineMathRenderState], area: Rect) -> Vec<InlineMathPlacement> {
+    let mut ready_expressions = states.iter().enumerate().filter_map(|(index, state)| match state {
+        InlineMathRenderState::Ready { width, .. } => Some((index, *width)),
+        _ => None,
+    });
+    let mut placements = Vec::new();
+    for (row, line) in lines.iter_mut().enumerate() {
+        let mut x = 0u16;
+        for span in &mut line.spans {
+            let span_width = u16::try_from(UnicodeWidthStr::width(span.content.as_ref())).unwrap_or(u16::MAX);
+            if is_inline_math_placeholder(span.content.as_ref()) {
+                if let Some((expression_index, width)) = ready_expressions.next() {
+                    placements.push(InlineMathPlacement { expression_index, rect: Rect { x: area.x.saturating_add(x), y: area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX)), width, height: 1 } });
+                    span.content = " ".repeat(usize::from(width)).into();
+                }
+            }
+            x = x.saturating_add(span_width);
+        }
+    }
+    placements
 }
 
 pub(super) fn render_table_row(f: &mut Frame, document: &DocumentSnapshot, cells: &[DocumentRange], row_flags: (bool, bool), natural_widths: &[u16], alignments: &[crate::app::Alignment], context: RenderContext<'_>) {

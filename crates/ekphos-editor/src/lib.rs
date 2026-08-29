@@ -56,6 +56,7 @@ pub enum HighlightType {
     Bold,
     Italic,
     InlineCode,
+    Math,
     CodeBlock,
     Link,
     Blockquote,

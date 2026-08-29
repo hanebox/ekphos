@@ -71,6 +71,10 @@ pub fn run_app(terminal: &mut Terminal<CrosstermBackend<Box<dyn io::Write>>>, ap
             terminal.draw(|f| ui::render(f, app))?;
             app.reclaim_memory_if_requested();
             needs_render = false;
+            // Rendering can enqueue background work (for example, LaTeX or
+            // image decoding). Poll it before deciding that it is safe to
+            // block waiting for the next input event.
+            continue;
         }
         if background.has_work {
             if event::poll(background.poll_timeout)? {

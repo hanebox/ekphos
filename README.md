@@ -37,7 +37,7 @@ _Note: Always update to the latest version. If you encounter config issues after
 ## Requirements
 
 - Rust 1.90+
-- For inline images: iTerm2, Kitty, WezTerm, Ghostty, or Sixel-compatible terminal
+- For inline images and graphical equations: iTerm2, Kitty, WezTerm, Ghostty, or a Sixel-compatible terminal
 
 ## Building from source
 

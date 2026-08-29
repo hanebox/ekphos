@@ -5,13 +5,27 @@ pub fn detect_bare_url_len(text: &str, start: usize) -> Option<usize> {
 }
 
 pub fn calc_formatting_shrinkage(text: &str, up_to_pos: usize) -> usize {
-    if !text.as_bytes().iter().any(|byte| matches!(byte, b'*' | b'_' | b'~' | b'`' | b'[' | b'!')) {
+    if !text.as_bytes().iter().any(|byte| matches!(byte, b'*' | b'_' | b'~' | b'`' | b'[' | b'!' | b'$')) {
         return 0;
     }
     let mut shrinkage = 0usize;
     let mut pos = 0;
     let chars: Vec<char> = text.chars().collect();
     while pos < up_to_pos && pos < chars.len() {
+        if chars[pos] == '$' {
+            let byte_pos: usize = chars[..pos].iter().map(|character| character.len_utf8()).sum();
+            if let Some(math) = ekphos_core::markdown::inline_math_at(text, byte_pos) {
+                let expression_chars = text[math.range].chars().count();
+                let end = pos + expression_chars;
+                if end <= up_to_pos {
+                    shrinkage += 2;
+                } else if pos + 1 < up_to_pos {
+                    shrinkage += 1;
+                }
+                pos = end;
+                continue;
+            }
+        }
         if pos + 1 < chars.len() && chars[pos] == '*' && chars[pos + 1] == '*' {
             if let Some(end) = find_double_marker(&chars, pos + 2, '*') {
                 if end < up_to_pos {

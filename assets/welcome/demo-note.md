@@ -32,6 +32,14 @@ Wikilinks let you connect your notes together, creating a personal knowledge bas
 
 ## Interactive Elements
 
+### Math
+
+Inline expressions such as $E = mc^2$ render directly inside prose. Put a formula between `$$` delimiters to render it as a display equation:
+
+$$
+\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+$$
+
 ### Tasks with Links
 
 - [ ] Check out the [[Getting Started]] guide

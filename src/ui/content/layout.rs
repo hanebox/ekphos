@@ -5,7 +5,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let mut code_block_highlights = std::collections::HashMap::new();
     let is_focused = app.state.focus == Focus::Content && app.editor.mode == Mode::Normal;
     let skip_images = app.state.dialog != DialogState::None || app.state.show_welcome;
-    let theme = &app.state.theme;
+    let theme_snapshot = app.state.theme.clone();
+    let theme = &theme_snapshot;
     let border_style = if app.editor.floating_cursor_mode {
         Style::default().fg(theme.warning)
     } else if is_focused {
@@ -43,6 +44,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     let max_item_height = inner_area.height.max(1);
     let standalone_image_height = app.state.config.effective_image_height();
     let inline_image_height = app.state.config.effective_inline_image_height();
+    let math_blocks = prepare_math_blocks(app, Size::new(inner_area.width, inner_area.height), !skip_images);
+    let inline_math = prepare_inline_math(app, inner_area.width, !skip_images);
     let document = app.document.active_document.as_ref().expect("normal-mode content requires a document snapshot");
     let document_tables = &app.document.document_tables;
     let document_link_ranges = &app.document.document_link_ranges;
@@ -82,10 +85,10 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::TextLine { range, .. } => {
                 let line = document.slice(*range);
                 if app.inline_image_count_at(idx) == 0 {
-                    calc_wrapped_height(line, 4)
+                    calc_wrapped_height(&inline_math_layout_source(line, &inline_math[idx]), 4)
                 } else {
                     let prose_source = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).or_else(|| line.strip_prefix("> ")).unwrap_or(line);
-                    let prose = inline_prose_text(prose_source, theme);
+                    let prose = inline_prose_text_with_math(prose_source, theme, &inline_math[idx]);
                     if prose.is_empty() {
                         0
                     } else {
@@ -96,9 +99,9 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             ContentItem::TaskItem { text, indent, .. } => {
                 let text = document.slice(*text);
                 if app.inline_image_count_at(idx) == 0 {
-                    calc_wrapped_height(text, 6 + *indent as usize)
+                    calc_wrapped_height(&inline_math_layout_source(text, &inline_math[idx]), 6 + *indent as usize)
                 } else {
-                    let prose = inline_prose_text(text, theme);
+                    let prose = inline_prose_text_with_math(text, theme, &inline_math[idx]);
                     calc_wrapped_height(&prose, 6 + *indent as usize)
                 }
             }
@@ -119,6 +122,7 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                     item_text_heights[idx].saturating_add(inline_thumbnails_height(inline_image_count, inner_area.width, inline_image_height))
                 }
             }
+            ContentItem::MathBlock { .. } => math_blocks.get(idx).and_then(Option::as_ref).map_or(3, MathBlockRenderState::height),
             ContentItem::Image { .. } => standalone_image_height,
             ContentItem::CodeLine { range, .. } => code_line_height(document.slice(*range), code_block_highlights.get(&idx), inner_area.width, theme).min(max_item_height),
             ContentItem::CodeFence { .. } => 1u16,
@@ -310,11 +314,17 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 let fold_state = if app.is_heading_at(item_idx) { Some(app.is_heading_folded(item_idx)) } else { None };
                 let context = RenderContext::new(&app.state.theme, chunks[chunk_idx], is_cursor_line, selected_link, has_link);
-                render_content_line(f, line, context, Some(wiki_validator), fold_state);
+                let placements = render_content_line(f, line, context, Some(wiki_validator), fold_state, &inline_math[item_idx]);
+                render_inline_math(f, app, item_idx, &inline_math[item_idx], &placements, inner_area);
                 if !skip_images && app.inline_image_count_at(item_idx) > 0 {
                     let text_height = item_text_heights[item_idx];
                     render_inline_thumbnails(f, app, item_idx, chunks[chunk_idx], inner_area, (text_height, inline_image_height), is_cursor_line);
                 }
+            }
+            ContentItem::MathBlock { range, .. } => {
+                let latex = app.document_slice(*range).trim().to_string();
+                let state = math_blocks.get(item_idx).and_then(Option::as_ref).cloned().unwrap_or(MathBlockRenderState::Unsupported { height: 3 });
+                render_math_block(f, app, MathBlockView { item_index: item_idx, latex: &latex, state: &state, viewport: inner_area, is_cursor: is_cursor_line }, chunks[chunk_idx]);
             }
             ContentItem::Image { path, .. } => {
                 if !skip_images {
@@ -334,7 +344,8 @@ pub fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
                 let has_links = !app.item_all_links_at(item_idx).is_empty();
                 let wiki_validator = |target: &str| app.wiki_link_exists(target);
                 let context = RenderContext::new(&app.state.theme, chunks[chunk_idx], is_cursor_line, selected_link, has_links);
-                render_task_item(f, text, *checked, *indent as usize, context, Some(wiki_validator));
+                let placements = render_task_item(f, text, *checked, *indent as usize, context, Some(wiki_validator), &inline_math[item_idx]);
+                render_inline_math(f, app, item_idx, &inline_math[item_idx], &placements, inner_area);
                 if !skip_images && app.inline_image_count_at(item_idx) > 0 {
                     let text_height = item_text_heights[item_idx];
                     render_inline_thumbnails(f, app, item_idx, chunks[chunk_idx], inner_area, (text_height, inline_image_height), is_cursor_line);

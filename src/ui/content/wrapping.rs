@@ -204,35 +204,91 @@ pub(crate) fn content_item_click_col(app: &App, index: usize, item_area: Rect, m
         ContentItem::TextLine { range, .. } => {
             let raw_line = app.document_slice(*range);
             let line = normalize_whitespace(raw_line);
+            let math_states = inline_math_states_for_click(app, index, &line);
             let mut spans = if let Some(text) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
                 let mut spans = vec![Span::styled(cursor_indicator, Style::default()), Span::styled("• ", Style::default())];
-                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(text, &app.state.theme, None, None));
+                spans.extend(parse_inline_formatting_with_math::<fn(&str) -> bool>(text, &app.state.theme, None, None, &math_states));
                 spans
             } else if let Some(text) = line.strip_prefix("> ") {
                 let mut spans = vec![Span::styled(cursor_indicator, Style::default()), Span::styled("┃ ", Style::default())];
-                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(text, &app.state.theme, None, None));
+                spans.extend(parse_inline_formatting_with_math::<fn(&str) -> bool>(text, &app.state.theme, None, None, &math_states));
                 spans
             } else {
                 let mut spans = vec![Span::styled(cursor_indicator, Style::default())];
-                spans.extend(parse_inline_formatting::<fn(&str) -> bool>(&line, &app.state.theme, None, None));
+                spans.extend(parse_inline_formatting_with_math::<fn(&str) -> bool>(&line, &app.state.theme, None, None, &math_states));
                 spans
             };
             if app.item_has_link_at(index) && (app.document.content_cursor == index || app.state.mouse_hover_item == Some(index)) {
                 spans.push(Span::styled(" Open ↗", Style::default()));
             }
-            rendered_col_for_wrapped_click(spans, available_width, visual_row, visual_col, &app.state.theme)
+            let math_columns = inline_math_column_adjustments(&spans, &line, &math_states);
+            let rendered_col = rendered_col_for_wrapped_click(spans, available_width, visual_row, visual_col, &app.state.theme)?;
+            Some(remap_inline_math_column(rendered_col, &math_columns))
         }
         ContentItem::TaskItem { text, checked, indent, .. } => {
             let expanded_text = expand_tabs(app.document_slice(*text));
+            let math_states = inline_math_states_for_click(app, index, &expanded_text);
             let mut spans = vec![Span::styled(cursor_indicator, Style::default())];
             if *indent > 0 {
                 spans.push(Span::styled(" ".repeat(*indent as usize), Style::default()));
             }
             spans.extend([Span::styled("[", Style::default()), Span::styled(if *checked { "x" } else { " " }, Style::default()), Span::styled("]", Style::default()), Span::styled(" ", Style::default())]);
-            spans.extend(parse_inline_formatting::<fn(&str) -> bool>(&expanded_text, &app.state.theme, None, None));
-            rendered_col_for_wrapped_click(spans, available_width, visual_row, visual_col, &app.state.theme)
+            spans.extend(parse_inline_formatting_with_math::<fn(&str) -> bool>(&expanded_text, &app.state.theme, None, None, &math_states));
+            let math_columns = inline_math_column_adjustments(&spans, &expanded_text, &math_states);
+            let rendered_col = rendered_col_for_wrapped_click(spans, available_width, visual_row, visual_col, &app.state.theme)?;
+            Some(remap_inline_math_column(rendered_col, &math_columns))
         }
         _ => Some(visual_col),
+    }
+}
+
+fn inline_math_states_for_click(app: &App, item_index: usize, source: &str) -> Vec<InlineMathRenderState> {
+    ekphos_core::markdown::inline_math(source)
+        .into_iter()
+        .enumerate()
+        .map(|(expression_index, _)| {
+            let prefix = format!("math:inline:{item_index}:{expression_index}:");
+            app.images.image_states.iter().find(|(key, _)| key.starts_with(&prefix)).map_or(InlineMathRenderState::Unsupported, |(key, state)| InlineMathRenderState::Ready { image_key: key.clone(), width: state.size.width })
+        })
+        .collect()
+}
+
+fn inline_math_column_adjustments(spans: &[Span<'_>], source: &str, states: &[InlineMathRenderState]) -> Vec<(usize, usize, usize)> {
+    let expressions = ekphos_core::markdown::inline_math(source);
+    let mut ready_expressions = expressions.iter().zip(states).filter_map(|(expression, state)| matches!(state, InlineMathRenderState::Ready { .. }).then_some(expression));
+    let mut column = 0usize;
+    let mut adjustments = Vec::new();
+    for span in spans {
+        let width = display_width(span.content.as_ref());
+        if is_inline_math_placeholder(span.content.as_ref()) {
+            if let Some(expression) = ready_expressions.next() {
+                adjustments.push((column, column.saturating_add(width), display_width(expression.source)));
+            }
+        }
+        column = column.saturating_add(width);
+    }
+    adjustments
+}
+
+fn remap_inline_math_column(column: usize, adjustments: &[(usize, usize, usize)]) -> usize {
+    let mut delta = 0isize;
+    for &(rendered_start, rendered_end, source_width) in adjustments {
+        if column < rendered_start {
+            break;
+        }
+        if column < rendered_end {
+            return add_signed(rendered_start, delta);
+        }
+        delta = delta.saturating_add(source_width as isize - rendered_end.saturating_sub(rendered_start) as isize);
+    }
+    add_signed(column, delta)
+}
+
+fn add_signed(value: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        value.saturating_add(delta as usize)
+    } else {
+        value.saturating_sub(delta.unsigned_abs())
     }
 }
 

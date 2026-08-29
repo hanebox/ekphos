@@ -271,6 +271,7 @@ impl Alignment {
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     TextLine { range: DocumentRange, source_line: u32, heading_level: u8 },
+    MathBlock { range: DocumentRange, source_line: u32, end_line: u32 },
     Image { path: DocumentRange, source_line: u32 },
     CodeLine { range: DocumentRange, source_line: u32 },
     CodeFence { language: DocumentRange, source_line: u32 },
@@ -286,6 +287,7 @@ impl ContentItem {
     pub fn source_line(&self) -> usize {
         match self {
             Self::TextLine { source_line, .. }
+            | Self::MathBlock { source_line, .. }
             | Self::Image { source_line, .. }
             | Self::CodeLine { source_line, .. }
             | Self::CodeFence { source_line, .. }

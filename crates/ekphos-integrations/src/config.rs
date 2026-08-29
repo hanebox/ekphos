@@ -46,6 +46,8 @@ pub struct GeneralConfig {
     pub image_height: u16,
     #[serde(default = "default_inline_image_height")]
     pub inline_image_height: u16,
+    #[serde(default = "default_latex_height")]
+    pub latex_height: u16,
     #[serde(default = "default_sidebar_width_percent")]
     pub sidebar_width_percent: i64,
     #[serde(default = "default_outline_width_percent")]
@@ -160,6 +162,9 @@ fn default_image_height() -> u16 {
 fn default_inline_image_height() -> u16 {
     4
 }
+fn default_latex_height() -> u16 {
+    8
+}
 fn default_sidebar_width_percent() -> i64 {
     20
 }
@@ -201,6 +206,7 @@ impl Default for GeneralConfig {
             syntax_theme: default_syntax_theme(),
             image_height: default_image_height(),
             inline_image_height: default_inline_image_height(),
+            latex_height: default_latex_height(),
             sidebar_width_percent: default_sidebar_width_percent(),
             outline_width_percent: default_outline_width_percent(),
             sidebar_collapsed: default_sidebar_collapsed(),
@@ -264,6 +270,9 @@ impl Config {
     }
     pub fn effective_inline_image_height(&self) -> u16 {
         self.inline_image_height.max(3)
+    }
+    pub fn effective_latex_height(&self) -> u16 {
+        self.latex_height.max(3)
     }
     pub fn panel_width_is_minimized(width: i64) -> bool {
         Self::effective_panel_width_percent(width) < Self::MINIMIZED_PANEL_WIDTH_PERCENT
@@ -1050,17 +1059,22 @@ mod tests {
         assert_eq!(config.effective_image_height(), 8);
         assert_eq!(config.inline_image_height, 4);
         assert_eq!(config.effective_inline_image_height(), 4);
+        assert_eq!(config.latex_height, 8);
+        assert_eq!(config.effective_latex_height(), 8);
     }
     #[test]
     fn image_height_deserializes_and_serializes_custom_value() {
-        let config: Config = toml::from_str("image_height = 12\ninline_image_height = 6").unwrap();
+        let config: Config = toml::from_str("image_height = 12\ninline_image_height = 6\nlatex_height = 10").unwrap();
         assert_eq!(config.image_height, 12);
         assert_eq!(config.effective_image_height(), 12);
         assert_eq!(config.inline_image_height, 6);
         assert_eq!(config.effective_inline_image_height(), 6);
+        assert_eq!(config.latex_height, 10);
+        assert_eq!(config.effective_latex_height(), 10);
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("image_height = 12"));
         assert!(serialized.contains("inline_image_height = 6"));
+        assert!(serialized.contains("latex_height = 10"));
     }
     #[test]
     fn image_height_has_border_safe_effective_minimum() {
@@ -1075,6 +1089,11 @@ mod tests {
             let config: Config = toml::from_str(&format!("inline_image_height = {configured_height}")).unwrap();
             assert_eq!(config.inline_image_height, configured_height);
             assert_eq!(config.effective_inline_image_height(), 3);
+        }
+        for configured_height in 0..=2 {
+            let config: Config = toml::from_str(&format!("latex_height = {configured_height}")).unwrap();
+            assert_eq!(config.latex_height, configured_height);
+            assert_eq!(config.effective_latex_height(), 3);
         }
     }
     #[test]

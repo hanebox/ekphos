@@ -166,6 +166,16 @@ impl App {
         let mut i = 0;
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
+            if remaining.starts_with('$') {
+                if let Some(math) = ekphos_core::markdown::inline_math_at(text, i) {
+                    if math.range.end <= target_pos {
+                        rendered_pos += math.source.width();
+                        i = math.range.end;
+                        continue;
+                    }
+                    break;
+                }
+            }
             if remaining.starts_with("!![") {
                 if let Some(bracket_end) = remaining[2..].find("](") {
                     let after_bracket = &remaining[2 + bracket_end + 2..];

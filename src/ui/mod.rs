@@ -161,6 +161,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
+    use unicode_width::UnicodeWidthStr;
     static NEXT_GOLDEN_ROOT: AtomicU64 = AtomicU64::new(0);
     struct GoldenApp {
         app: App,
@@ -344,6 +345,62 @@ mod tests {
         assert!(app.images.image_states.is_empty());
         assert!(app.memory_snapshot().image_decoded_bytes > 0);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn math_renders_without_content_focus_and_keeps_a_readable_terminal_fallback() {
+        let mut fixture = GoldenApp::with_content("# Math\n\nInline $E = mc^2$ stays in the prose.\n\n$$\n\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\n");
+        assert_eq!(fixture.app.state.focus, crate::app::Focus::Sidebar);
+        fixture.app.document.content_cursor = fixture.app.document.content_items.iter().position(|item| matches!(item, crate::app::ContentItem::MathBlock { .. })).unwrap();
+
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+        let fallback = terminal.backend().buffer();
+        let fallback_symbols = (0..fallback.area.height).flat_map(|y| (0..fallback.area.width).map(move |x| fallback[(x, y)].symbol())).collect::<String>();
+        assert!(fallback_symbols.contains('∑'), "{fallback_symbols}");
+        assert!(fallback_symbols.contains("\\frac"), "{fallback_symbols}");
+
+        fixture.app.images.picker = Some(Picker::halfblocks());
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fixture.app.image_has_background_work() && Instant::now() < deadline {
+            fixture.app.poll_pending_images();
+            std::thread::yield_now();
+        }
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+        assert_eq!(fixture.app.images.image_states.len(), 2);
+        assert!(fixture.app.images.image_states.keys().any(|key| key.starts_with("math:block:")));
+        assert!(fixture.app.images.image_states.keys().any(|key| key.starts_with("math:inline:")));
+        let memory = fixture.app.memory_snapshot();
+        assert!(memory.image_decoded_bytes > 0);
+        assert!(memory.image_protocol_bytes > 0);
+
+        fixture.app.images.picker = None;
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+        assert!(fixture.app.images.image_states.is_empty());
+    }
+
+    #[test]
+    fn links_after_rendered_inline_math_keep_their_click_target() {
+        let mut fixture = GoldenApp::with_content("# Math link\n\nBefore $\\frac{a}{b}$ [docs](https://example.test) after.\n");
+        fixture.app.images.picker = Some(Picker::halfblocks());
+        let backend = TestBackend::new(100, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fixture.app.image_has_background_work() && Instant::now() < deadline {
+            fixture.app.poll_pending_images();
+            std::thread::yield_now();
+        }
+        terminal.draw(|frame| render(frame, &mut fixture.app)).unwrap();
+
+        let item_index = fixture.app.document.content_items.iter().position(|item| item.source_line() == 2).unwrap();
+        let item_area = fixture.app.state.content_item_rects.iter().find_map(|(index, rect)| (*index == item_index).then_some(*rect)).unwrap();
+        let math_width = fixture.app.images.image_states.iter().find_map(|(key, state)| key.starts_with(&format!("math:inline:{item_index}:0:")).then_some(state.size.width)).unwrap();
+        let link_x = item_area.x + 2 + "Before ".width() as u16 + math_width + 1;
+        let rendered_col = content_item_click_col(&fixture.app, item_index, item_area, link_x, item_area.y).unwrap();
+        assert_eq!(fixture.app.find_clicked_link_at_col(item_index, rendered_col).as_deref(), Some("https://example.test"));
     }
 
     #[test]

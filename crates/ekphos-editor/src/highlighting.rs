@@ -171,6 +171,7 @@ impl Editor {
         let active_rows = self.active_highlight_rows();
         self.code_block_rows.retain(|row| active_rows.contains(row));
         let mut in_code_block = false;
+        let mut in_math_block = false;
         self.frontmatter_end = self.detect_frontmatter_end();
         for row in 0..active_rows.end {
             let line = self.buffer.line(row).unwrap_or("");
@@ -199,6 +200,19 @@ impl Editor {
                 }
                 continue;
             }
+            if ekphos_core::markdown::is_display_math_delimiter(line) {
+                in_math_block = !in_math_block;
+                if active_rows.contains(&row) {
+                    self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+                }
+                continue;
+            }
+            if in_math_block {
+                if active_rows.contains(&row) {
+                    self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+                }
+                continue;
+            }
             if active_rows.contains(&row) {
                 let line = line.to_owned();
                 self.highlight_line_markdown(row, &line);
@@ -213,6 +227,7 @@ impl Editor {
         self.highlight_index.clear_row_of_type(row, HighlightType::Blockquote);
         self.highlight_index.clear_row_of_type(row, HighlightType::ListMarker);
         self.highlight_index.clear_row_of_type(row, HighlightType::InlineCode);
+        self.highlight_index.clear_row_of_type(row, HighlightType::Math);
         self.highlight_index.clear_row_of_type(row, HighlightType::Link);
         self.highlight_index.clear_row_of_type(row, HighlightType::Bold);
         self.highlight_index.clear_row_of_type(row, HighlightType::Italic);
@@ -244,6 +259,10 @@ impl Editor {
             self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.code_color), HighlightType::CodeBlock));
             return;
         }
+        if ekphos_core::markdown::is_display_math_delimiter(&line) || self.is_in_math_block(row) {
+            self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+            return;
+        }
         self.code_block_rows.remove(&row);
         self.highlight_line_markdown(row, &line);
     }
@@ -258,6 +277,22 @@ impl Editor {
         }
         in_block
     }
+    pub(super) fn is_in_math_block(&self, row: usize) -> bool {
+        let mut in_block = false;
+        let mut in_code_block = false;
+        for source_row in 0..row {
+            if let Some(line) = self.buffer.line(source_row) {
+                if line.trim_start().starts_with("```") {
+                    in_code_block = !in_code_block;
+                    continue;
+                }
+                if !in_code_block && ekphos_core::markdown::is_display_math_delimiter(line) {
+                    in_block = !in_block;
+                }
+            }
+        }
+        in_block
+    }
     pub(super) fn recalc_code_blocks_from(&mut self, start_row: usize) {
         let active_rows = self.active_highlight_rows();
         self.code_block_rows.retain(|row| active_rows.contains(row));
@@ -266,6 +301,7 @@ impl Editor {
             return;
         }
         let mut in_code_block = if start_row > 0 { self.is_in_code_block(start_row - 1) } else { false };
+        let mut in_math_block = if start_row > 0 { self.is_in_math_block(start_row) } else { false };
         for row in start_row..active_rows.end {
             let line = match self.buffer.line(row) {
                 Some(l) => l.to_string(),
@@ -281,6 +317,7 @@ impl Editor {
             self.highlight_index.clear_row_of_type(row, HighlightType::Blockquote);
             self.highlight_index.clear_row_of_type(row, HighlightType::ListMarker);
             self.highlight_index.clear_row_of_type(row, HighlightType::InlineCode);
+            self.highlight_index.clear_row_of_type(row, HighlightType::Math);
             self.highlight_index.clear_row_of_type(row, HighlightType::Link);
             self.highlight_index.clear_row_of_type(row, HighlightType::Bold);
             self.highlight_index.clear_row_of_type(row, HighlightType::Italic);
@@ -296,6 +333,13 @@ impl Editor {
             if in_code_block {
                 self.code_block_rows.insert(row);
                 self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.code_color), HighlightType::CodeBlock));
+            } else if ekphos_core::markdown::is_display_math_delimiter(&line) {
+                in_math_block = !in_math_block;
+                self.code_block_rows.remove(&row);
+                self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+            } else if in_math_block {
+                self.code_block_rows.remove(&row);
+                self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
             } else {
                 self.code_block_rows.remove(&row);
                 self.highlight_line_markdown(row, &line);
@@ -331,6 +375,7 @@ impl Editor {
         }
         self.highlight_list_marker(row, line);
         self.highlight_inline_code(row, line);
+        self.highlight_math(row, line);
         self.highlight_links(row, line);
         self.highlight_bold(row, line);
         self.highlight_italic(row, line);
@@ -373,6 +418,17 @@ impl Editor {
                 open = Some(col);
             }
         }
+    }
+    pub(super) fn highlight_math(&mut self, row: usize, line: &str) {
+        if ekphos_core::markdown::display_math_body(line).is_some() {
+            self.highlight_index.insert(HighlightRange::new(row, 0, line.chars().count(), Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+            return;
+        }
+        ekphos_core::markdown::visit_inline_math(line, |expression| {
+            let start = line[..expression.range.start].chars().count();
+            let end = start + line[expression.range].chars().count();
+            self.highlight_index.insert(HighlightRange::new(row, start, end, Style::default().fg(self.link_color).add_modifier(Modifier::ITALIC), HighlightType::Math).with_priority(2));
+        });
     }
     pub(super) fn highlight_links(&mut self, row: usize, line: &str) {
         let mut cursor = 0;
@@ -446,7 +502,7 @@ impl Editor {
         }
     }
     pub(super) fn is_position_highlighted(&self, row: usize, col: usize) -> bool {
-        self.highlight_index.get_row(row).iter().any(|h| col >= h.start_col && col < h.end_col && (h.highlight_type == HighlightType::InlineCode || h.highlight_type == HighlightType::Link))
+        self.highlight_index.get_row(row).iter().any(|h| col >= h.start_col && col < h.end_col && matches!(h.highlight_type, HighlightType::InlineCode | HighlightType::Link | HighlightType::Math))
     }
 
     pub fn clear_search_highlights(&mut self) {

@@ -93,6 +93,25 @@ fn parse_document(document: &DocumentSnapshot, frontmatter: Option<&CompactFront
             line_index += 1;
             continue;
         }
+        if let Some(body) = ekphos_core::markdown::display_math_body(line) {
+            parsed.push_item(ContentItem::MathBlock { range: range_for_slice(document, line_index, body), source_line: line_index as u32, end_line: line_index as u32 }, document, wiki_exists);
+            line_index += 1;
+            continue;
+        }
+        if ekphos_core::markdown::is_display_math_delimiter(line) {
+            let opening_line = line_index;
+            let closing_line = ((opening_line + 1)..document.line_count()).find(|candidate| document.line(*candidate).is_some_and(ekphos_core::markdown::is_display_math_delimiter));
+            if let Some(closing_line) = closing_line {
+                let start = document.line_range(opening_line + 1).map_or_else(|| document.line_range(opening_line).map_or(0, DocumentRange::end), DocumentRange::start);
+                let end = closing_line.checked_sub(1).and_then(|line| document.line_range(line)).map_or(start, DocumentRange::end);
+                let range = DocumentRange::new(start, end);
+                if !document.slice(range).trim().is_empty() {
+                    parsed.push_item(ContentItem::MathBlock { range, source_line: opening_line as u32, end_line: closing_line as u32 }, document, wiki_exists);
+                    line_index = closing_line + 1;
+                    continue;
+                }
+            }
+        }
         if let Some(path) = standalone_image_path(line) {
             parsed.push_item(ContentItem::Image { path: range_for_slice(document, line_index, path), source_line: line_index as u32 }, document, wiki_exists);
             line_index += 1;
@@ -805,6 +824,16 @@ impl App {
         let mut i = 0;
         while i < target_pos && i < text.len() {
             let remaining = &text[i..];
+            if remaining.starts_with('$') {
+                if let Some(math) = ekphos_core::markdown::inline_math_at(text, i) {
+                    if math.range.end <= target_pos {
+                        rendered_pos += math.source.width();
+                        i = math.range.end;
+                        continue;
+                    }
+                    break;
+                }
+            }
             if remaining.starts_with("!![") {
                 if let Some(bracket_end) = remaining[2..].find("](") {
                     let after_bracket = &remaining[2 + bracket_end + 2..];
@@ -1106,5 +1135,22 @@ mod phase6_tests {
             })
             .collect();
         assert_eq!(values, [("tags", "[one]"), ("date", "2026-08-21")]);
+    }
+
+    #[test]
+    fn display_math_blocks_keep_compact_snapshot_ranges_and_skip_code() {
+        let source = "Before\n$$\n\\int_0^1 x^2 \\, dx\n= \\frac{1}{3}\n$$\n$$e^{i\\pi}+1=0$$\n```md\n$$not math$$\n```\nAfter\n";
+        let document = DocumentSnapshot::new(Arc::from(source));
+        let parsed = parse_document(&document, None, 0, true, true, &|_| false);
+        let blocks: Vec<(&str, u32, u32)> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::MathBlock { range, source_line, end_line } => Some((document.slice(*range), *source_line, *end_line)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, [("\\int_0^1 x^2 \\, dx\n= \\frac{1}{3}", 1, 4), ("e^{i\\pi}+1=0", 5, 5)]);
+        assert!(parsed.items.iter().any(|item| matches!(item, ContentItem::CodeLine { range, .. } if document.slice(*range) == "$$not math$$")));
     }
 }
