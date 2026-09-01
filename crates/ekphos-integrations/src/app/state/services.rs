@@ -8,6 +8,8 @@ pub struct BackgroundActivity {
 
 impl App {
     pub fn poll_background(&mut self) -> BackgroundActivity {
+        let base_changed = self.poll_base_evaluation();
+        let structured_changed = self.poll_structured_vault();
         let pending_images = self.pending_image_count();
         let syntax_status = self.syntax_service_status();
         let indexing = self.search.indexing_in_progress;
@@ -20,7 +22,9 @@ impl App {
         let highlight_changed = self.poll_highlight_worker();
         let cleared = std::mem::take(&mut self.state.needs_full_clear);
         let toast_changed = self.tick_toast();
-        let redraw = images_changed
+        let redraw = base_changed
+            || structured_changed
+            || images_changed
             || self.pending_image_count() < pending_images
             || syntax_changed
             || self.syntax_service_status() != syntax_status
@@ -31,7 +35,11 @@ impl App {
             || cleared
             || toast_changed;
         let highlight_work = self.has_highlight_work();
-        let has_work = self.image_has_background_work()
+        let base_work = self.base_evaluation_pending();
+        let structured_work = self.editor.mode == Mode::Normal && self.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base);
+        let has_work = structured_work
+            || base_work
+            || self.image_has_background_work()
             || self.syntax_service_status() == crate::syntax_service::SyntaxServiceStatus::Loading
             || self.editor.mouse_button_held
             || self.is_content_search_in_progress()
@@ -39,10 +47,12 @@ impl App {
             || self.graph_has_background_work()
             || highlight_work
             || self.state.toast.is_some();
-        let poll_timeout = if highlight_work {
+        let poll_timeout = if highlight_work || base_work {
             std::time::Duration::from_millis(1)
         } else if self.editor.mouse_button_held {
             std::time::Duration::from_millis(33)
+        } else if structured_work {
+            std::time::Duration::from_millis(250)
         } else {
             std::time::Duration::from_millis(100)
         };

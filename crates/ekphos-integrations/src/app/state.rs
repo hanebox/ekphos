@@ -232,6 +232,7 @@ impl AppBuilder {
         let mut app = App {
             vault: VaultState::new(ekphos_vault::Vault::default(), list_state),
             document: DocumentState::new(frontmatter_hidden),
+            structured: StructuredDocumentState::new(dependencies.clock.now()),
             editor: EditorSession::new(editor, config.floating_cursor),
             search: SearchState::new(),
             graph: GraphState::default(),
@@ -288,6 +289,7 @@ mod memory;
 pub use memory::*;
 mod search_state;
 mod services;
+mod structured;
 mod ui_state;
 mod vault;
 fn get_image_cache_dir(cache_dir: &std::path::Path) -> PathBuf {

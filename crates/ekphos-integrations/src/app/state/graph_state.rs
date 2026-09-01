@@ -10,6 +10,7 @@ impl App {
             .notes
             .iter()
             .enumerate()
+            .filter(|(_, note)| note.kind.is_markdown())
             .filter_map(|(note_index, note)| {
                 let absolute_path = note.file_path.clone()?;
                 let fingerprint = self.vault.fingerprint(note.id)?;

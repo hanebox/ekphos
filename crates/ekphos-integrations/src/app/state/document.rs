@@ -231,6 +231,23 @@ impl App {
     }
 
     pub fn update_content_items(&mut self) {
+        if self.active_document_kind().is_some_and(|kind| !kind.is_markdown()) {
+            self.document.content_items.clear();
+            self.document.document_tables.clear();
+            self.document.document_links.clear();
+            self.document.document_link_ranges.clear();
+            self.document.outline.clear();
+            self.document.document_parse_key = None;
+            self.document.content_cursor = 0;
+            self.document.content_scroll_offset = 0;
+            self.document.selected_link_index = 0;
+            self.state.content_item_rects.clear();
+            self.state.inline_image_rects.clear();
+            self.evict_document_services();
+            self.refresh_structured_document();
+            return;
+        }
+        self.clear_structured_document();
         let parse_key = (self.document.document_generation, self.vault.catalog_generation, self.document.frontmatter_hidden, self.state.config.show_tags);
         if self.document.active_document.is_some() && self.document.document_parse_key == Some(parse_key) {
             return;

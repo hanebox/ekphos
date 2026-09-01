@@ -1,0 +1,16 @@
+[package]
+name = "ekphos-bases"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Obsidian Bases parser and query engine for Ekphos"
+
+[dependencies]
+chrono.workspace = true
+ekphos-core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+

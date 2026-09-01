@@ -108,6 +108,7 @@ impl App {
         self.vault
             .notes
             .iter()
+            .filter(|note| note.kind.is_markdown())
             .filter_map(|note| {
                 let absolute_path = note.file_path.clone()?;
                 let relative_path = absolute_path.strip_prefix(&notes_dir).ok()?.to_string_lossy().to_string().into_boxed_str();
@@ -123,7 +124,7 @@ impl App {
         search::search_sources(&sources, query, self.search.search_index.as_deref(), || false).unwrap_or_default()
     }
     fn content_search_sources(&self) -> Arc<[search::ContentSearchSource]> {
-        self.vault.notes.iter().filter_map(|note| Some(search::ContentSearchSource { note_id: note.id, title: note.title.clone().into_boxed_str(), absolute_path: note.file_path.clone()? })).collect::<Vec<_>>().into()
+        self.vault.notes.iter().filter(|note| note.kind.is_markdown()).filter_map(|note| Some(search::ContentSearchSource { note_id: note.id, title: note.title.clone().into_boxed_str(), absolute_path: note.file_path.clone()? })).collect::<Vec<_>>().into()
     }
     fn search_body(&self, note_id: NoteId) -> Option<Arc<str>> {
         if self.document.active_note_id == Some(note_id) {

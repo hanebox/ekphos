@@ -742,11 +742,13 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs",
+ "ekphos-canvas",
  "ekphos-core",
  "ekphos-editor",
  "ekphos-graph",
  "ekphos-integrations",
  "ekphos-search",
+ "ekphos-vault",
  "ekphos-vim",
  "image",
  "libc",
@@ -755,6 +757,24 @@ dependencies = [
  "tikv-jemallocator",
  "toml",
  "unicode-width",
+]
+
+[[package]]
+name = "ekphos-bases"
+version = "0.25.10"
+dependencies = [
+ "chrono",
+ "ekphos-core",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "ekphos-canvas"
+version = "0.25.10"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -792,6 +812,8 @@ dependencies = [
  "clipboard-rs",
  "crossterm",
  "dirs",
+ "ekphos-bases",
+ "ekphos-canvas",
  "ekphos-core",
  "ekphos-editor",
  "ekphos-graph",
@@ -807,9 +829,11 @@ dependencies = [
  "ratex-render",
  "ratex-types",
  "serde",
+ "serde_yaml",
  "syntect",
  "tikv-jemalloc-sys",
  "toml",
+ "unicode-segmentation",
  "unicode-width",
  "ureq",
 ]

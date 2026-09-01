@@ -49,6 +49,7 @@ pub struct BlockInsertState {
 #[derive(Debug, Clone)]
 pub struct Note {
     pub id: NoteId,
+    pub kind: ekphos_vault::VaultFileKind,
     pub title: String,
     pub file_path: Option<PathBuf>,
     pub file_size: u64,

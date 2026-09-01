@@ -1,0 +1,13 @@
+[package]
+name = "ekphos-canvas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "JSON Canvas 1.0 model and validation for Ekphos"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

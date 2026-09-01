@@ -3,12 +3,189 @@ use super::*;
 /// Returns true if the app should quit.
 pub(super) fn handle_normal_mode(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     app.state.status_message = None; // Clear old status message on new keystroke
+    if handle_structured_document_key(app, key) {
+        app.state.keymap.reset_pending();
+        return false;
+    }
     let available: Vec<_> = AppCommand::ALL.into_iter().filter(|command| app_command_available(app, *command)).collect();
     let resolution = app.state.keymap.resolve(key, |command| available.contains(&command));
     match resolution {
         KeyResolution::Command(command) => execute_app_command(app, command),
         KeyResolution::NoMatch | KeyResolution::Pending => false,
     }
+}
+
+fn handle_structured_document_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    if app.state.focus != Focus::Content {
+        return false;
+    }
+    match app.active_document_kind() {
+        Some(ekphos_vault::VaultFileKind::Base) => {
+            if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) {
+                return false;
+            }
+            match key.code {
+                KeyCode::Left => app.base_move_column(-1),
+                KeyCode::Right => app.base_move_column(1),
+                KeyCode::PageUp => app.base_move_selection(-10),
+                KeyCode::PageDown => app.base_move_selection(10),
+                KeyCode::Char('[') => app.base_change_view(-1),
+                KeyCode::Char(']') => app.base_change_view(1),
+                _ => return false,
+            }
+        }
+        Some(ekphos_vault::VaultFileKind::Canvas) => {
+            let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            let command_modifier = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
+            if app.canvas_editor_active() {
+                let multiline = app.structured.canvas.editor.as_ref().is_some_and(|editor| editor.field.multiline());
+                match key.code {
+                    KeyCode::Esc => {
+                        app.canvas_cancel_node_edit();
+                    }
+                    KeyCode::Enter if command_modifier || !multiline => {
+                        app.canvas_commit_node_edit();
+                    }
+                    KeyCode::Enter => {
+                        app.canvas_edit_insert("\n");
+                    }
+                    KeyCode::Char('s') if command_modifier => {
+                        app.canvas_commit_node_edit();
+                    }
+                    KeyCode::Backspace => {
+                        app.canvas_edit_backspace();
+                    }
+                    KeyCode::Delete => {
+                        app.canvas_edit_delete();
+                    }
+                    KeyCode::Left => {
+                        app.canvas_edit_move_horizontal(-1);
+                    }
+                    KeyCode::Right => {
+                        app.canvas_edit_move_horizontal(1);
+                    }
+                    KeyCode::Up => {
+                        app.canvas_edit_move_vertical(-1);
+                    }
+                    KeyCode::Down => {
+                        app.canvas_edit_move_vertical(1);
+                    }
+                    KeyCode::PageUp => {
+                        app.canvas_edit_move_page(-1);
+                    }
+                    KeyCode::PageDown => {
+                        app.canvas_edit_move_page(1);
+                    }
+                    KeyCode::Home if command_modifier => {
+                        app.canvas_edit_move_document_boundary(false);
+                    }
+                    KeyCode::End if command_modifier => {
+                        app.canvas_edit_move_document_boundary(true);
+                    }
+                    KeyCode::Home => {
+                        app.canvas_edit_move_line_boundary(false);
+                    }
+                    KeyCode::End => {
+                        app.canvas_edit_move_line_boundary(true);
+                    }
+                    KeyCode::Tab if !shifted => {
+                        app.canvas_edit_insert("    ");
+                    }
+                    KeyCode::Char(character) if !command_modifier && !alt => {
+                        let mut encoded = [0; 4];
+                        app.canvas_edit_insert(character.encode_utf8(&mut encoded));
+                    }
+                    _ => {}
+                }
+                return true;
+            }
+            if command_modifier {
+                match key.code {
+                    KeyCode::Char('z' | 'Z') if shifted => {
+                        app.canvas_redo();
+                        return true;
+                    }
+                    KeyCode::Char('z') => {
+                        app.canvas_undo();
+                        return true;
+                    }
+                    KeyCode::Char('y') => {
+                        app.canvas_redo();
+                        return true;
+                    }
+                    _ => return false,
+                }
+            }
+            if alt {
+                match (shifted, key.code) {
+                    (true, KeyCode::Left) => app.canvas_resize_selected(-20, 0),
+                    (true, KeyCode::Right) => app.canvas_resize_selected(20, 0),
+                    (true, KeyCode::Up) => app.canvas_resize_selected(0, -40),
+                    (true, KeyCode::Down) => app.canvas_resize_selected(0, 40),
+                    (false, KeyCode::Left) => app.canvas_nudge_selected(-20, 0),
+                    (false, KeyCode::Right) => app.canvas_nudge_selected(20, 0),
+                    (false, KeyCode::Up) => app.canvas_nudge_selected(0, -40),
+                    (false, KeyCode::Down) => app.canvas_nudge_selected(0, 40),
+                    _ => return false,
+                };
+                return true;
+            }
+            if app.canvas_interaction_active() && key.code == KeyCode::Esc {
+                app.canvas_cancel_interaction();
+                return true;
+            }
+            if matches!(app.structured.canvas.interaction, crate::app::CanvasInteraction::Connecting { .. }) {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.canvas_cancel_interaction();
+                    }
+                    KeyCode::Enter => {
+                        app.canvas_finish_keyboard_connect();
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => app.canvas_move_selection(-1.0, 0.0),
+                    KeyCode::Right | KeyCode::Char('l') => app.canvas_move_selection(1.0, 0.0),
+                    KeyCode::Up | KeyCode::Char('k') => app.canvas_move_selection(0.0, -1.0),
+                    KeyCode::Down | KeyCode::Char('j') => app.canvas_move_selection(0.0, 1.0),
+                    _ => return false,
+                }
+                return true;
+            }
+            match key.code {
+                KeyCode::Left if shifted => app.canvas_pan(-120.0, 0.0),
+                KeyCode::Right if shifted => app.canvas_pan(120.0, 0.0),
+                KeyCode::Up if shifted => app.canvas_pan(0.0, -120.0),
+                KeyCode::Down if shifted => app.canvas_pan(0.0, 120.0),
+                KeyCode::Left | KeyCode::Char('h') => app.canvas_move_selection(-1.0, 0.0),
+                KeyCode::Right | KeyCode::Char('l') => app.canvas_move_selection(1.0, 0.0),
+                KeyCode::Up | KeyCode::Char('k') => app.canvas_move_selection(0.0, -1.0),
+                KeyCode::Down | KeyCode::Char('j') => app.canvas_move_selection(0.0, 1.0),
+                KeyCode::Char('+') | KeyCode::Char('=') => app.canvas_zoom(1.2),
+                KeyCode::Char('-') | KeyCode::Char('_') => app.canvas_zoom(1.0 / 1.2),
+                KeyCode::Char('f') => app.canvas_fit(),
+                KeyCode::Char('c') => app.canvas_begin_connect(None, None),
+                KeyCode::Char('o') => {
+                    app.open_selected_canvas_node();
+                }
+                KeyCode::Char('E') => app.enter_edit_mode(),
+                KeyCode::Char('[') => app.canvas_cycle_edge(-1),
+                KeyCode::Char(']') => app.canvas_cycle_edge(1),
+                KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('x') => {
+                    app.canvas_delete_selected_edge();
+                }
+                KeyCode::Esc if app.structured.canvas.selected_edge.is_some() => {
+                    app.structured.canvas.selected_edge = None;
+                    app.state.status_message = Some("Connection deselected".to_string());
+                }
+                KeyCode::Enter if app.structured.canvas.selected_edge.is_some() => {
+                    app.state.status_message = Some("Press Delete to detach this connection".to_string());
+                }
+                _ => return false,
+            }
+        }
+        Some(ekphos_vault::VaultFileKind::Markdown) | None => return false,
+    }
+    true
 }
 
 pub(super) fn app_command_available(app: &App, command: AppCommand) -> bool {
@@ -116,7 +293,11 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
             Focus::Sidebar => app.next_sidebar_item(),
             Focus::Outline => app.next_outline(),
             Focus::Content => {
-                if app.editor.floating_cursor_mode {
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    app.base_move_selection(1);
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    app.canvas_move_selection(0.0, 1.0);
+                } else if app.editor.floating_cursor_mode {
                     app.floating_move_down();
                 } else {
                     app.next_content_line();
@@ -128,7 +309,11 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
             Focus::Sidebar => app.previous_sidebar_item(),
             Focus::Outline => app.previous_outline(),
             Focus::Content => {
-                if app.editor.floating_cursor_mode {
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    app.base_move_selection(-1);
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    app.canvas_move_selection(0.0, -1.0);
+                } else if app.editor.floating_cursor_mode {
                     app.floating_move_up();
                 } else {
                     app.previous_content_line();
@@ -138,7 +323,11 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         },
         AppCommand::Activate => match app.state.focus {
             Focus::Content => {
-                if !open_selected_content_target(app) {
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    app.open_selected_base_row();
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    app.canvas_activate_selected_node();
+                } else if !open_selected_content_target(app) {
                     app.open_current_image();
                 }
             }
@@ -154,7 +343,11 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         }
         AppCommand::OpenSelected => {
             if app.state.focus == Focus::Content {
-                if !open_selected_content_target(app) {
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    app.open_selected_base_row();
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    app.canvas_activate_selected_node();
+                } else if !open_selected_content_target(app) {
                     app.open_current_image();
                 }
             } else if app.state.focus == Focus::Outline {
@@ -164,9 +357,19 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
         AppCommand::ShowHelp => app.state.dialog = DialogState::Help,
         AppCommand::SidebarSearch => app.activate_sidebar_search(),
         AppCommand::CycleSort => app.cycle_sort_mode(),
-        AppCommand::ToggleEditorMode => switch_editing_mode(app),
+        AppCommand::ToggleEditorMode => {
+            if app.state.focus == Focus::Content && app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                app.canvas_begin_node_edit();
+            } else {
+                switch_editing_mode(app);
+            }
+        }
         AppCommand::ContentAction => {
-            if let Some(crate::app::ContentItem::TaskItem { .. }) = app.document.content_items.get(app.document.content_cursor) {
+            if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                app.open_selected_base_row();
+            } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                app.canvas_activate_selected_node();
+            } else if let Some(crate::app::ContentItem::TaskItem { .. }) = app.document.content_items.get(app.document.content_cursor) {
                 if app.is_task_checkbox_selected() || !open_selected_content_target(app) {
                     app.toggle_current_task();
                 }
@@ -204,16 +407,30 @@ pub(super) fn execute_app_command(app: &mut App, command: AppCommand) -> bool {
             Focus::Sidebar => app.goto_first_sidebar_item(),
             Focus::Outline => app.goto_first_outline(),
             Focus::Content => {
-                app.goto_first_content_line();
-                app.sync_outline_to_content();
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    app.structured.base.selected_row = 0;
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    app.structured.canvas.selected_node = 0;
+                } else {
+                    app.goto_first_content_line();
+                    app.sync_outline_to_content();
+                }
             }
         },
         AppCommand::GoLast => match app.state.focus {
             Focus::Sidebar => app.goto_last_sidebar_item(),
             Focus::Outline => app.goto_last_outline(),
             Focus::Content => {
-                app.goto_last_content_line();
-                app.sync_outline_to_content();
+                if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Base) {
+                    let count = app.structured.base.result.as_ref().map(|result| result.groups.iter().map(|group| group.rows.len()).sum::<usize>()).unwrap_or(0);
+                    app.structured.base.selected_row = count.saturating_sub(1);
+                } else if app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) {
+                    let count = app.structured.canvas.document.as_ref().map_or(0, |canvas| canvas.nodes.len());
+                    app.structured.canvas.selected_node = count.saturating_sub(1);
+                } else {
+                    app.goto_last_content_line();
+                    app.sync_outline_to_content();
+                }
             }
         },
         AppCommand::CancelCut => app.clear_cut_buffer(),

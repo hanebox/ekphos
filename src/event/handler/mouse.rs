@@ -69,6 +69,17 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEv
     }
     if app.editor.mode == Mode::Normal && app.state.dialog == DialogState::None && !app.state.show_welcome {
         let in_content_area = mouse_x >= app.state.content_area.x && mouse_x < app.state.content_area.x + app.state.content_area.width && mouse_y >= app.state.content_area.y && mouse_y < app.state.content_area.y + app.state.content_area.height;
+        if !in_content_area && app.canvas_editor_active() && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) && !app.canvas_commit_node_edit() {
+            return;
+        }
+        if !in_content_area && app.active_document_kind() == Some(ekphos_vault::VaultFileKind::Canvas) && matches!(mouse.kind, MouseEventKind::Moved) {
+            app.structured.canvas.hovered_node = None;
+            app.structured.canvas.hovered_edge = None;
+            app.structured.canvas.hovered_resize = None;
+        }
+        if (in_content_area || app.canvas_interaction_active()) && handle_structured_document_mouse(app, mouse) {
+            return;
+        }
         match mouse.kind {
             MouseEventKind::Moved => {
                 if in_content_area {
@@ -156,8 +167,138 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEv
     }
 }
 
+fn handle_structured_document_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
+    match app.active_document_kind() {
+        Some(ekphos_vault::VaultFileKind::Base) => match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if app.structured.base.column_left_rect.is_some_and(|rect| rect.contains(pointer)) {
+                    app.base_move_column(-1);
+                    app.state.focus = Focus::Content;
+                } else if app.structured.base.column_right_rect.is_some_and(|rect| rect.contains(pointer)) {
+                    app.base_move_column(1);
+                    app.state.focus = Focus::Content;
+                } else if let Some((row, _)) = app.structured.base.row_rects.iter().find(|(_, rect)| rect.contains(pointer)).copied() {
+                    app.structured.base.selected_row = row;
+                    app.state.focus = Focus::Content;
+                }
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                app.base_move_selection(1);
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                app.base_move_selection(-1);
+                true
+            }
+            _ => false,
+        },
+        Some(ekphos_vault::VaultFileKind::Canvas) => match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if matches!(app.structured.canvas.interaction, crate::app::CanvasInteraction::Connecting { .. }) {
+                    if let Some((node, rect)) = app.structured.canvas.node_rects.iter().rev().find(|(_, rect)| rect.contains(pointer)).copied() {
+                        app.canvas_end_pointer_interaction(Some((node, Some(canvas_side_at(rect, pointer)))));
+                        return true;
+                    }
+                }
+                if let Some((side, _)) = app.structured.canvas.handle_rects.iter().find(|(_, rect)| rect.contains(pointer)).copied() {
+                    app.canvas_begin_connect(Some(side), Some((mouse.column, mouse.row)));
+                    return true;
+                }
+                if let Some((handle, _)) = app.structured.canvas.resize_rects.iter().find(|(_, rect)| rect.contains(pointer)).copied() {
+                    app.canvas_begin_node_resize(app.structured.canvas.selected_node, handle, (mouse.column, mouse.row));
+                    return true;
+                }
+                if let Some(editor_node) = app.structured.canvas.editor.as_ref().map(|editor| editor.node) {
+                    if app.canvas_editor_contains(pointer) {
+                        app.canvas_edit_place_cursor(pointer);
+                        return true;
+                    }
+                    let inside_node = app.structured.canvas.node_rects.iter().any(|(node, rect)| *node == editor_node && rect.contains(pointer));
+                    if inside_node || !app.canvas_commit_node_edit() {
+                        return true;
+                    }
+                }
+                if let Some((node, _)) = app.structured.canvas.node_rects.iter().rev().find(|(_, rect)| rect.contains(pointer)).copied() {
+                    let double_click = app.structured.canvas.last_click.is_some_and(|(when, previous)| previous == node && when.elapsed() < std::time::Duration::from_millis(400));
+                    app.structured.canvas.last_click = Some((std::time::Instant::now(), node));
+                    app.canvas_begin_node_drag(node, (mouse.column, mouse.row));
+                    if double_click {
+                        app.structured.canvas.interaction = crate::app::CanvasInteraction::Idle;
+                        app.canvas_activate_selected_node();
+                    }
+                    return true;
+                }
+                if let Some((edge, _)) = app.structured.canvas.edge_cells.iter().rev().find(|(_, position)| *position == pointer).copied() {
+                    app.canvas_select_edge(edge);
+                    return true;
+                }
+                if app.structured.canvas.view_area.contains(pointer) {
+                    app.canvas_begin_pan((mouse.column, mouse.row));
+                }
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                app.structured.canvas.hovered_node = app.structured.canvas.node_rects.iter().rev().find(|(_, rect)| rect.contains(pointer)).map(|(node, _)| *node);
+                app.canvas_pointer_drag_with_aspect((mouse.column, mouse.row), mouse.modifiers.contains(KeyModifiers::SHIFT));
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                let target = app.structured.canvas.node_rects.iter().rev().find(|(_, rect)| rect.contains(pointer)).map(|(node, rect)| (*node, Some(canvas_side_at(*rect, pointer))));
+                app.canvas_end_pointer_interaction(target);
+                true
+            }
+            MouseEventKind::Moved => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                app.structured.canvas.hovered_node = app.structured.canvas.node_rects.iter().rev().find(|(_, rect)| rect.contains(pointer)).map(|(node, _)| *node);
+                app.structured.canvas.hovered_edge = if app.structured.canvas.hovered_node.is_none() { app.structured.canvas.edge_cells.iter().rev().find(|(_, position)| *position == pointer).map(|(edge, _)| *edge) } else { None };
+                app.structured.canvas.hovered_resize = app.structured.canvas.resize_rects.iter().find(|(_, rect)| rect.contains(pointer)).map(|(handle, _)| (*handle, pointer));
+                true
+            }
+            MouseEventKind::ScrollUp => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if app.canvas_editor_contains(pointer) {
+                    app.canvas_edit_scroll(-3);
+                } else {
+                    app.canvas_zoom_at(1.1, Some((mouse.column, mouse.row)));
+                }
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                let pointer = ratatui::layout::Position::new(mouse.column, mouse.row);
+                if app.canvas_editor_contains(pointer) {
+                    app.canvas_edit_scroll(3);
+                } else {
+                    app.canvas_zoom_at(1.0 / 1.1, Some((mouse.column, mouse.row)));
+                }
+                true
+            }
+            _ => false,
+        },
+        Some(ekphos_vault::VaultFileKind::Markdown) | None => false,
+    }
+}
+
+fn canvas_side_at(rect: ratatui::layout::Rect, pointer: ratatui::layout::Position) -> ekphos_canvas::CanvasSide {
+    let distances = [
+        (pointer.y.saturating_sub(rect.y), ekphos_canvas::CanvasSide::Top),
+        (rect.right().saturating_sub(1).saturating_sub(pointer.x), ekphos_canvas::CanvasSide::Right),
+        (rect.bottom().saturating_sub(1).saturating_sub(pointer.y), ekphos_canvas::CanvasSide::Bottom),
+        (pointer.x.saturating_sub(rect.x), ekphos_canvas::CanvasSide::Left),
+    ];
+    distances.into_iter().min_by_key(|(distance, _)| *distance).map(|(_, side)| side).unwrap_or(ekphos_canvas::CanvasSide::Right)
+}
+
 pub(super) fn handle_paste_event(app: &mut App, text: String) {
     app.state.keymap.reset_pending();
+    if app.canvas_editor_active() {
+        app.canvas_edit_insert(&text);
+        return;
+    }
     if app.editor.mode != Mode::Edit {
         return;
     }

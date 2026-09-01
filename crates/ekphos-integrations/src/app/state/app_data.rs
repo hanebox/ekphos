@@ -1,11 +1,14 @@
 use super::*;
 
 use std::ops::{Deref, DerefMut};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub struct App {
     pub(crate) dependencies: AppDependencies,
     pub vault: VaultState,
     pub document: DocumentState,
+    pub structured: StructuredDocumentState,
     pub editor: EditorSession,
     pub search: SearchState,
     pub graph: GraphState,
@@ -13,6 +16,569 @@ pub struct App {
     pub images: ImageService,
     pub state: UiState,
     pub(crate) memory_reclaim_pending: bool,
+}
+
+/// Parsed state for non-Markdown documents. It is kept separate from
+/// `DocumentState` so Bases and Canvas never masquerade as Markdown content.
+pub struct StructuredDocumentState {
+    pub base: BaseViewState,
+    pub canvas: CanvasViewState,
+    pub(crate) parse_key: Option<(NoteId, u64, u64)>,
+    pub(crate) last_vault_poll: std::time::Instant,
+    pub(crate) vault_signature: u64,
+    pub(crate) base_worker: super::structured::BaseWorker,
+}
+
+impl StructuredDocumentState {
+    pub(crate) fn new(now: std::time::Instant) -> Self {
+        Self { base: BaseViewState::default(), canvas: CanvasViewState::default(), parse_key: None, last_vault_poll: now, vault_signature: 0, base_worker: super::structured::BaseWorker::new() }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BaseViewState {
+    pub(crate) compiled: Option<ekphos_bases::CompiledBase>,
+    pub(crate) corpus: ekphos_bases::Corpus,
+    pub result: Option<ekphos_bases::BaseResult>,
+    pub error: Option<String>,
+    pub selected_row: usize,
+    pub row_offset: usize,
+    pub column_offset: usize,
+    pub view_index: usize,
+    pub view_count: usize,
+    pub loading: bool,
+    pub(crate) request_generation: u64,
+    pub row_rects: Vec<(usize, Rect)>,
+    pub column_left_rect: Option<Rect>,
+    pub column_right_rect: Option<Rect>,
+}
+
+#[derive(Debug)]
+pub struct CanvasViewState {
+    pub document: Option<ekphos_canvas::Canvas>,
+    pub diagnostics: Vec<String>,
+    pub error: Option<String>,
+    pub selected_node: usize,
+    pub selected_edge: Option<usize>,
+    pub hovered_node: Option<usize>,
+    pub hovered_edge: Option<usize>,
+    pub viewport_x: f64,
+    pub viewport_y: f64,
+    pub zoom: f64,
+    pub needs_fit: bool,
+    pub view_area: Rect,
+    pub node_rects: Vec<(usize, Rect)>,
+    pub edge_cells: Vec<(usize, ratatui::layout::Position)>,
+    pub handle_rects: Vec<(ekphos_canvas::CanvasSide, Rect)>,
+    pub resize_rects: Vec<(CanvasResizeHandle, Rect)>,
+    pub hovered_resize: Option<(CanvasResizeHandle, ratatui::layout::Position)>,
+    pub interaction: CanvasInteraction,
+    pub editor: Option<CanvasNodeEditor>,
+    pub last_click: Option<(std::time::Instant, usize)>,
+    pub(crate) undo: Vec<ekphos_canvas::Canvas>,
+    pub(crate) redo: Vec<ekphos_canvas::Canvas>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasNodeEditField {
+    Text,
+    Link,
+    GroupLabel,
+}
+
+impl CanvasNodeEditField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Link => "link",
+            Self::GroupLabel => "group name",
+        }
+    }
+
+    pub fn multiline(self) -> bool {
+        self == Self::Text
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasNodeEditor {
+    pub node: usize,
+    pub field: CanvasNodeEditField,
+    pub draft: String,
+    pub cursor: usize,
+    pub viewport_width: usize,
+    pub viewport_height: usize,
+    pub scroll_row: usize,
+    pub scroll_column: usize,
+    pub preferred_column: Option<usize>,
+    pub follow_cursor: bool,
+    pub editor_area: Rect,
+    pub hit_rows: Vec<CanvasEditorHitRow>,
+    pub total_rows: usize,
+    pub caret_row: usize,
+    pub caret_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasEditorHitRow {
+    pub area: Rect,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasEditorRenderRow {
+    pub area: Rect,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasEditorLayout {
+    pub rows: Vec<CanvasEditorRenderRow>,
+    pub caret: Option<ratatui::layout::Position>,
+    pub hidden_before: bool,
+    pub hidden_after: bool,
+    pub caret_before: bool,
+    pub caret_after: bool,
+    pub multiline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CanvasVisualRow {
+    start: usize,
+    end: usize,
+}
+
+impl CanvasNodeEditor {
+    pub fn new(node: usize, field: CanvasNodeEditField, draft: String) -> Self {
+        let cursor = draft.len();
+        Self { node, field, draft, cursor, viewport_width: 1, viewport_height: 1, scroll_row: 0, scroll_column: 0, preferred_column: None, follow_cursor: true, editor_area: Rect::default(), hit_rows: Vec::new(), total_rows: 1, caret_row: 0, caret_column: 0 }
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        self.normalize_cursor();
+        let mut text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if !self.field.multiline() {
+            text = text.replace('\n', " ");
+        }
+        self.draft.insert_str(self.cursor, &text);
+        self.cursor += text.len();
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn backspace(&mut self) {
+        self.normalize_cursor();
+        let previous = previous_grapheme_boundary(&self.draft, self.cursor);
+        if previous < self.cursor {
+            self.draft.replace_range(previous..self.cursor, "");
+            self.cursor = previous;
+        }
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn delete(&mut self) {
+        self.normalize_cursor();
+        let next = next_grapheme_boundary(&self.draft, self.cursor);
+        if next > self.cursor {
+            self.draft.replace_range(self.cursor..next, "");
+        }
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn move_horizontal(&mut self, delta: isize) {
+        self.normalize_cursor();
+        self.cursor = if delta < 0 { previous_grapheme_boundary(&self.draft, self.cursor) } else { next_grapheme_boundary(&self.draft, self.cursor) };
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn move_vertical(&mut self, delta: isize) {
+        if !self.field.multiline() {
+            return;
+        }
+        self.normalize_cursor();
+        let rows = visual_rows(&self.draft, self.viewport_width.max(1));
+        let (row, column) = visual_cursor(&self.draft, self.cursor, &rows);
+        let preferred = self.preferred_column.unwrap_or(column);
+        let target = if delta < 0 { row.saturating_sub(1) } else { (row + 1).min(rows.len().saturating_sub(1)) };
+        if target != row {
+            self.cursor = cursor_at_visual_column(&self.draft, rows[target], preferred);
+        }
+        self.preferred_column = Some(preferred);
+        self.follow_cursor = true;
+    }
+
+    pub fn move_page(&mut self, delta: isize) {
+        if !self.field.multiline() {
+            return;
+        }
+        self.normalize_cursor();
+        let rows = visual_rows(&self.draft, self.viewport_width.max(1));
+        let (row, column) = visual_cursor(&self.draft, self.cursor, &rows);
+        let preferred = self.preferred_column.unwrap_or(column);
+        let distance = self.viewport_height.max(1);
+        let target = if delta < 0 { row.saturating_sub(distance) } else { row.saturating_add(distance).min(rows.len().saturating_sub(1)) };
+        self.cursor = cursor_at_visual_column(&self.draft, rows[target], preferred);
+        self.preferred_column = Some(preferred);
+        self.follow_cursor = true;
+    }
+
+    pub fn move_row_boundary(&mut self, end: bool) {
+        self.normalize_cursor();
+        if self.field.multiline() {
+            let rows = visual_rows(&self.draft, self.viewport_width.max(1));
+            let (row, _) = visual_cursor(&self.draft, self.cursor, &rows);
+            self.cursor = if end { rows[row].end } else { rows[row].start };
+        } else {
+            self.cursor = if end { self.draft.len() } else { 0 };
+        }
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn move_document_boundary(&mut self, end: bool) {
+        self.cursor = if end { self.draft.len() } else { 0 };
+        self.follow_cursor = true;
+        self.preferred_column = None;
+    }
+
+    pub fn scroll(&mut self, delta: isize) {
+        if !self.field.multiline() || self.total_rows <= self.viewport_height {
+            return;
+        }
+        let maximum = self.total_rows.saturating_sub(self.viewport_height.max(1));
+        self.scroll_row = if delta < 0 { self.scroll_row.saturating_sub(delta.unsigned_abs()) } else { self.scroll_row.saturating_add(delta as usize).min(maximum) };
+        self.follow_cursor = false;
+    }
+
+    pub fn place_cursor(&mut self, pointer: ratatui::layout::Position) -> bool {
+        let Some(row) = self.hit_rows.iter().find(|row| row.area.contains(pointer)).cloned() else {
+            return false;
+        };
+        let target_column = pointer.x.saturating_sub(row.area.x) as usize;
+        self.cursor = nearest_boundary_at_column(&self.draft, row.start, row.end, target_column);
+        self.follow_cursor = true;
+        self.preferred_column = None;
+        true
+    }
+
+    pub fn layout(&mut self, area: Rect) -> CanvasEditorLayout {
+        self.editor_area = area;
+        self.hit_rows.clear();
+        self.normalize_cursor();
+        if self.field.multiline() {
+            self.layout_multiline(area)
+        } else {
+            self.layout_single_line(area)
+        }
+    }
+
+    fn layout_multiline(&mut self, area: Rect) -> CanvasEditorLayout {
+        let rail_width = u16::from(area.width >= 2);
+        let content = Rect::new(area.x, area.y, area.width.saturating_sub(rail_width), area.height);
+        self.viewport_width = content.width.max(1) as usize;
+        self.viewport_height = content.height.max(1) as usize;
+        let visual = visual_rows(&self.draft, self.viewport_width);
+        let (caret_row, caret_column) = visual_cursor(&self.draft, self.cursor, &visual);
+        self.total_rows = visual.len();
+        self.caret_row = caret_row;
+        self.caret_column = caret_column;
+
+        let maximum = visual.len().saturating_sub(self.viewport_height);
+        self.scroll_row = self.scroll_row.min(maximum);
+        if self.follow_cursor {
+            let context = usize::from(self.viewport_height >= 3);
+            if caret_row < self.scroll_row.saturating_add(context) {
+                self.scroll_row = caret_row.saturating_sub(context);
+            } else if caret_row.saturating_add(context) >= self.scroll_row.saturating_add(self.viewport_height) {
+                self.scroll_row = caret_row.saturating_add(context + 1).saturating_sub(self.viewport_height);
+            }
+            self.scroll_row = self.scroll_row.min(maximum);
+        }
+
+        let mut rows = Vec::new();
+        for (visible_index, row) in visual.iter().skip(self.scroll_row).take(self.viewport_height).enumerate() {
+            let row_area = Rect::new(content.x, content.y.saturating_add(visible_index as u16), content.width, 1);
+            rows.push(CanvasEditorRenderRow { area: row_area, text: self.draft[row.start..row.end].to_string() });
+            self.hit_rows.push(CanvasEditorHitRow { area: row_area, start: row.start, end: row.end });
+        }
+
+        let caret = caret_row.checked_sub(self.scroll_row).filter(|row| *row < self.viewport_height && content.width > 0 && content.height > 0).map(|row| {
+            let x = content.x.saturating_add((caret_column.min(content.width.saturating_sub(1) as usize)) as u16);
+            ratatui::layout::Position::new(x, content.y.saturating_add(row as u16))
+        });
+        let visible_end = self.scroll_row.saturating_add(self.viewport_height);
+        CanvasEditorLayout { rows, caret, hidden_before: self.scroll_row > 0, hidden_after: visible_end < visual.len(), caret_before: caret_row < self.scroll_row, caret_after: caret_row >= visible_end, multiline: true }
+    }
+
+    fn layout_single_line(&mut self, area: Rect) -> CanvasEditorLayout {
+        let gutters = area.width >= 3;
+        let content = if gutters { Rect::new(area.x.saturating_add(1), area.y, area.width.saturating_sub(2), area.height.min(1)) } else { Rect::new(area.x, area.y, area.width, area.height.min(1)) };
+        self.viewport_width = content.width.max(1) as usize;
+        self.viewport_height = 1;
+        let total_columns = self.draft.width();
+        let caret_column = self.draft[..self.cursor].width();
+        self.total_rows = 1;
+        self.caret_row = 0;
+        self.caret_column = caret_column;
+
+        let width = self.viewport_width;
+        let maximum = total_columns.saturating_sub(width.saturating_sub(1));
+        self.scroll_column = self.scroll_column.min(maximum);
+        if self.follow_cursor {
+            if caret_column < self.scroll_column {
+                self.scroll_column = caret_column;
+            } else if caret_column >= self.scroll_column.saturating_add(width) {
+                self.scroll_column = caret_column.saturating_add(1).saturating_sub(width);
+            }
+            self.scroll_column = self.scroll_column.min(maximum);
+        }
+
+        let (start, end, normalized_scroll) = horizontal_slice(&self.draft, self.scroll_column, width);
+        self.scroll_column = normalized_scroll;
+        let row_area = Rect::new(content.x, content.y, content.width, content.height);
+        let rows = if content.width > 0 && content.height > 0 { vec![CanvasEditorRenderRow { area: row_area, text: self.draft[start..end].to_string() }] } else { Vec::new() };
+        if content.width > 0 && content.height > 0 {
+            self.hit_rows.push(CanvasEditorHitRow { area: row_area, start, end });
+        }
+        let relative_caret = caret_column.saturating_sub(self.scroll_column);
+        let caret = (caret_column >= self.scroll_column && relative_caret < width && content.width > 0 && content.height > 0).then(|| ratatui::layout::Position::new(content.x.saturating_add(relative_caret as u16), content.y));
+        CanvasEditorLayout { rows, caret, hidden_before: self.scroll_column > 0, hidden_after: total_columns > self.scroll_column.saturating_add(width), caret_before: caret_column < self.scroll_column, caret_after: caret_column >= self.scroll_column.saturating_add(width), multiline: false }
+    }
+
+    fn normalize_cursor(&mut self) {
+        self.cursor = nearest_grapheme_boundary(&self.draft, self.cursor);
+    }
+}
+
+fn visual_rows(text: &str, width: usize) -> Vec<CanvasVisualRow> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut line_start = 0usize;
+    loop {
+        let newline = text[line_start..].find('\n').map(|offset| line_start + offset);
+        let line_end = newline.unwrap_or(text.len());
+        if line_start == line_end {
+            rows.push(CanvasVisualRow { start: line_start, end: line_end });
+        } else {
+            let mut row_start = line_start;
+            let mut used = 0usize;
+            for (offset, grapheme) in text[line_start..line_end].grapheme_indices(true) {
+                let absolute = line_start + offset;
+                let grapheme_width = grapheme.width().max(1);
+                if used > 0 && used.saturating_add(grapheme_width) > width {
+                    rows.push(CanvasVisualRow { start: row_start, end: absolute });
+                    row_start = absolute;
+                    used = 0;
+                }
+                used = used.saturating_add(grapheme_width);
+            }
+            rows.push(CanvasVisualRow { start: row_start, end: line_end });
+        }
+        let Some(newline) = newline else {
+            break;
+        };
+        line_start = newline + 1;
+        if line_start == text.len() {
+            rows.push(CanvasVisualRow { start: line_start, end: line_start });
+            break;
+        }
+    }
+    rows
+}
+
+fn visual_cursor(text: &str, cursor: usize, rows: &[CanvasVisualRow]) -> (usize, usize) {
+    let cursor = nearest_grapheme_boundary(text, cursor);
+    for (index, row) in rows.iter().enumerate() {
+        if cursor < row.end {
+            return (index, text[row.start..cursor].width());
+        }
+        if cursor == row.end {
+            let soft_wrap_continues = rows.get(index + 1).is_some_and(|next| next.start == cursor);
+            if !soft_wrap_continues {
+                return (index, text[row.start..cursor].width());
+            }
+        }
+    }
+    let index = rows.len().saturating_sub(1);
+    let row = rows[index];
+    (index, text[row.start..cursor.min(row.end)].width())
+}
+
+fn cursor_at_visual_column(text: &str, row: CanvasVisualRow, column: usize) -> usize {
+    nearest_boundary_at_column(text, row.start, row.end, column)
+}
+
+fn nearest_boundary_at_column(text: &str, start: usize, end: usize, column: usize) -> usize {
+    let mut used = 0usize;
+    for (offset, grapheme) in text[start..end].grapheme_indices(true) {
+        let width = grapheme.width().max(1);
+        if column <= used {
+            return start + offset;
+        }
+        if column < used.saturating_add(width) {
+            return if column - used < width.saturating_sub(column - used) { start + offset } else { start + offset + grapheme.len() };
+        }
+        used = used.saturating_add(width);
+    }
+    end
+}
+
+fn horizontal_slice(text: &str, requested_scroll: usize, width: usize) -> (usize, usize, usize) {
+    if width == 0 || text.is_empty() {
+        return (0, 0, 0);
+    }
+    let mut used = 0usize;
+    let mut start = text.len();
+    let mut normalized_scroll = requested_scroll;
+    for (offset, grapheme) in text.grapheme_indices(true) {
+        let next = used.saturating_add(grapheme.width().max(1));
+        if next > requested_scroll {
+            start = offset;
+            normalized_scroll = used;
+            break;
+        }
+        used = next;
+    }
+    if start == text.len() {
+        return (text.len(), text.len(), used);
+    }
+    let mut visible = 0usize;
+    let mut end = start;
+    for (offset, grapheme) in text[start..].grapheme_indices(true) {
+        let grapheme_width = grapheme.width().max(1);
+        if visible > 0 && visible.saturating_add(grapheme_width) > width {
+            break;
+        }
+        visible = visible.saturating_add(grapheme_width);
+        end = start + offset + grapheme.len();
+        if visible >= width {
+            break;
+        }
+    }
+    (start, end, normalized_scroll)
+}
+
+fn nearest_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    if cursor == text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true).take_while(|(index, _)| *index <= cursor).map(|(index, _)| index).last().unwrap_or(0)
+}
+
+fn previous_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = nearest_grapheme_boundary(text, cursor);
+    text[..cursor].grapheme_indices(true).next_back().map_or(0, |(index, _)| index)
+}
+
+fn next_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = nearest_grapheme_boundary(text, cursor);
+    text[cursor..].grapheme_indices(true).nth(1).map_or(text.len(), |(index, _)| cursor + index)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasResizeHandle {
+    Top,
+    TopRight,
+    Right,
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+    TopLeft,
+}
+
+impl CanvasResizeHandle {
+    pub fn affects_left(self) -> bool {
+        matches!(self, Self::Left | Self::TopLeft | Self::BottomLeft)
+    }
+
+    pub fn affects_right(self) -> bool {
+        matches!(self, Self::Right | Self::TopRight | Self::BottomRight)
+    }
+
+    pub fn affects_top(self) -> bool {
+        matches!(self, Self::Top | Self::TopLeft | Self::TopRight)
+    }
+
+    pub fn affects_bottom(self) -> bool {
+        matches!(self, Self::Bottom | Self::BottomLeft | Self::BottomRight)
+    }
+
+    pub fn is_corner(self) -> bool {
+        matches!(self, Self::TopLeft | Self::TopRight | Self::BottomRight | Self::BottomLeft)
+    }
+
+    pub fn glyph(self) -> char {
+        match self {
+            Self::Top | Self::Bottom => '↕',
+            Self::Left | Self::Right => '↔',
+            Self::TopLeft | Self::BottomRight => '╲',
+            Self::TopRight | Self::BottomLeft => '╱',
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CanvasInteraction {
+    #[default]
+    Idle,
+    DraggingNode {
+        node: usize,
+        last: (u16, u16),
+        origin: (i64, i64),
+        changed: bool,
+    },
+    Panning {
+        last: (u16, u16),
+    },
+    Connecting {
+        from_node: usize,
+        from_side: Option<ekphos_canvas::CanvasSide>,
+        pointer: Option<(u16, u16)>,
+    },
+    ResizingNode {
+        node: usize,
+        handle: CanvasResizeHandle,
+        start: (u16, u16),
+        last: (u16, u16),
+        origin: (i64, i64, i64, i64),
+        minimum: (i64, i64),
+        changed: bool,
+    },
+}
+
+impl Default for CanvasViewState {
+    fn default() -> Self {
+        Self {
+            document: None,
+            diagnostics: Vec::new(),
+            error: None,
+            selected_node: 0,
+            selected_edge: None,
+            hovered_node: None,
+            hovered_edge: None,
+            viewport_x: 0.0,
+            viewport_y: 0.0,
+            zoom: 1.0,
+            needs_fit: true,
+            view_area: Rect::default(),
+            node_rects: Vec::new(),
+            edge_cells: Vec::new(),
+            handle_rects: Vec::new(),
+            resize_rects: Vec::new(),
+            hovered_resize: None,
+            interaction: CanvasInteraction::Idle,
+            editor: None,
+            last_click: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
+    }
 }
 
 /// Filesystem catalog ownership. Additional catalog-facing state moves here as

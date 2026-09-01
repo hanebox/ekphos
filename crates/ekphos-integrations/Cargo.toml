@@ -10,6 +10,8 @@ description = "Platform, network, media, clipboard, and syntax integrations for 
 
 [dependencies]
 ekphos-core.workspace = true
+ekphos-bases.workspace = true
+ekphos-canvas.workspace = true
 ekphos-editor.workspace = true
 ekphos-graph.workspace = true
 ekphos-search.workspace = true
@@ -27,9 +29,11 @@ htmd.workspace = true
 syntect.workspace = true
 ureq.workspace = true
 serde.workspace = true
+serde_yaml.workspace = true
 toml.workspace = true
 dirs.workspace = true
 unicode-width.workspace = true
+unicode-segmentation.workspace = true
 chrono.workspace = true
 tikv-jemalloc-sys.workspace = true
 

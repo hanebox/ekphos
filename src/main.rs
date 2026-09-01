@@ -128,7 +128,7 @@ fn print_help() {
     println!("ARGUMENTS:");
     println!("    [PATH]           Open a file or folder directly");
     println!("                     - If PATH is a folder, opens it as the notes directory");
-    println!("                     - If PATH is a .md file, opens it and its parent folder");
+    println!("                     - If PATH is a .md, .base, or .canvas file, opens it and its parent folder");
     println!();
     println!("OPTIONS:");
     println!("    -h, --help       Print help information");
@@ -140,7 +140,9 @@ fn print_help() {
     println!();
     println!("EXAMPLES:");
     println!("    ekphos ~/notes           Open the ~/notes folder");
-    println!("    ekphos ./my-note.md      Open a specific markdown file");
+    println!("    ekphos ./my-note.md      Open a specific Markdown file");
+    println!("    ekphos ./library.base    Open an Obsidian Base");
+    println!("    ekphos ./board.canvas    Open a JSON Canvas");
     println!("    ekphos .                 Open current directory as notes folder");
 }
 fn reset_config_and_themes() {

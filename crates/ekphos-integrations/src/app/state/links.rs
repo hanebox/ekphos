@@ -13,6 +13,9 @@ impl App {
             let expected_path = notes_path.join(format!("{}.md", target));
             let expected_str = expected_path.to_string_lossy();
             for (idx, note) in self.vault.notes.iter().enumerate() {
+                if !note.kind.is_markdown() {
+                    continue;
+                }
                 if let Some(file_path) = &note.file_path {
                     if file_path.to_string_lossy() == expected_str {
                         return Some(idx);
@@ -21,6 +24,9 @@ impl App {
             }
         } else {
             for (idx, note) in self.vault.notes.iter().enumerate() {
+                if !note.kind.is_markdown() {
+                    continue;
+                }
                 if note.title.eq_ignore_ascii_case(target) {
                     if let Some(file_path) = &note.file_path {
                         if file_path.parent() == Some(notes_path.as_path()) {
@@ -30,6 +36,9 @@ impl App {
                 }
             }
             for (idx, note) in self.vault.notes.iter().enumerate() {
+                if !note.kind.is_markdown() {
+                    continue;
+                }
                 if note.title.eq_ignore_ascii_case(target) {
                     return Some(idx);
                 }
@@ -472,6 +481,9 @@ impl App {
         let notes_path = self.state.config.notes_path();
         let (folder_prefix, note_query) = if let Some(last_slash) = query.rfind('/') { (&query[..=last_slash], &query[last_slash + 1..]) } else { ("", query) };
         for (idx, note) in self.vault.notes.iter().enumerate() {
+            if !note.kind.is_markdown() {
+                continue;
+            }
             if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
                 if !folder_prefix.is_empty() && !wiki_path.to_lowercase().starts_with(&folder_prefix.to_lowercase()) {
                     continue;
@@ -511,6 +523,9 @@ impl App {
     pub fn build_heading_suggestions(&self, note_target: &str, query: &str) -> Vec<WikiSuggestion> {
         let mut suggestions = Vec::new();
         for (idx, note) in self.vault.notes.iter().enumerate() {
+            if !note.kind.is_markdown() {
+                continue;
+            }
             if let Some(wiki_path) = self.get_wiki_path_for_note(idx) {
                 if wiki_path.to_lowercase() == note_target.to_lowercase() || note.title.to_lowercase() == note_target.to_lowercase() {
                     let body = if self.document.active_note_id == Some(note.id) { self.document.active_document.as_ref().map(DocumentSnapshot::body_arc) } else { self.vault.load_body(note.id).ok() };

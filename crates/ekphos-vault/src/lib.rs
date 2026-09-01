@@ -18,6 +18,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_BODY_CACHE_BUDGET: usize = 8 * 1024 * 1024;
 
+/// Text document kinds that Ekphos can open directly from the vault.
+///
+/// Markdown remains the only kind consumed by note-only services such as full
+/// text search and the wikilink graph. Bases and canvases are catalogued here
+/// so the application shell can navigate them without pretending their source
+/// is Markdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VaultFileKind {
+    Markdown,
+    Base,
+    Canvas,
+}
+
+impl VaultFileKind {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some("md") => Some(Self::Markdown),
+            Some("base") => Some(Self::Base),
+            Some("canvas") => Some(Self::Canvas),
+            _ => None,
+        }
+    }
+
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Base => "base",
+            Self::Canvas => "canvas",
+        }
+    }
+
+    pub const fn is_markdown(self) -> bool {
+        matches!(self, Self::Markdown)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileFingerprint {
     pub size: u64,
@@ -33,6 +69,7 @@ impl FileFingerprint {
 #[derive(Debug, Clone)]
 pub struct CatalogNote {
     pub metadata: NoteMetadata,
+    pub kind: VaultFileKind,
     pub modified_time: Option<SystemTime>,
     pub created_time: Option<SystemTime>,
     pub has_frontmatter: bool,
@@ -231,7 +268,7 @@ impl BodyCache {
     }
 }
 
-pub fn contains_markdown(path: &Path) -> bool {
+pub fn contains_supported_document(path: &Path) -> bool {
     let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
@@ -240,6 +277,25 @@ pub fn contains_markdown(path: &Path) -> bool {
         let Ok(file_type) = entry.file_type() else {
             return false;
         };
+        if file_type.is_symlink() {
+            false
+        } else if file_type.is_dir() {
+            !entry_path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) && contains_supported_document(&entry_path)
+        } else {
+            file_type.is_file() && VaultFileKind::from_path(&entry_path).is_some()
+        }
+    })
+}
+
+pub fn contains_markdown(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let Ok(file_type) = entry.file_type() else {
+            return false;
+        };
+        let entry_path = entry.path();
         if file_type.is_symlink() {
             false
         } else if file_type.is_dir() {
@@ -321,7 +377,7 @@ fn scan_entries(root: &Path, directory: &Path) -> io::Result<Vec<CatalogEntry>> 
             }
             let children = scan_entries(root, &path).unwrap_or_default();
             items.push(CatalogEntry::Folder(Box::new(CatalogFolder { name: path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default(), absolute_path: path, children })));
-        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+        } else if file_type.is_file() && VaultFileKind::from_path(&path).is_some() {
             if let Ok(note) = catalog_note(root, &path) {
                 items.push(CatalogEntry::Note(Box::new(note)));
             }
@@ -330,13 +386,18 @@ fn scan_entries(root: &Path, directory: &Path) -> io::Result<Vec<CatalogEntry>> 
     Ok(items)
 }
 fn catalog_note(root: &Path, path: &Path) -> io::Result<CatalogNote> {
+    let kind = VaultFileKind::from_path(path).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unsupported vault document"))?;
     let filesystem = fs::metadata(path)?;
     let relative = path.strip_prefix(root).map_err(io::Error::other)?;
     let vault_path = VaultPath::from_relative_path(relative).map_err(io::Error::other)?;
-    let (frontmatter, content_start_line) = match read_frontmatter(path) {
-        Ok(value) => value,
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => (None, 0),
-        Err(error) => return Err(error),
+    let (frontmatter, content_start_line) = if kind.is_markdown() {
+        match read_frontmatter(path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => (None, 0),
+            Err(error) => return Err(error),
+        }
+    } else {
+        (None, 0)
     };
     let modified_time = filesystem.modified().ok();
     let created_time = filesystem.created().ok();
@@ -344,6 +405,7 @@ fn catalog_note(root: &Path, path: &Path) -> io::Result<CatalogNote> {
     let summary = frontmatter.map(|value| FrontmatterSummary { title: value.title, tags: value.tags, date: value.date }).unwrap_or_default();
     let title = path.file_stem().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
     Ok(CatalogNote {
+        kind,
         metadata: NoteMetadata { id: NoteId::for_path(&vault_path), path: vault_path, title, file_size: filesystem.len(), modified_unix_seconds: unix_seconds(modified_time), created_unix_seconds: unix_seconds(created_time), frontmatter: summary },
         modified_time,
         created_time,
@@ -481,6 +543,29 @@ mod tests {
         let first_id = note.metadata.id;
         let (_, rescanned) = Vault::scan(&root).unwrap();
         assert_eq!(first_note(&rescanned).metadata.id, first_id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn catalog_recognizes_markdown_bases_and_json_canvas_documents() {
+        let root = fixture();
+        fs::write(root.join("library.base"), "views:\n  - type: table\n").unwrap();
+        fs::write(root.join("board.canvas"), r#"{"nodes":[],"edges":[]}"#).unwrap();
+        fs::write(root.join("ignored.txt"), "not a vault document").unwrap();
+        let (_, entries) = Vault::scan(&root).unwrap();
+        fn collect(entries: &[CatalogEntry], kinds: &mut Vec<VaultFileKind>) {
+            for entry in entries {
+                match entry {
+                    CatalogEntry::Folder(folder) => collect(&folder.children, kinds),
+                    CatalogEntry::Note(note) => kinds.push(note.kind),
+                }
+            }
+        }
+        let mut kinds = Vec::new();
+        collect(&entries, &mut kinds);
+        kinds.sort_by_key(|kind| kind.extension());
+        assert_eq!(kinds, vec![VaultFileKind::Base, VaultFileKind::Canvas, VaultFileKind::Markdown]);
+        assert!(contains_supported_document(&root));
         let _ = fs::remove_dir_all(root);
     }
 

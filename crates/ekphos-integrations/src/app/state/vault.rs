@@ -61,7 +61,7 @@ impl App {
     }
 
     pub(super) fn directory_has_notes(path: &std::path::Path) -> bool {
-        ekphos_vault::contains_markdown(path)
+        ekphos_vault::contains_supported_document(path)
     }
 
     pub fn load_notes_from_dir(&mut self) {
@@ -181,6 +181,7 @@ impl App {
                     let frontmatter = note.has_frontmatter.then(|| note.metadata.frontmatter.into());
                     self.vault.notes.push(Note {
                         id: note.metadata.id,
+                        kind: note.kind,
                         title: note.metadata.title,
                         file_path: Some(self.vault.root().join(note.metadata.path.as_str())),
                         file_size: note.metadata.file_size,
@@ -624,6 +625,7 @@ impl App {
             return false;
         };
         let old_title = self.vault.notes[note_index].title.clone();
+        let extension = self.vault.notes[note_index].kind.extension();
         if old_title == new_name {
             self.state.dialog_error = None;
             return true;
@@ -638,7 +640,7 @@ impl App {
         let Some(parent) = old_path.parent() else {
             return false;
         };
-        let new_file_path = match self.confined_child_path(parent, new_name, Some("md")) {
+        let new_file_path = match self.confined_child_path(parent, new_name, Some(extension)) {
             Ok(path) => path,
             Err(error) => {
                 self.state.dialog_error = Some(error);
@@ -827,7 +829,14 @@ impl App {
             return Err("Source file no longer exists".to_string());
         }
         self.ensure_existing_path_in_vault(source, false)?;
-        let dest_path = self.confined_child_path(dest_folder, title, Some("md"))?;
+        let extension = source.extension().and_then(|extension| extension.to_str()).and_then(|extension| match extension {
+            "md" | "base" | "canvas" => Some(extension),
+            _ => None,
+        });
+        let Some(extension) = extension else {
+            return Err("Unsupported document type".to_string());
+        };
+        let dest_path = self.confined_child_path(dest_folder, title, Some(extension))?;
         if source == dest_path {
             return Err("Already in this location".to_string());
         }
